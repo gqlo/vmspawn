@@ -2,14 +2,14 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale by importing a base disk image, snapshotting it, and cloning VMs from the snapshot. Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
+Creates VirtualMachines at scale by importing a base disk image, snapshotting it, and cloning VMs from the snapshot. Supports **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH). Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
 
 ## Prerequisites
 
 - `oc` CLI logged into an OpenShift cluster
-- OpenShift Virtualization (`openshift-cnv` namespace)
-- OpenShift Data Foundation (`openshift-storage` namespace)
-- A Ceph RBD storage class (default: `ocs-storagecluster-ceph-rbd-virtualization`)
+- OpenShift Virtualization operator installed (`openshift-cnv` namespace)
+- OpenShift Data Foundation operator installed (`openshift-storage` namespace)
+- Ceph RBD storage class available (default: `ocs-storagecluster-ceph-rbd-virtualization`)
 
 ## Quick start
 
@@ -134,7 +134,7 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
 ## Cloud-init
 
-Use `--cloudinit=FILE` to inject a cloud-init user-data file into every VM at creation time. The file is base64-encoded and embedded in the VM spec via `cloudInitNoCloud.userDataBase64`, so nothing needs to be baked into the disk image.
+Use `--cloudinit=FILE` to inject a cloud-init user-data file into every VM at creation time. The file is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
 
 A ready-made workload simulator is included:
 
@@ -142,11 +142,7 @@ A ready-made workload simulator is included:
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
-The `cloudinit-stress-workload.yaml` cloud-init config will:
-
-1. Install `stress-ng` via the package manager
-2. Write a bursty stress workload script to `/opt/stress_ng_random_vm.sh`
-3. Create and enable a `stress-workload.service` systemd unit that runs the script forever and survives reboots
+The `cloudinit-stress-workload.yaml` cloud-init config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details on how the workload works, its parameters, and monitoring.
 
 You can point `--cloudinit` at any cloud-init user-data file to customize what runs inside the VMs.
 
@@ -154,8 +150,12 @@ You can point `--cloudinit` at any cloud-init user-data file to customize what r
 
 ```
 vmspawn              # main script
+docs/
+  stress-workload.md # stress workload simulator documentation
 helpers/
   install-virtctl    # download and install virtctl from the cluster
+  vm-ssh             # quick virtctl SSH wrapper
+  vm-export          # export a VM disk as a qcow2 image
   stress_ng_random_vm.sh            # standalone stress-ng workload script
   cloudinit-stress-workload.yaml    # cloud-init user-data for stress workload
 templates/
@@ -163,6 +163,7 @@ templates/
   dv.yaml            # DataVolume template (base disk import)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
+  cloudinit-secret.yaml  # cloud-init userdata Secret template
 tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
