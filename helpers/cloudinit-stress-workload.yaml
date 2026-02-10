@@ -1,4 +1,8 @@
 #cloud-config
+ssh_pwauth: true
+chpasswd:
+  expire: false
+
 packages:
   - stress-ng
 
