@@ -137,3 +137,72 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"abc123"* ]]
   [[ "$output" == *"oc delete ns -l batch-id=abc123"* ]]
 }
+
+# ---------------------------------------------------------------
+# 9. --delete without =value is rejected
+# ---------------------------------------------------------------
+@test "--delete without a value fails with helpful error" {
+  run bash "$VMSPAWN" -n --delete
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--delete requires a batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# 10. Non-numeric positional argument is rejected
+# ---------------------------------------------------------------
+@test "non-numeric first positional argument is rejected" {
+  run bash "$VMSPAWN" -n abc123
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid argument"* ]]
+  [[ "$output" == *"expected a number for total VMs"* ]]
+}
+
+@test "non-numeric second positional argument is rejected" {
+  run bash "$VMSPAWN" -n 5 abc
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid argument"* ]]
+  [[ "$output" == *"expected a number for namespaces"* ]]
+}
+
+# ---------------------------------------------------------------
+# 11. Cloud-init Secret reference in VM YAML
+# ---------------------------------------------------------------
+@test "cloud-init uses secretRef in VM volume spec" {
+  run bash "$VMSPAWN" -n --batch-id=ci0001 --vms=1 --namespaces=1 \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml
+  [ "$status" -eq 0 ]
+
+  # Secret template should be rendered with the correct name
+  [[ "$output" == *"name: rhel9-cloudinit"* ]]
+
+  # Volume must use secretRef, not inline userDataBase64
+  [[ "$output" == *"secretRef"* ]]
+  [[ "$output" != *"userDataBase64"* ]]
+}
+
+@test "cloud-init Secret is created per namespace" {
+  run bash "$VMSPAWN" -n --batch-id=ci0002 --vms=2 --namespaces=2 \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml
+  [ "$status" -eq 0 ]
+
+  # Secret YAML should appear for each namespace
+  local secret_count
+  secret_count=$(echo "$output" | grep -c "kind: Secret")
+  [ "$secret_count" -eq 2 ]
+}
+
+@test "no cloud-init Secret when --cloudinit is not specified" {
+  run bash "$VMSPAWN" -n --batch-id=ci0003 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # No Secret should appear
+  [[ "$output" != *"kind: Secret"* ]]
+  [[ "$output" != *"secretRef"* ]]
+}
+
+@test "--cloudinit with missing file fails" {
+  run bash "$VMSPAWN" -n --batch-id=ci0004 --vms=1 --namespaces=1 \
+    --cloudinit=nonexistent-file.yaml
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Cloud-init file not found"* ]]
+}
