@@ -126,3 +126,14 @@ VMSPAWN="./vmspawn"
   basename_count=$(echo "$output" | grep -c 'vm-basename: "rhel9"')
   [ "$basename_count" -ge 4 ]
 }
+
+# ---------------------------------------------------------------
+# 8. Delete dry-run
+# ---------------------------------------------------------------
+@test "delete dry-run prints batch info without error" {
+  run bash "$VMSPAWN" -n --delete=abc123
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"abc123"* ]]
+  [[ "$output" == *"oc delete ns -l batch-id=abc123"* ]]
+}

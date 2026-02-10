@@ -22,6 +22,9 @@ Creates VirtualMachines at scale by importing a base disk image, snapshotting it
 
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
+
+# Delete all resources for a batch
+./vmspawn --delete=a3f7b2
 ```
 
 ## How it works
@@ -53,7 +56,27 @@ All resources are labeled for easy querying:
 - `batch-id` -- the batch ID for this run
 - `vm-basename` -- the base image name (on DataVolumes, VolumeSnapshots, and VMs)
 
-## Inspecting and managing batches
+## Deleting batches
+
+Use `--delete` to remove all resources for a batch:
+
+```bash
+# Preview what would be deleted
+./vmspawn -n --delete=a3f7b2
+
+# Delete all resources for a batch
+./vmspawn --delete=a3f7b2
+```
+
+This deletes the batch's namespaces, which cascades and removes all VMs, DataVolumes, VolumeSnapshots, and PVCs inside them. The batch manifest file is also cleaned up.
+
+To delete all batches at once via `oc` directly:
+
+```bash
+oc delete ns -l batch-id
+```
+
+## Inspecting batches
 
 After creation, the tool prints ready-to-use commands:
 
@@ -63,10 +86,6 @@ oc get vm -A -l batch-id=a3f7b2
 
 # List all namespaces in a batch
 oc get ns -l batch-id=a3f7b2
-
-# Delete an entire batch (VMs first, then namespaces)
-oc delete vm -A -l batch-id=a3f7b2
-oc delete ns -l batch-id=a3f7b2
 
 # List all batch manifest files
 ls logs/*.manifest
@@ -105,6 +124,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --stop                      Don't start VMs (equivalent to --run-strategy=Halted)
     --wait                      Wait for all VMs to reach Running state
     --nowait                    Don't wait (default)
+
+    --delete=BATCH_ID           Delete all resources for the given batch
 ```
 
 ## Project layout
@@ -116,5 +137,7 @@ templates/
   dv.yaml            # DataVolume template (base disk import)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
+tests/
+  vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
 ```

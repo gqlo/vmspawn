@@ -28,6 +28,7 @@ NUM_NAMESPACES=1
 RUN_STRATEGY=Always
 WAIT=0
 RECREATE_EXISTING_VMS=1
+DELETE_BATCH=
 yamlpath=()
 declare -A expected_vms=()
 # If CREATE_VM_PATH is explicitly provided, search for
@@ -75,6 +76,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 (equivalent to --run-strategy=Always)
         --stop                  Do not start the VMs
                                 (equivalent to --run-strategy=Halted)
+        --delete=BATCH_ID       Delete all resources for the given batch
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
 EOF
@@ -94,6 +96,7 @@ process_option() {
     # Convert the option to lowercase for case-insensitive matching
     case "${option,,}" in
 	batchid)   BATCH_ID=$value ;;
+	delete*)   DELETE_BATCH=$value ;;
 	dvurl)     DV_URL=$value ;;
 	storage*)  STORAGE_SIZE=$value ;;
 	snapshot*) SNAPSHOT_CLASS=$value ;;
@@ -130,118 +133,6 @@ done
 
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
-
-# no more than 2 positional arguments are allowed
-if (($# > 2)) ; then
-    help
-fi
-
-# Check for prerequisites: oc CLI, OpenShift Virtualization,
-# ODF storage, and the configured storage class.
-# Reports all missing prerequisites before exiting.
-check_prerequisites() {
-    local -i errors=0
-
-    if [[ -z "$(type -t oc)" ]] ; then
-	echo "Error: oc command is not installed on system"
-	((errors++))
-    elif ! oc whoami >/dev/null 2>&1 ; then
-	echo "Error: not logged into an OpenShift cluster (run 'oc login' first)"
-	((errors++))
-    else
-	if ! oc get ns openshift-cnv >/dev/null 2>&1 ; then
-	    echo "Error: OpenShift Virtualization is not installed (openshift-cnv namespace not found)"
-	    ((errors++))
-	fi
-
-	if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
-	    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
-	    ((errors++))
-	fi
-
-	if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
-	    echo "Error: storage class '$STORAGE_CLASS' not found"
-	    echo "  Available storage classes:"
-	    oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
-	    ((errors++))
-	fi
-    fi
-
-    if ((errors > 0)) ; then
-	fatal "Prerequisite check failed with $errors error(s)"
-    fi
-
-    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'"
-}
-
-if ((doit)) ; then
-    check_prerequisites
-fi
-
-NUM_VMS=${1:-$NUM_VMS}
-NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
-
-# If user specified --vms-per-namespace, calculate the total number of
-# VMs from that.
-if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
-    NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
-fi
-
-# Validate inputs
-if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
-    help "Error: Number of VMs must be a positive integer"
-fi
-
-if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
-    help "Error: Number of namespaces must be a positive integer"
-fi
-
-if ((NUM_VMS < NUM_NAMESPACES)) ; then
-    help "Error: Number of VMs must be greater than or equal to number of namespaces"
-fi
-
-# Check if template files exist
-find_file_on_path() {
-    local file=$1
-    local ydir
-    for ydir in "${yamlpath[@]}" ; do
-	if [[ -f "${ydir:-.}/$file" ]] ; then
-	    echo "${ydir:-.}/$file"
-	    return 0
-	fi
-    done
-    return 1
-}
-
-check_file_exists() {
-    find_file_on_path "${1:-}" >/dev/null || fatal "$file not found on $CREATE_VM_PATH"
-}
-
-check_file_exists namespace.yaml
-check_file_exists dv.yaml
-check_file_exists volumesnap.yaml
-check_file_exists vm-snap.yaml
-
-# Calculate VMs per namespace
-VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
-REMAINDER_VMS=$((NUM_VMS % NUM_NAMESPACES))
-
-cat <<EOF
-Creating resources for:
-  Batch ID: $BATCH_ID
-  Total VMs: $NUM_VMS
-  Namespaces: $NUM_NAMESPACES
-  VMs per namespace: $VMS_PER_NAMESPACE
-  Extra VMs in first $REMAINDER_VMS namespaces: $((REMAINDER_VMS > 0 ? 1 : 0))
-  DataVolume URL: $DV_URL
-  Storage Size: $STORAGE_SIZE
-  Storage Class: $STORAGE_CLASS
-  Snapshot Class: $SNAPSHOT_CLASS
-  VM Basename: $VM_BASENAME
-  VM CPU Cores: $VM_CPU_CORES
-  VM Memory: $VM_MEMORY
-
-EOF
 
 # Setup logging
 LOG_DIR="logs"
@@ -297,6 +188,121 @@ if ((doit)) ; then
     fi
 
     log_message "Log file created: $LOG_FILE"
+fi
+
+# Check for prerequisites: oc CLI, OpenShift Virtualization,
+# ODF storage, and the configured storage class.
+# Reports all missing prerequisites before exiting.
+check_prerequisites() {
+    local -i errors=0
+
+    if [[ -z "$(type -t oc)" ]] ; then
+	echo "Error: oc command is not installed on system"
+	((errors++))
+    elif ! oc whoami >/dev/null 2>&1 ; then
+	echo "Error: not logged into an OpenShift cluster (run 'oc login' first)"
+	((errors++))
+    else
+	if ! oc get ns openshift-cnv >/dev/null 2>&1 ; then
+	    echo "Error: OpenShift Virtualization is not installed (openshift-cnv namespace not found)"
+	    ((errors++))
+	fi
+
+	if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
+	    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
+	    ((errors++))
+	fi
+
+	if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
+	    echo "Error: storage class '$STORAGE_CLASS' not found"
+	    echo "  Available storage classes:"
+	    oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+	    ((errors++))
+	fi
+    fi
+
+    if ((errors > 0)) ; then
+	fatal "Prerequisite check failed with $errors error(s)"
+    fi
+
+    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'"
+}
+
+# Check if template files exist
+find_file_on_path() {
+    local file=$1
+    local ydir
+    for ydir in "${yamlpath[@]}" ; do
+	if [[ -f "${ydir:-.}/$file" ]] ; then
+	    echo "${ydir:-.}/$file"
+	    return 0
+	fi
+    done
+    return 1
+}
+
+check_file_exists() {
+    find_file_on_path "${1:-}" >/dev/null || fatal "$file not found on $CREATE_VM_PATH"
+}
+
+# Skip creation-specific validation when deleting
+if [[ -z "$DELETE_BATCH" ]] ; then
+    # no more than 2 positional arguments are allowed
+    if (($# > 2)) ; then
+	help
+    fi
+
+    if ((doit)) ; then
+	check_prerequisites
+    fi
+
+    NUM_VMS=${1:-$NUM_VMS}
+    NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
+
+    # If user specified --vms-per-namespace, calculate the total number of
+    # VMs from that.
+    if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
+	NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
+    fi
+
+    # Validate inputs
+    if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
+	help "Error: Number of VMs must be a positive integer"
+    fi
+
+    if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
+	help "Error: Number of namespaces must be a positive integer"
+    fi
+
+    if ((NUM_VMS < NUM_NAMESPACES)) ; then
+	help "Error: Number of VMs must be greater than or equal to number of namespaces"
+    fi
+
+    check_file_exists namespace.yaml
+    check_file_exists dv.yaml
+    check_file_exists volumesnap.yaml
+    check_file_exists vm-snap.yaml
+
+    # Calculate VMs per namespace
+    VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
+    REMAINDER_VMS=$((NUM_VMS % NUM_NAMESPACES))
+
+    cat <<EOF
+Creating resources for:
+  Batch ID: $BATCH_ID
+  Total VMs: $NUM_VMS
+  Namespaces: $NUM_NAMESPACES
+  VMs per namespace: $VMS_PER_NAMESPACE
+  Extra VMs in first $REMAINDER_VMS namespaces: $((REMAINDER_VMS > 0 ? 1 : 0))
+  DataVolume URL: $DV_URL
+  Storage Size: $STORAGE_SIZE
+  Storage Class: $STORAGE_CLASS
+  Snapshot Class: $SNAPSHOT_CLASS
+  VM Basename: $VM_BASENAME
+  VM CPU Cores: $VM_CPU_CORES
+  VM Memory: $VM_MEMORY
+
+EOF
 fi
 
 do_oc() {
@@ -577,6 +583,51 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
 }
 
 ################################################################
+# Delete all resources for a batch
+delete_batch() {
+    local batch=$1
+
+    if ((! doit)) ; then
+        echo "(dry-run) Would delete all resources for batch '$batch':"
+        echo "  oc delete ns -l batch-id=$batch"
+        echo ""
+        echo "This deletes all namespaces, VMs, DataVolumes, VolumeSnapshots,"
+        echo "and PVCs belonging to batch '$batch'."
+        return 0
+    fi
+
+    # Show what will be deleted
+    echo "Resources for batch '$batch':"
+    echo ""
+    echo "Namespaces:"
+    oc get ns -l batch-id="$batch" --no-headers 2>/dev/null || true
+    echo ""
+    echo "VirtualMachines:"
+    oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null || true
+    echo ""
+
+    # Check if anything exists
+    local ns_count
+    ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+    if ((ns_count == 0)) ; then
+        echo "No resources found for batch '$batch'"
+        return 0
+    fi
+
+    # Delete namespaces (cascades VMs, DVs, snapshots, PVCs)
+    log_message "Deleting namespaces for batch '$batch'..."
+    oc delete ns -l batch-id="$batch"
+    log_message "All resources for batch '$batch' deleted"
+
+    # Clean up manifest file
+    local manifest="${LOG_DIR}/batch-${batch}.manifest"
+    if [[ -f "$manifest" ]] ; then
+        rm -f "$manifest"
+        log_message "Removed manifest: $manifest"
+    fi
+}
+
+################################################################
 # Main execution
 main() {
     log_message "Starting resource creation process..."
@@ -639,5 +690,9 @@ main() {
     fi
 }
 
-# Run the main function
-main
+# Run delete or create
+if [[ -n "$DELETE_BATCH" ]] ; then
+    delete_batch "$DELETE_BATCH"
+else
+    main
+fi
