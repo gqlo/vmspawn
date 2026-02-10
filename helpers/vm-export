@@ -51,14 +51,13 @@ for cmd in virtctl oc ; do
 done
 
 echo "--- Step 1: Stopping VM $VM_NAME in $NAMESPACE ---"
-vm_ready=$(oc get vm/"$VM_NAME" -n "$NAMESPACE" -o jsonpath='{.status.ready}' 2>/dev/null || true)
-if [[ "$vm_ready" == "false" ]] ; then
-    echo "VM is already stopped, skipping stop command."
-else
+vm_status=$(oc get vm/"$VM_NAME" -n "$NAMESPACE" -o jsonpath='{.status.printableStatus}' 2>/dev/null || true)
+if [[ "$vm_status" == "Running" ]] ; then
     virtctl stop "$VM_NAME" -n "$NAMESPACE"
-    # Wait for VM to actually stop (Ready: False or Status: Stopped)
     echo "Waiting for VM to reach stopped state..."
     oc wait --for=jsonpath='{.status.ready}'=false vm/"$VM_NAME" -n "$NAMESPACE" --timeout=60s
+else
+    echo "VM is not running (status: ${vm_status:-unknown}), skipping stop command."
 fi
 
 echo "--- Step 2: Creating Export and Starting Download ---"
