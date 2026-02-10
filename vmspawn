@@ -136,23 +136,46 @@ if (($# > 2)) ; then
     help
 fi
 
-# Check for prerequisites.
-if ((doit)) ; then
+# Check for prerequisites: oc CLI, OpenShift Virtualization,
+# ODF storage, and the configured storage class.
+# Reports all missing prerequisites before exiting.
+check_prerequisites() {
+    local -i errors=0
+
     if [[ -z "$(type -t oc)" ]] ; then
-	fatal "Error: oc command is not installed on system"
+	echo "Error: oc command is not installed on system"
+	((errors++))
+    elif ! oc whoami >/dev/null 2>&1 ; then
+	echo "Error: not logged into an OpenShift cluster (run 'oc login' first)"
+	((errors++))
+    else
+	if ! oc get ns openshift-cnv >/dev/null 2>&1 ; then
+	    echo "Error: OpenShift Virtualization is not installed (openshift-cnv namespace not found)"
+	    ((errors++))
+	fi
+
+	if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
+	    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
+	    ((errors++))
+	fi
+
+	if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
+	    echo "Error: storage class '$STORAGE_CLASS' not found"
+	    echo "  Available storage classes:"
+	    oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+	    ((errors++))
+	fi
     fi
 
-    if ! oc get ns openshift-cnv >/dev/null 2>&1 ; then
-	fatal "Error: openshift-cnv is not installed"
+    if ((errors > 0)) ; then
+	fatal "Prerequisite check failed with $errors error(s)"
     fi
 
-    if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
-	fatal "Error: openshift-storage is not installed"
-    fi
+    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'"
+}
 
-    if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
-	fatal "Error: storaclass $STORAGE_CLASS is not created"
-    fi
+if ((doit)) ; then
+    check_prerequisites
 fi
 
 NUM_VMS=${1:-$NUM_VMS}
