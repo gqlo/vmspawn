@@ -8,7 +8,7 @@
 set -eu
 
 # Configuration variables - modify these as needed
-DV_URL="http://10.6.67.194:8080/rhel9_uefi_bootscript.qcow2"
+DV_URL="http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow"
 STORAGE_SIZE="22Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
@@ -99,7 +99,8 @@ process_option() {
     # Convert the option to lowercase for case-insensitive matching
     case "${option,,}" in
 	batchid)   BATCH_ID=$value ;;
-	delete*)   DELETE_BATCH=$value ;;
+	delete*)   [[ -n "$value" ]] || fatal "--delete requires a batch ID (e.g. --delete=abc123)"
+		   DELETE_BATCH=$value ;;
 	dvurl)     DV_URL=$value ;;
 	storage*)  STORAGE_SIZE=$value ;;
 	snapshot*) SNAPSHOT_CLASS=$value ;;
@@ -258,6 +259,14 @@ if [[ -z "$DELETE_BATCH" ]] ; then
 
     if ((doit)) ; then
 	check_prerequisites
+    fi
+
+    # Validate positional arguments are numbers before using them
+    if [[ -n "${1:-}" ]] && ! [[ "$1" =~ ^[0-9]+$ ]]; then
+	fatal "Invalid argument '$1': expected a number for total VMs"
+    fi
+    if [[ -n "${2:-}" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
+	fatal "Invalid argument '$2': expected a number for namespaces"
     fi
 
     NUM_VMS=${1:-$NUM_VMS}
@@ -555,17 +564,23 @@ resources:
 $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${requests[$resource]}" ; done)
 "
     fi
-    # Build cloud-init YAML fragments if a cloud-init file is specified
+    # Build cloud-init YAML fragments if a cloud-init file is specified.
+    # Userdata is stored in a Secret per namespace (to avoid the 2048-byte
+    # inline limit) and referenced via userDataSecretRef.
     local cloudinit_disk=""
     local cloudinit_volume=""
+    local cloudinit_b64=""
+    local cloudinit_secret_file=""
     if [[ -n "$CLOUDINIT_FILE" ]] ; then
-	local cloudinit_b64
 	cloudinit_b64=$(base64 -w0 "$CLOUDINIT_FILE")
+	cloudinit_secret_file=$(find_file_on_path "cloudinit-secret.yaml") ||
+	    fatal "Can't find cloudinit-secret.yaml on CREATE_VM_PATH"
 	cloudinit_disk="- disk:
     bus: virtio
   name: cloudinit"
 	cloudinit_volume="- cloudInitNoCloud:
-    userDataBase64: $cloudinit_b64
+    secretRef:
+      name: ${VM_BASENAME}-cloudinit
   name: cloudinit"
     fi
     local -A existing_vms=()
@@ -577,6 +592,15 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
+
+	# Create cloud-init Secret in this namespace if needed
+	if [[ -n "$cloudinit_secret_file" ]] ; then
+	    log_message "Creating cloud-init Secret in namespace: $namespace"
+	    process_template "$cloudinit_secret_file" |
+		sed "s|{CLOUDINIT_B64}|$cloudinit_b64|g" |
+		do_oc ||
+		fatal "Cannot create cloud-init secret in $namespace!"
+	fi
 
         # Calculate VMs for this namespace
         vms_in_this_namespace=$VMS_PER_NAMESPACE
