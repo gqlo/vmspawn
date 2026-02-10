@@ -132,6 +132,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
 ```
 vmspawn              # main script
+helpers/
+  install-virtctl    # download and install virtctl from the cluster
 templates/
   namespace.yaml     # namespace template
   dv.yaml            # DataVolume template (base disk import)
