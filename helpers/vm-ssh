@@ -44,4 +44,4 @@ if [[ -z "$(type -t virtctl)" ]]; then
     fatal "virtctl command is not installed (see helpers/install-virtctl)"
 fi
 
-exec virtctl ssh "$USER@vmi/$VM.$NS"
+exec virtctl ssh --local-ssh-opts="-o PasswordAuthentication=yes" -n "$NS" "$USER@vmi/$VM"
