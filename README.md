@@ -2,7 +2,9 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH). By default it clones from OCP's built-in **DataSources** (e.g. `rhel9`, `fedora`) -- no disk URL needed. Pass `--dv-url` to import a custom QCOW2 instead. Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
+Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH).
+By default it clones from OCP's built-in **DataSources** (e.g. `rhel9`, `fedora`) -- no disk URL needed. Pass `--dv-url` to import a custom QCOW2 instead.
+Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
 
 ## Prerequisites
 
