@@ -26,6 +26,9 @@ Creates VirtualMachines at scale with **cloud-init injection** to customize VMs 
 # Create VMs with a cloud-init workload injected at boot
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
+# Use a different DataSource with the default cloud-init (root password: 100yard-)
+./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
 
@@ -44,7 +47,7 @@ The tool performs four steps in order:
 3. **Snapshot base disk** -- creates a VolumeSnapshot per namespace for fast cloning
 4. **Create VMs** -- clones VMs from the local snapshot: `{basename}-{batch}-1`, `{basename}-{batch}-2`, ...
 
-In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `redhat`.
+In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `100yard-`.
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
@@ -144,10 +147,14 @@ Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenc
 
 ### Default cloud-init (DataSource mode)
 
-When using a DataSource (the default), a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It enables root SSH with password `redhat`:
+When using a DataSource (the default), a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
+
+- **Root password**: `100yard-`
+- **PasswordAuthentication**: enabled in sshd
+- **PermitRootLogin**: enabled in sshd
 
 ```bash
-# VMs are reachable via: ssh root@<vm-ip>  (password: redhat)
+# VMs are reachable via: ssh root@<vm-ip>  (password: 100yard-)
 ./vmspawn --vms=10 --namespaces=2
 ```
 

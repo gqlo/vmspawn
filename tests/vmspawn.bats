@@ -184,11 +184,42 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# QS-5: ./vmspawn -n --vms=10 --namespaces=2
+# QS-5: ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+#   Different DataSource with default cloud-init auto-applied
+# ---------------------------------------------------------------
+@test "QS: centos-stream9 DataSource with default cloud-init" {
+  run bash "$VMSPAWN" -n --batch-id=qs0005 --datasource=centos-stream9 --vms=5 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- DV references centos-stream9 DataSource ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+  [[ "$output" == *"name: centos-stream9"* ]]
+  [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
+
+  # --- DV + snapshot + clone flow ---
+  [[ "$output" == *"Creating DataVolumes"* ]]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 5 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 5 ]
+
+  # --- Default cloud-init auto-applied (not explicit) ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"secretRef"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
+}
+
+# ---------------------------------------------------------------
+# QS-6: ./vmspawn -n --vms=10 --namespaces=2
 #   Dry-run mode (same as QS-1 but verifying dry-run behavior)
 # ---------------------------------------------------------------
 @test "QS: dry-run does not emit oc apply commands" {
-  run bash "$VMSPAWN" -n --batch-id=qs0005 --vms=10 --namespaces=2
+  run bash "$VMSPAWN" -n --batch-id=qs0006 --vms=10 --namespaces=2
   [ "$status" -eq 0 ]
 
   # --- Outputs YAML ---
@@ -206,7 +237,7 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# QS-6: ./vmspawn --delete=a3f7b2
+# QS-7: ./vmspawn --delete=a3f7b2
 #   Delete batch
 # ---------------------------------------------------------------
 @test "QS: delete batch dry-run shows correct oc delete command" {
