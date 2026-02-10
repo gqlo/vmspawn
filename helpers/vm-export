@@ -1,0 +1,82 @@
+#!/bin/bash
+
+# vm-export - Export a KubeVirt VM disk as a qcow2 image
+#
+# Stops the VM, exports its disk via virtctl vmexport, and cleans up
+# the export resource afterward.
+#
+# Usage: vm-export <vm-name> <namespace>
+
+set -eu
+
+fatal() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <vm-name> <namespace>
+
+Export a KubeVirt VM disk as a qcow2 image.
+
+The VM will be stopped, its disk exported to a local file, and the
+export resource cleaned up afterward.
+
+Arguments:
+    vm-name      Name of the virtual machine
+    namespace    Kubernetes namespace
+
+The output file is named <vm-name>-<date>.qcow2 in the current directory.
+EOF
+    exit "${1:-0}"
+}
+
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    usage 0
+fi
+
+if [[ -z "${1:-}" ]] || [[ -z "${2:-}" ]]; then
+    usage 1
+fi
+
+VM_NAME=$1
+NAMESPACE=$2
+OUTPUT_FILE="${VM_NAME}-$(date +%F).qcow2"
+
+for cmd in virtctl oc ; do
+    if [[ -z "$(type -t "$cmd")" ]] ; then
+        fatal "$cmd command is not installed"
+    fi
+done
+
+echo "--- Step 1: Stopping VM $VM_NAME in $NAMESPACE ---"
+vm_ready=$(oc get vm/"$VM_NAME" -n "$NAMESPACE" -o jsonpath='{.status.ready}' 2>/dev/null || true)
+if [[ "$vm_ready" == "false" ]] ; then
+    echo "VM is already stopped, skipping stop command."
+else
+    virtctl stop "$VM_NAME" -n "$NAMESPACE"
+    # Wait for VM to actually stop (Ready: False or Status: Stopped)
+    echo "Waiting for VM to reach stopped state..."
+    oc wait --for=jsonpath='{.status.ready}'=false vm/"$VM_NAME" -n "$NAMESPACE" --timeout=60s
+fi
+
+echo "--- Step 2: Creating Export and Starting Download ---"
+# Note: 'virtctl vmexport download' combines creating the CR and downloading the bytes
+virtctl vmexport download "${VM_NAME}-export" \
+    --vm="$VM_NAME" \
+    --output="$OUTPUT_FILE" \
+    -n "$NAMESPACE" \
+    --insecure  # Often needed if OCP ingress uses self-signed certs
+
+if [[ $? -eq 0 ]]; then
+    echo "Successfully exported to $OUTPUT_FILE"
+else
+    echo "Export failed."
+    exit 1
+fi
+
+echo "--- Step 3: Cleaning up Cluster Resources ---"
+virtctl vmexport delete "${VM_NAME}-export" -n "$NAMESPACE"
+
+echo "Done. Your image is at: $(pwd)/$OUTPUT_FILE"
