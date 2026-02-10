@@ -45,6 +45,7 @@ spec:
           - disk:
               bus: virtio
             name: vda
+          {CLOUDINIT_DISK}
           interfaces:
           - masquerade: {}
             model: virtio
@@ -67,3 +68,4 @@ spec:
       - dataVolume:
           name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
         name: vda
+      {CLOUDINIT_VOLUME}

@@ -20,6 +20,9 @@ Creates VirtualMachines at scale by importing a base disk image, snapshotting it
 # Add 5 more VMs later (no conflicts -- new batch ID is auto-generated)
 ./vmspawn --vms=5 --namespaces=1
 
+# Create VMs with a cloud-init workload injected at boot
+./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
 
@@ -125,8 +128,27 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --wait                      Wait for all VMs to reach Running state
     --nowait                    Don't wait (default)
 
+    --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
     --delete=BATCH_ID           Delete all resources for the given batch
 ```
+
+## Cloud-init
+
+Use `--cloudinit=FILE` to inject a cloud-init user-data file into every VM at creation time. The file is base64-encoded and embedded in the VM spec via `cloudInitNoCloud.userDataBase64`, so nothing needs to be baked into the disk image.
+
+A ready-made workload simulator is included:
+
+```bash
+./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+```
+
+The `cloudinit-stress-workload.yaml` cloud-init config will:
+
+1. Install `stress-ng` via the package manager
+2. Write a bursty stress workload script to `/opt/stress_ng_random_vm.sh`
+3. Create and enable a `stress-workload.service` systemd unit that runs the script forever and survives reboots
+
+You can point `--cloudinit` at any cloud-init user-data file to customize what runs inside the VMs.
 
 ## Project layout
 
@@ -134,6 +156,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 vmspawn              # main script
 helpers/
   install-virtctl    # download and install virtctl from the cluster
+  stress_ng_random_vm.sh            # standalone stress-ng workload script
+  cloudinit-stress-workload.yaml    # cloud-init user-data for stress workload
 templates/
   namespace.yaml     # namespace template
   dv.yaml            # DataVolume template (base disk import)

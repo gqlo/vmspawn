@@ -20,6 +20,7 @@ VM_MEMORY="1Gi"
 CREATE_VM_PATH=${CREATE_VM_PATH:-$(dirname "$0")/templates}
 VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
+CLOUDINIT_FILE=
 # Generate a random 6-character hex batch ID (16.7M unique values)
 BATCH_ID=$(head -c 3 /dev/urandom | xxd -p)
 NUM_VMS=1
@@ -76,6 +77,8 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 (equivalent to --run-strategy=Always)
         --stop                  Do not start the VMs
                                 (equivalent to --run-strategy=Halted)
+        --cloudinit=FILE        Inject cloud-init user-data from FILE
+                                into each VM (e.g. helpers/cloudinit-stress-workload.yaml)
         --delete=BATCH_ID       Delete all resources for the given batch
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
@@ -112,6 +115,7 @@ process_option() {
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   WAIT=1 ;;
 	nowait)	   WAIT=0 ;;
+	cloudinit) CLOUDINIT_FILE=$value ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
 	nocreate*) RECREATE_EXISTING_VMS=0 ;;
 	start)     RUN_STRATEGY=Always ;;
@@ -283,6 +287,11 @@ if [[ -z "$DELETE_BATCH" ]] ; then
     check_file_exists volumesnap.yaml
     check_file_exists vm-snap.yaml
 
+    # Validate cloud-init file if specified
+    if [[ -n "$CLOUDINIT_FILE" && ! -f "$CLOUDINIT_FILE" ]] ; then
+	fatal "Cloud-init file not found: $CLOUDINIT_FILE"
+    fi
+
     # Calculate VMs per namespace
     VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
     REMAINDER_VMS=$((NUM_VMS % NUM_NAMESPACES))
@@ -301,6 +310,7 @@ Creating resources for:
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
+  Cloud-init: ${CLOUDINIT_FILE:-none}
 
 EOF
 fi
@@ -545,6 +555,19 @@ resources:
 $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${requests[$resource]}" ; done)
 "
     fi
+    # Build cloud-init YAML fragments if a cloud-init file is specified
+    local cloudinit_disk=""
+    local cloudinit_volume=""
+    if [[ -n "$CLOUDINIT_FILE" ]] ; then
+	local cloudinit_b64
+	cloudinit_b64=$(base64 -w0 "$CLOUDINIT_FILE")
+	cloudinit_disk="- disk:
+    bus: virtio
+  name: cloudinit"
+	cloudinit_volume="- cloudInitNoCloud:
+    userDataBase64: $cloudinit_b64
+  name: cloudinit"
+    fi
     local -A existing_vms=()
     if ((! RECREATE_EXISTING_VMS)) ; then
 	local vm
@@ -566,7 +589,11 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
 	    local vm_name="${namespace}/${VM_BASENAME}-${BATCH_ID}-${VM_ID}"
 	    if [[ -z "${existing_vms[$vm_name]:-}" ]] ; then
 		log_message "Creating VirtualMachine $VM_ID for namespace: $namespace"
-		process_template "$vm_file" | indent_token RESOURCES "$requeststr" | do_oc ||
+		process_template "$vm_file" |
+		    indent_token RESOURCES "$requeststr" |
+		    indent_token CLOUDINIT_DISK "$cloudinit_disk" |
+		    indent_token CLOUDINIT_VOLUME "$cloudinit_volume" |
+		    do_oc ||
 		    fatal "Cannot create vm $vm_name!"
 	    fi
 	    expected_vms["$vm_name"]=1
@@ -639,6 +666,7 @@ main() {
     log_message "Storage class: $STORAGE_CLASS"
     log_message "VM CPU cores:  $VM_CPU_CORES"
     log_message "VM memory:     $VM_MEMORY"
+    log_message "Cloud-init:    ${CLOUDINIT_FILE:-none}"
     log_message "Run strategy:  $RUN_STRATEGY"
 
     create_namespaces
