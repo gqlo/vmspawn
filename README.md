@@ -168,7 +168,8 @@ The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a burs
 ```
 vmspawn              # main script
 docs/
-  stress-workload.md # stress-ng  workload simulator documentation
+  stress-workload.md # stress-ng workload simulator documentation
+  testing.md         # how tests work, categories, and CI pipeline
 helpers/
   install-virtctl    # download and install virtctl from the cluster
   vm-ssh             # quick virtctl SSH wrapper
