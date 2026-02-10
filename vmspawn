@@ -577,7 +577,7 @@ create_virtualmachines() {
 	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
 	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
 	fi
-	log_message "No --cloudinit specified; applying default cloud-init (root password: 100yard-)"
+	log_message "No --cloudinit specified; applying default cloud-init (root password: password)"
     fi
     local requeststr=
     local -A requests=()

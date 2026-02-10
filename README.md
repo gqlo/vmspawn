@@ -28,7 +28,7 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 # Create VMs with a cloud-init workload injected at boot
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
-# Use a different DataSource with the default cloud-init (root password: 100yard-)
+# Use a different DataSource with the default cloud-init (root password: password)
 ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
 # Dry-run to preview generated YAML without applying
@@ -49,7 +49,7 @@ The tool performs four steps in order:
 3. **Snapshot base disk** -- creates a VolumeSnapshot per namespace for fast cloning
 4. **Create VMs** -- clones VMs from the local snapshot: `{basename}-{batch}-1`, `{basename}-{batch}-2`, ...
 
-In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `100yard-`.
+In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `password`.
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
@@ -151,12 +151,12 @@ Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenc
 
 When using a DataSource (the default), a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
 
-- **Root password**: `100yard-`
+- **Root password**: `password`
 - **PasswordAuthentication**: enabled in sshd
 - **PermitRootLogin**: enabled in sshd
 
 ```bash
-# VMs are reachable via: ssh root@<vm-ip>  (password: 100yard-)
+# VMs are reachable via: ssh root@<vm-ip>  (password: password)
 ./vmspawn --vms=10 --namespaces=2
 ```
 

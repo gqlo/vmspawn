@@ -5,7 +5,7 @@ chpasswd:
   expire: false
   users:
     - name: root
-      password: 100yard-
+      password: password
       type: text
 runcmd:
   - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
