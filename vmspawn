@@ -8,7 +8,9 @@
 set -eu
 
 # Configuration variables - modify these as needed
-DV_URL="http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow"
+DATASOURCE="rhel9"
+DATASOURCE_NS="openshift-virtualization-os-images"
+DV_URL=
 STORAGE_SIZE="22Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
@@ -54,7 +56,9 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         -n                      Show what commands would be run
                                 without running them
         -q                      Only list objects to be created
-        --dv-url=URL            Origin of DV ($DV_URL)
+        --datasource=NAME       Clone from OCP DataSource (default: $DATASOURCE)
+                                Overridden by --dv-url for custom images
+        --dv-url=URL            Import disk from URL instead of DataSource
         --storage-size=N        Storage size ($STORAGE_SIZE)
         --snapshot-class=class  Snapshot class ($SNAPSHOT_CLASS)
         --pvc-base-name=name    base PVC name ($BASE_PVC_NAME)
@@ -101,7 +105,8 @@ process_option() {
 	batchid)   BATCH_ID=$value ;;
 	delete*)   [[ -n "$value" ]] || fatal "--delete requires a batch ID (e.g. --delete=abc123)"
 		   DELETE_BATCH=$value ;;
-	dvurl)     DV_URL=$value ;;
+	datasourc*) DATASOURCE=$value ;;
+	dvurl)     DV_URL=$value; DATASOURCE= ;;
 	storage*)  STORAGE_SIZE=$value ;;
 	snapshot*) SNAPSHOT_CLASS=$value ;;
 	pvc*)      BASE_PVC_NAME=$value ;;
@@ -292,9 +297,16 @@ if [[ -z "$DELETE_BATCH" ]] ; then
     fi
 
     check_file_exists namespace.yaml
-    check_file_exists dv.yaml
     check_file_exists volumesnap.yaml
     check_file_exists vm-snap.yaml
+    if [[ -n "$DATASOURCE" ]] ; then
+	check_file_exists dv-datasource.yaml
+    else
+	if [[ -z "$DV_URL" ]] ; then
+	    fatal "Either --datasource or --dv-url must be set"
+	fi
+	check_file_exists dv.yaml
+    fi
 
     # Validate cloud-init file if specified
     if [[ -n "$CLOUDINIT_FILE" && ! -f "$CLOUDINIT_FILE" ]] ; then
@@ -312,10 +324,9 @@ Creating resources for:
   Namespaces: $NUM_NAMESPACES
   VMs per namespace: $VMS_PER_NAMESPACE
   Extra VMs in first $REMAINDER_VMS namespaces: $((REMAINDER_VMS > 0 ? 1 : 0))
-  DataVolume URL: $DV_URL
-  Storage Size: $STORAGE_SIZE
+  Disk source: ${DATASOURCE:+DataSource $DATASOURCE ($DATASOURCE_NS)}${DV_URL:+URL $DV_URL}${DV_URL:+
+  Storage Size: $STORAGE_SIZE}
   Storage Class: $STORAGE_CLASS
-  Snapshot Class: $SNAPSHOT_CLASS
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
@@ -343,6 +354,8 @@ function process_template() {
         -e "s/{VM_BASENAME}/$VM_BASENAME/g" \
         -e "s/{BATCH_ID}/$BATCH_ID/g" \
         -e "s|{DV_URL}|$DV_URL|g" \
+        -e "s/{DATASOURCE}/${DATASOURCE:-}/g" \
+        -e "s/{DATASOURCE_NS}/${DATASOURCE_NS:-}/g" \
         -e "s/{BASE_PVC_NAME}/$BASE_PVC_NAME/g" \
         -e "s/{STORAGE_SIZE}/$STORAGE_SIZE/g" \
         -e "s/{STORAGE_CLASS}/$STORAGE_CLASS/g" \
@@ -455,7 +468,11 @@ create_datavolumes() {
     log_message "Creating DataVolumes..."
     local -i ns
     local dv_file
-    dv_file=$(find_file_on_path "dv.yaml") || fatal "Can't find dv.yaml on CREATE_VM_PATH"
+    if [[ -n "$DATASOURCE" ]] ; then
+	dv_file=$(find_file_on_path "dv-datasource.yaml") || fatal "Can't find dv-datasource.yaml on CREATE_VM_PATH"
+    else
+	dv_file=$(find_file_on_path "dv.yaml") || fatal "Can't find dv.yaml on CREATE_VM_PATH"
+    fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
@@ -553,6 +570,15 @@ create_virtualmachines() {
     VM_ID=1
     local vm_file
     vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
+
+    # Auto-apply default cloud-init when using DataSource without explicit --cloudinit
+    if [[ -n "$DATASOURCE" && -z "$CLOUDINIT_FILE" ]] ; then
+	CLOUDINIT_FILE="$(dirname "$0")/helpers/cloudinit-default.yaml"
+	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
+	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
+	fi
+	log_message "No --cloudinit specified; applying default cloud-init (root password: password)"
+    fi
     local requeststr=
     local -A requests=()
     if [[ -n "${VM_CPU_REQUEST:-}" ]] ; then requests[cpu]=$VM_CPU_REQUEST; fi
@@ -685,8 +711,12 @@ main() {
     log_message "Batch ID:      $BATCH_ID"
     log_message "Configuration: $NUM_VMS VMs across $NUM_NAMESPACES namespaces"
 
-    log_message "DV URL:        $DV_URL"
-    log_message "Storage size:  $STORAGE_SIZE"
+    if [[ -n "$DATASOURCE" ]] ; then
+	log_message "DataSource:    $DATASOURCE (from $DATASOURCE_NS)"
+    else
+	log_message "DV URL:        $DV_URL"
+	log_message "Storage size:  $STORAGE_SIZE"
+    fi
     log_message "Storage class: $STORAGE_CLASS"
     log_message "VM CPU cores:  $VM_CPU_CORES"
     log_message "VM memory:     $VM_MEMORY"

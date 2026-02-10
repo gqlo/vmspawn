@@ -36,7 +36,7 @@ Inject the workload into VMs at boot using `--cloudinit`:
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
-The cloud-init config ([`helpers/cloudinit-stress-workload.yaml`](../helpers/cloudinit-stress-workload.yaml)) will:
+This clones VMs from the default `rhel9` DataSource and injects the stress workload at boot. The cloud-init config ([`helpers/cloudinit-stress-workload.yaml`](../helpers/cloudinit-stress-workload.yaml)) will:
 
 1. Install `stress-ng` via the package manager
 2. Write the workload script to `/opt/stress_ng_random_vm.sh`

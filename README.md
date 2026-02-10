@@ -2,7 +2,9 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale by importing a base disk image, snapshotting it, and cloning VMs from the snapshot. Supports **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH). Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
+Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH).
+By default it clones from OCP's built-in **DataSources** (e.g. `rhel9`, `fedora`) -- no disk URL needed. Pass `--dv-url` to import a custom QCOW2 instead.
+Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
 
 ## Prerequisites
 
@@ -14,14 +16,20 @@ Creates VirtualMachines at scale by importing a base disk image, snapshotting it
 ## Quick start
 
 ```bash
-# Create 10 VMs spread across 2 namespaces
-./vmspawn --vms=10 --namespaces=2
+# Create 10 RHEL9 VMs (4 cores, 8Gi memory) from the built-in DataSource
+./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
-# Add 5 more VMs later (no conflicts -- new batch ID is auto-generated)
-./vmspawn --vms=5 --namespaces=1
+# Use a different DataSource (e.g. Fedora)
+./vmspawn --datasource=fedora --vms=5 --namespaces=1
+
+# Import a custom QCOW2 instead of using a DataSource
+./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
 # Create VMs with a cloud-init workload injected at boot
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+
+# Use a different DataSource with the default cloud-init (root password: password)
+./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
@@ -37,9 +45,11 @@ Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). T
 The tool performs four steps in order:
 
 1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
-2. **Import base disk** -- creates a DataVolume per namespace that downloads the QCOW2 image
+2. **Create base disk** -- one DataVolume per namespace, either cloned from an OCP DataSource (default) or imported from a URL (`--dv-url`)
 3. **Snapshot base disk** -- creates a VolumeSnapshot per namespace for fast cloning
-4. **Create VMs** -- clones VMs from the snapshot: `{basename}-{batch}-1`, `{basename}-{batch}-2`, ...
+4. **Create VMs** -- clones VMs from the local snapshot: `{basename}-{batch}-1`, `{basename}-{batch}-2`, ...
+
+In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `password`.
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
@@ -111,8 +121,9 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --namespaces=N              Number of namespaces (default: 1)
     --vms-per-namespace=N       VMs per namespace (overrides --vms)
 
-    --dv-url=URL                Disk image URL
-    --storage-size=N            Storage size (default: 22Gi)
+    --datasource=NAME           Clone from OCP DataSource (default: rhel9)
+    --dv-url=URL                Import disk from URL (overrides --datasource)
+    --storage-size=N            Storage size for --dv-url mode (default: 22Gi)
     --storage-class=class       Storage class name
     --snapshot-class=class      Snapshot class name
     --pvc-base-name=name        Base PVC name (default: rhel9-base)
@@ -134,33 +145,51 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
 ## Cloud-init
 
-Use `--cloudinit=FILE` to inject a cloud-init user-data file into every VM at creation time. The file is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
+Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
 
-A ready-made workload simulator is included:
+### Default cloud-init (DataSource mode)
+
+When using a DataSource (the default), a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
+
+- **Root password**: `password`
+- **PasswordAuthentication**: enabled in sshd
+- **PermitRootLogin**: enabled in sshd
+
+```bash
+# VMs are reachable via: ssh root@<vm-ip>  (password: password)
+./vmspawn --vms=10 --namespaces=2
+```
+
+To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`), no cloud-init is injected unless explicitly requested.
+
+### Custom cloud-init
+
+Use `--cloudinit=FILE` to inject any cloud-init user-data file:
 
 ```bash
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
-The `cloudinit-stress-workload.yaml` cloud-init config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details on how the workload works, its parameters, and monitoring.
-
-You can point `--cloudinit` at any cloud-init user-data file to customize what runs inside the VMs.
+The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
 
 ## Project layout
 
 ```
 vmspawn              # main script
 docs/
-  stress-workload.md # stress workload simulator documentation
+  stress-workload.md # stress-ng workload simulator documentation
+  testing.md         # how tests work, categories, and CI pipeline
 helpers/
   install-virtctl    # download and install virtctl from the cluster
   vm-ssh             # quick virtctl SSH wrapper
   vm-export          # export a VM disk as a qcow2 image
   stress_ng_random_vm.sh            # standalone stress-ng workload script
+  cloudinit-default.yaml            # default cloud-init (root password SSH)
   cloudinit-stress-workload.yaml    # cloud-init user-data for stress workload
 templates/
   namespace.yaml     # namespace template
-  dv.yaml            # DataVolume template (base disk import)
+  dv.yaml            # DataVolume template (import from URL)
+  dv-datasource.yaml # DataVolume template (clone from DataSource)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
   cloudinit-secret.yaml  # cloud-init userdata Secret template
