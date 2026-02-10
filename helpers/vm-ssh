@@ -1,0 +1,47 @@
+#!/bin/bash
+
+# vm-ssh - Quick virtctl SSH wrapper
+#
+# Opens an SSH session to a KubeVirt VM via virtctl.
+#
+# Usage: vm-ssh <vm-name> <namespace> [user]
+#   user defaults to 'root' if not specified
+
+set -eu
+
+fatal() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") <vm-name> <namespace> [user]
+
+Open an SSH session to a KubeVirt VM via virtctl.
+
+Arguments:
+    vm-name      Name of the virtual machine
+    namespace    Kubernetes namespace
+    user         SSH user (default: root)
+EOF
+    exit "${1:-0}"
+}
+
+if [[ "${1:-}" == "-h" ]] || [[ "${1:-}" == "--help" ]]; then
+    usage 0
+fi
+
+if [[ -z "${1:-}" ]] || [[ -z "${2:-}" ]]; then
+    usage 1
+fi
+
+VM=$1
+NS=$2
+USER=${3:-root}
+
+if [[ -z "$(type -t virtctl)" ]]; then
+    fatal "virtctl command is not installed (see helpers/install-virtctl)"
+fi
+
+exec virtctl ssh "$USER@vmi/$VM.$NS"
