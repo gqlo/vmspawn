@@ -10,11 +10,11 @@ VMSPAWN="./vmspawn"
 # ===============================================================
 
 # ---------------------------------------------------------------
-# QS-1: ./vmspawn --vms=10 --namespaces=2
-#   Default DataSource (rhel9), 10 VMs across 2 namespaces
+# QS-1: ./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
+#   Default DataSource (rhel9), 10 VMs with custom CPU/memory
 # ---------------------------------------------------------------
-@test "QS: default DataSource, 10 VMs across 2 namespaces" {
-  run bash "$VMSPAWN" -n --batch-id=qs0001 --vms=10 --namespaces=2
+@test "QS: default DataSource, 4 cores 8Gi, 10 VMs across 2 namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=qs0001 --cores=4 --memory=8Gi --vms=10 --namespaces=2
   [ "$status" -eq 0 ]
 
   # --- Namespaces ---
@@ -31,7 +31,6 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
 
   # --- DV has no explicit storage size (auto-sized from DataSource) ---
-  # The dv-datasource.yaml template uses storage: without resources.requests.storage
   local dv_yaml
   dv_yaml=$(echo "$output" | sed -n '/kind: DataVolume/,/^---/p' | head -20)
   [[ "$dv_yaml" != *"storage: 22Gi"* ]]
@@ -58,13 +57,19 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"secretRef"* ]]
   [[ "$output" == *"cloudInitNoCloud"* ]]
 
+  # --- VM spec: custom CPU and memory ---
+  [[ "$output" == *"cores: 4"* ]]
+  [[ "$output" == *"guest: 8Gi"* ]]
+
   # --- VM spec structure ---
   [[ "$output" == *"runStrategy: Always"* ]]
-  [[ "$output" == *"cores: 1"* ]]
-  [[ "$output" == *"guest: 1Gi"* ]]
   [[ "$output" == *"bus: virtio"* ]]
   [[ "$output" == *"masquerade"* ]]
   [[ "$output" == *"evictionStrategy: LiveMigrate"* ]]
+
+  # --- Log messages reflect custom CPU/memory ---
+  [[ "$output" == *"VM CPU cores:  4"* ]]
+  [[ "$output" == *"VM memory:     8Gi"* ]]
 
   # --- Labels on all resources ---
   [[ "$output" == *'batch-id: "qs0001"'* ]]

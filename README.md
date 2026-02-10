@@ -14,8 +14,8 @@ Creates VirtualMachines at scale with **cloud-init injection** to customize VMs 
 ## Quick start
 
 ```bash
-# Create 10 RHEL9 VMs from the built-in DataSource (default)
-./vmspawn --vms=10 --namespaces=2
+# Create 10 RHEL9 VMs (4 cores, 8Gi memory) from the built-in DataSource
+./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
 # Use a different DataSource (e.g. Fedora)
 ./vmspawn --datasource=fedora --vms=5 --namespaces=1
