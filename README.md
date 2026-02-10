@@ -2,14 +2,14 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale by importing a base disk image, snapshotting it, and cloning VMs from the snapshot. Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
+Creates VirtualMachines at scale by importing a base disk image, snapshotting it, and cloning VMs from the snapshot. Supports **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH). Each run is tagged with a unique **batch ID** so you can spawn additional VMs at any time without worrying about name or namespace conflicts.
 
 ## Prerequisites
 
 - `oc` CLI logged into an OpenShift cluster
-- OpenShift Virtualization (`openshift-cnv` namespace)
-- OpenShift Data Foundation (`openshift-storage` namespace)
-- A Ceph RBD storage class (default: `ocs-storagecluster-ceph-rbd-virtualization`)
+- OpenShift Virtualization operator installed (`openshift-cnv` namespace)
+- OpenShift Data Foundation operator installed (`openshift-storage` namespace)
+- Ceph RBD storage class available (default: `ocs-storagecluster-ceph-rbd-virtualization`)
 
 ## Quick start
 
@@ -19,6 +19,9 @@ Creates VirtualMachines at scale by importing a base disk image, snapshotting it
 
 # Add 5 more VMs later (no conflicts -- new batch ID is auto-generated)
 ./vmspawn --vms=5 --namespaces=1
+
+# Create VMs with a cloud-init workload injected at boot
+./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
@@ -125,18 +128,42 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --wait                      Wait for all VMs to reach Running state
     --nowait                    Don't wait (default)
 
+    --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
     --delete=BATCH_ID           Delete all resources for the given batch
 ```
+
+## Cloud-init
+
+Use `--cloudinit=FILE` to inject a cloud-init user-data file into every VM at creation time. The file is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
+
+A ready-made workload simulator is included:
+
+```bash
+./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+```
+
+The `cloudinit-stress-workload.yaml` cloud-init config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details on how the workload works, its parameters, and monitoring.
+
+You can point `--cloudinit` at any cloud-init user-data file to customize what runs inside the VMs.
 
 ## Project layout
 
 ```
 vmspawn              # main script
+docs/
+  stress-workload.md # stress workload simulator documentation
+helpers/
+  install-virtctl    # download and install virtctl from the cluster
+  vm-ssh             # quick virtctl SSH wrapper
+  vm-export          # export a VM disk as a qcow2 image
+  stress_ng_random_vm.sh            # standalone stress-ng workload script
+  cloudinit-stress-workload.yaml    # cloud-init user-data for stress workload
 templates/
   namespace.yaml     # namespace template
   dv.yaml            # DataVolume template (base disk import)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
+  cloudinit-secret.yaml  # cloud-init userdata Secret template
 tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests

@@ -1,0 +1,141 @@
+#!/bin/bash
+
+# install-virtctl - Download and install virtctl from the connected OpenShift cluster
+#
+# Queries the cluster for the virtctl download URL via the ConsoleCLIDownload
+# resource, downloads the binary, and installs it to /usr/local/bin/virtctl.
+#
+# Usage: install-virtctl [-n]
+#   -n   Dry-run: show what would happen without making changes
+
+set -eu
+
+doit=1
+tmpdir=
+
+fatal() {
+    echo "Error: $*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<EOF
+Usage: $(basename "$0") [options]
+
+Download and install virtctl from the connected OpenShift cluster.
+
+Options:
+    -n    Dry-run (show what would happen without making changes)
+    -h    Show this help message
+EOF
+    exit "${1:-0}"
+}
+
+while getopts 'nh' opt "$@" ; do
+    case "$opt" in
+        n) doit=0   ;;
+        h) usage 0  ;;
+        *) usage 1  ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+# Verify oc CLI is available and logged in
+check_oc() {
+    if [[ -z "$(type -t oc)" ]] ; then
+        fatal "oc command is not installed"
+    fi
+    if ! oc whoami >/dev/null 2>&1 ; then
+        fatal "not logged into an OpenShift cluster (run 'oc login' first)"
+    fi
+}
+
+# Query the cluster for the linux/amd64 virtctl download URL
+get_download_url() {
+    local hrefs
+    hrefs=$(oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged \
+                -o jsonpath='{.spec.links[*].href}' 2>/dev/null) ||
+        fatal "could not retrieve consoleclidownload resource (is OpenShift Virtualization installed?)"
+
+    local url
+    for url in $hrefs ; do
+        case "$url" in
+            *linux*amd64*|*amd64*linux*) echo "$url" ; return 0 ;;
+        esac
+    done
+    fatal "no virtctl download URL found for linux/amd64"
+}
+
+# Clean up temp directory on exit
+cleanup() { [[ -n "${tmpdir:-}" ]] && rm -rf "$tmpdir" ; }
+trap cleanup EXIT
+
+# Download and install virtctl
+install_virtctl() {
+    local url=$1
+    local install_dir="/usr/local/bin"
+    local install_path="${install_dir}/virtctl"
+
+    tmpdir=$(mktemp -d)
+    local tmpfile="${tmpdir}/virtctl-download"
+
+    echo "Downloading virtctl from:"
+    echo "  $url"
+    curl -kfSL -o "$tmpfile" "$url" ||
+        fatal "download failed -- check that the URL is reachable"
+
+    # Handle compressed downloads
+    local binary="${tmpdir}/virtctl"
+    case "$url" in
+        *.tar.gz|*.tgz)
+            tar xzf "$tmpfile" -C "$tmpdir"
+            [[ -f "$binary" ]] || fatal "could not find virtctl binary in archive"
+            ;;
+        *.gz)
+            gunzip -c "$tmpfile" > "$binary"
+            ;;
+        *)
+            mv "$tmpfile" "$binary"
+            ;;
+    esac
+
+    chmod +x "$binary"
+
+    # Install to destination, using sudo if we don't have write access
+    echo "Installing virtctl to $install_path"
+    if [[ -w "$install_dir" ]] ; then
+        mv "$binary" "$install_path"
+    else
+        echo "  (using sudo -- you may be prompted for your password)"
+        sudo mv "$binary" "$install_path"
+    fi
+}
+
+# --- main ---
+
+if ((doit)) ; then
+    check_oc
+else
+    echo "(dry-run) Would check oc login status"
+fi
+
+echo "Querying cluster for virtctl download URL..."
+if ((doit)) ; then
+    url=$(get_download_url)
+else
+    echo "(dry-run) Would run: oc get consoleclidownload virtctl-clidownloads-kubevirt-hyperconverged"
+    echo "(dry-run) Would download virtctl for linux/amd64 and install to /usr/local/bin/virtctl"
+    exit 0
+fi
+
+install_virtctl "$url"
+
+echo ""
+echo "Verifying installation..."
+if virtctl version --client 2>/dev/null ; then
+    echo ""
+    echo "virtctl installed successfully."
+else
+    echo "Warning: 'virtctl version --client' did not succeed, but the binary was installed."
+    echo "You may need to add /usr/local/bin to your PATH."
+fi
