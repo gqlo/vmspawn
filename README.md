@@ -2,7 +2,7 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. start systemd services).
+Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. start systemd services). Works with supported storage backend -- OCS/Ceph, LVMS, NFS, or other block-capable storage. Access modes, clone strategy, and snapshot usage are **auto-detected** from the cluster, so you just point it at a storage class and go.
 
 Includes ready-to-use workload scripts (in `helpers/`) that can be injected via `--cloudinit` -- for example, `cloudinit-stress-workload.yaml` installs and runs **stress-ng** to generate random bursty CPU and memory load. More workload scripts will be added over time.
 
@@ -12,7 +12,7 @@ Each run is tagged with a unique **batch ID** for easy management -- list, inspe
 
 - `oc` CLI logged into an OpenShift cluster
 - OpenShift Virtualization operator installed (`openshift-cnv` namespace)
-- A storage class that supports `ReadWriteMany` block volumes
+- A storage class that supports block volumes (`ReadWriteMany` or `ReadWriteOnce` -- auto-detected)
 - **With snapshots (default for OCS):** OpenShift Data Foundation with Ceph RBD storage class and a matching VolumeSnapshotClass
 - **Without snapshots:** any compatible storage class -- pass `--storage-class=CLASS` and snapshots are auto-disabled
 
@@ -57,15 +57,23 @@ Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). T
 The tool performs these steps in order:
 
 1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
-2. **Create base disk** -- one DataVolume per namespace, either cloned from an OCP DataSource (default) or imported from a URL (`--dv-url`)
+2. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL
 3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning
-4. **Create VMs** -- clones VMs from the snapshot (snapshot mode) or directly from the base PVC (no-snapshot mode)
+4. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, or base PVC depending on mode
 
-### Snapshot vs. no-snapshot mode
+### Clone modes
 
-By default, vmspawn uses VolumeSnapshots for efficient cloning (each VM clones from a snapshot of the base disk). This requires a storage class that supports snapshots, such as OCS/ODF with Ceph RBD.
+vmspawn has three clone paths, auto-selected based on your options:
 
-For storage classes without snapshot support, vmspawn clones each VM directly from the base PVC. This is auto-detected based on the options you provide:
+| Mode | Flow | When used |
+|---|---|---|
+| **Snapshot** | DataSource → base DV → VolumeSnapshot → VM clones | Default for OCS storage |
+| **Direct DataSource** | DataSource → each VM clones directly | `--storage-class` without `--snapshot-class`, or `--no-snapshot` |
+| **URL import** | URL → base DV → each VM clones from base PVC | `--dv-url` with `--no-snapshot` |
+
+The direct DataSource path skips the intermediate base DV entirely, which avoids deadlocks with WaitForFirstConsumer storage classes (e.g. LVMS, local storage).
+
+Mode auto-detection:
 
 | Options | Snapshot mode |
 |---|---|
@@ -74,6 +82,18 @@ For storage classes without snapshot support, vmspawn clones each VM directly fr
 | `--storage-class=X --snapshot-class=Y` | Enabled (matching pair) |
 | `--no-snapshot` | Disabled (explicit) |
 | `--snapshot` | Enabled (explicit override) |
+
+### Storage considerations
+
+vmspawn auto-detects most storage settings from the cluster. Here are the common pitfalls:
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| DV stuck in `PendingPopulation` | Access mode mismatch (e.g. RWX on RWO-only storage) | Use `--rwo`, or let auto-detection handle it |
+| PVC stuck `Pending` ("waiting for first consumer") | WaitForFirstConsumer storage with an intermediate base PVC | Handled automatically -- snapshots are disabled and base PVC is skipped |
+| `CloneValidationFailed: target size smaller than source` | Default 32Gi is smaller than your golden image | Use `--storage-size=50Gi` (or larger) |
+| VolumeSnapshot never becomes ready | No matching VolumeSnapshotClass for your storage | Pass `--snapshot-class=CLASS`, or omit it to auto-disable snapshots |
+| VMs can't live-migrate | PVCs use ReadWriteOnce (local storage) | Expected -- use shared storage (Ceph/NFS) with RWX for live migration |
 
 In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `password`.
 
@@ -84,8 +104,8 @@ VMs are distributed evenly across namespaces, with any remainder allocated to th
 | Resource | Name pattern | Example |
 |---|---|---|
 | Namespace | `vm-{batch}-ns-{N}` | `vm-a3f7b2-ns-1` |
-| DataVolume (base) | `{basename}-base` | `rhel9-base` |
-| VolumeSnapshot | `{basename}-vm-{batch}-ns-{N}` | `rhel9-vm-a3f7b2-ns-1` |
+| DataVolume (base) | `{basename}-base` *(snapshot/URL modes only)* | `rhel9-base` |
+| VolumeSnapshot | `{basename}-vm-{batch}-ns-{N}` *(snapshot mode only)* | `rhel9-vm-a3f7b2-ns-1` |
 | VirtualMachine | `{basename}-{batch}-{ID}` | `rhel9-a3f7b2-3` |
 
 ## Labels
@@ -149,12 +169,15 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
     --datasource=NAME           Clone from OCP DataSource (default: rhel9)
     --dv-url=URL                Import disk from URL (overrides --datasource)
-    --storage-size=N            Storage size for --dv-url mode (default: 22Gi)
+    --storage-size=N            Disk size (default: 32Gi; must be >= source image)
     --storage-class=class       Storage class name (auto-disables snapshots
                                 unless --snapshot-class is also provided)
     --snapshot-class=class      Snapshot class name (implies --snapshot)
     --snapshot                  Use VolumeSnapshots for cloning (default for OCS)
-    --no-snapshot               Clone VMs directly from PVC (no snapshot needed)
+    --no-snapshot               Clone VMs directly (no snapshot needed)
+    --access-mode=MODE          PVC access mode (auto-detected from StorageProfile)
+    --rwo                       Shortcut for --access-mode=ReadWriteOnce
+    --rwx                       Shortcut for --access-mode=ReadWriteMany
     --pvc-base-name=name        Base PVC name (default: rhel9-base)
 
     --cores=N                   VM CPU cores (default: 1)
@@ -222,7 +245,8 @@ templates/
   dv-datasource.yaml # DataVolume template (clone from DataSource)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
-  vm-clone.yaml      # VirtualMachine template (clone from PVC, no-snapshot mode)
+  vm-datasource.yaml # VirtualMachine template (clone from DataSource, no-snapshot mode)
+  vm-clone.yaml      # VirtualMachine template (clone from PVC, URL import mode)
   cloudinit-secret.yaml  # cloud-init userdata Secret template
 tests/
   vmspawn.bats       # unit tests (run with: bats tests/)

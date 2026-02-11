@@ -344,17 +344,24 @@ detect_access_mode() {
     fi
 
     # Detect WaitForFirstConsumer storage classes.  With WFFC the base
-    # DataVolume PVC won't bind until a consumer Pod is scheduled, but
-    # vmspawn normally waits for the base DV before creating VMs.  We
-    # record WFFC so create_datavolumes can skip the wait and let VM
-    # creation proceed (the VMs' clone Pods act as consumers).
+    # DataVolume PVC won't bind until a consumer Pod is scheduled.
+    # Snapshot mode is incompatible with WFFC because the base PVC has
+    # no consumer Pod -- it would deadlock.  Auto-disable snapshots and
+    # fall back to direct DataSource clone which has no base PVC.
     local bind_mode
     bind_mode=$(oc get storageclass "$STORAGE_CLASS" -o jsonpath='{.volumeBindingMode}' 2>/dev/null) || true
     if [[ "$bind_mode" == "WaitForFirstConsumer" ]] ; then
 	WAIT_FOR_FIRST_CONSUMER=1
 	log_message "Storage class '$STORAGE_CLASS' uses WaitForFirstConsumer binding."
-	log_message "  Will skip waiting for base DataVolume and proceed to VM creation"
-	log_message "  so that consumer Pods can trigger PVC binding."
+	if ((USE_SNAPSHOT)) ; then
+	    USE_SNAPSHOT=0
+	    log_message "  Warning: Disabling snapshot mode -- snapshots require a bound base PVC,"
+	    log_message "  but WFFC storage won't bind until a consumer Pod is scheduled."
+	    log_message "  Falling back to direct DataSource clone (no base PVC needed)."
+	else
+	    log_message "  Will skip waiting for base DataVolume and proceed to VM creation"
+	    log_message "  so that consumer Pods can trigger PVC binding."
+	fi
     fi
 }
 
