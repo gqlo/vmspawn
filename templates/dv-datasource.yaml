@@ -14,5 +14,8 @@ spec:
   storage:
     accessModes:
       - {ACCESS_MODE}
+    resources:
+      requests:
+        storage: {STORAGE_SIZE}
     volumeMode: Block
     storageClassName: {STORAGE_CLASS}
