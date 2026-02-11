@@ -427,11 +427,19 @@ if [[ -z "$DELETE_BATCH" ]] ; then
     if ((USE_SNAPSHOT)) ; then
 	check_file_exists volumesnap.yaml
 	check_file_exists vm-snap.yaml
+    elif [[ -n "$DATASOURCE" ]] ; then
+	# No-snapshot + DataSource: each VM clones directly from the
+	# DataSource, so no intermediate base DV or vm-clone template needed.
+	check_file_exists vm-datasource.yaml
     else
 	check_file_exists vm-clone.yaml
     fi
     if [[ -n "$DATASOURCE" ]] ; then
-	check_file_exists dv-datasource.yaml
+	# Base DV is only needed in snapshot mode (to create snapshots from).
+	# In no-snapshot mode each VM's DV clones directly from the DataSource.
+	if ((USE_SNAPSHOT)) ; then
+	    check_file_exists dv-datasource.yaml
+	fi
     else
 	if [[ -z "$DV_URL" ]] ; then
 	    fatal "Either --datasource or --dv-url must be set"
@@ -459,7 +467,7 @@ Creating resources for:
   Storage Size: $STORAGE_SIZE}
   Storage Class: $STORAGE_CLASS
   Access Mode: $ACCESS_MODE
-  Snapshot mode: $(if ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; else echo "disabled (direct PVC clone)"; fi)
+  Snapshot mode: $(if ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; elif [[ -n "$DATASOURCE" ]]; then echo "disabled (direct DataSource clone)"; else echo "disabled (direct PVC clone)"; fi)
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
@@ -604,6 +612,13 @@ wait_for_all_datavolumes() {
 }
 
 create_datavolumes() {
+    # In no-snapshot mode with a DataSource, each VM's DataVolumeTemplate
+    # clones directly from the DataSource -- no intermediate base DV needed.
+    if [[ -n "$DATASOURCE" ]] && ! ((USE_SNAPSHOT)) ; then
+	log_message "Skipping base DataVolume creation (each VM clones directly from DataSource)"
+	return
+    fi
+
     log_message "Creating DataVolumes..."
     local -i ns
     local dv_file
@@ -716,6 +731,8 @@ create_virtualmachines() {
     local vm_file
     if ((USE_SNAPSHOT)) ; then
 	vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
+    elif [[ -n "$DATASOURCE" ]] ; then
+	vm_file=$(find_file_on_path "vm-datasource.yaml") || fatal "Can't find vm-datasource.yaml on CREATE_VM_PATH"
     else
 	vm_file=$(find_file_on_path "vm-clone.yaml") || fatal "Can't find vm-clone.yaml on CREATE_VM_PATH"
     fi
@@ -869,6 +886,8 @@ main() {
     log_message "Storage class: $STORAGE_CLASS"
     if ((USE_SNAPSHOT)) ; then
 	log_message "Snapshot mode: enabled (class: $SNAPSHOT_CLASS)"
+    elif [[ -n "$DATASOURCE" ]] ; then
+	log_message "Snapshot mode: disabled (direct DataSource clone)"
     else
 	log_message "Snapshot mode: disabled (direct PVC clone)"
     fi
@@ -890,6 +909,8 @@ main() {
 	log_message "Resource creation completed successfully!"
 	if ((USE_SNAPSHOT)) ; then
 	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, $NUM_NAMESPACES VolumeSnapshots, and $NUM_VMS total VirtualMachines"
+	elif [[ -n "$DATASOURCE" ]] ; then
+	    log_message "Created $NUM_NAMESPACES namespaces and $NUM_VMS total VirtualMachines (direct DataSource clone, no base DVs)"
 	else
 	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, and $NUM_VMS total VirtualMachines (no snapshots)"
 	fi
