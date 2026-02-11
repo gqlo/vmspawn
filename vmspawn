@@ -14,6 +14,10 @@ DV_URL=
 STORAGE_SIZE="22Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
+USE_SNAPSHOT=1
+STORAGE_CLASS_SET=0
+SNAPSHOT_CLASS_SET=0
+SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="rhel9-base"
 VM_BASENAME="rhel9"
 VM_CPU_CORES="1"
@@ -60,7 +64,14 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 Overridden by --dv-url for custom images
         --dv-url=URL            Import disk from URL instead of DataSource
         --storage-size=N        Storage size ($STORAGE_SIZE)
+        --storage-class=class   Storage class ($STORAGE_CLASS)
+                                | | | (auto-disables snapshots unless
+                                | | | --snapshot-class is also provided)
         --snapshot-class=class  Snapshot class ($SNAPSHOT_CLASS)
+                                | | | (implies --snapshot)
+        --snapshot              Use VolumeSnapshots for cloning (default
+                                | | | when using the built-in OCS storage class)
+        --no-snapshot           Clone VMs directly from PVC (no snapshot needed)
         --pvc-base-name=name    base PVC name ($BASE_PVC_NAME)
         --batch-id=ID           Batch ID for this run ($BATCH_ID)
                                 (auto-generated if not specified)
@@ -107,8 +118,11 @@ process_option() {
 		   DELETE_BATCH=$value ;;
 	datasourc*) DATASOURCE=$value ;;
 	dvurl)     DV_URL=$value; DATASOURCE= ;;
-	storage*)  STORAGE_SIZE=$value ;;
-	snapshot*) SNAPSHOT_CLASS=$value ;;
+	storagecl*) STORAGE_CLASS=$value; STORAGE_CLASS_SET=1 ;;
+	storagesi*|storage) STORAGE_SIZE=$value ;;
+	snapshotcl*) SNAPSHOT_CLASS=$value; SNAPSHOT_CLASS_SET=1 ;;
+	nosnapshot) USE_SNAPSHOT=0; SNAPSHOT_EXPLICITLY_SET=1 ;;
+	snapshot) USE_SNAPSHOT=1; SNAPSHOT_EXPLICITLY_SET=1 ;;
 	pvc*)      BASE_PVC_NAME=$value ;;
 	base*)	   VM_BASENAME=$value ;;
 	core*)	   VM_CPU_CORES=$value ;;
@@ -144,9 +158,17 @@ done
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
 
+# Auto-disable snapshots when a custom storage class is used without
+# a matching snapshot class.  The hardcoded SNAPSHOT_CLASS only works
+# with the default OCS STORAGE_CLASS, so using a different storage class
+# without providing a snapshot class means snapshots won't work.
+if (( ! SNAPSHOT_EXPLICITLY_SET && STORAGE_CLASS_SET && ! SNAPSHOT_CLASS_SET )); then
+    USE_SNAPSHOT=0
+fi
+
 # Setup logging
 LOG_DIR="logs"
-LOG_FILE="${LOG_DIR}/$(date +%Y-%m-%dT%H:%M:%S).log"
+LOG_FILE="${LOG_DIR}/${BATCH_ID}-$(date +%Y-%m-%dT%H:%M:%S).log"
 
 # Function to log with timestamp
 # Output may be provided on command line; if not, it is
@@ -218,9 +240,12 @@ check_prerequisites() {
 	    ((errors++))
 	fi
 
-	if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
-	    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
-	    ((errors++))
+	if ((USE_SNAPSHOT)) ; then
+	    if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
+		echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
+		echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		((errors++))
+	    fi
 	fi
 
 	if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
@@ -235,7 +260,13 @@ check_prerequisites() {
 	fatal "Prerequisite check failed with $errors error(s)"
     fi
 
-    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'"
+    local snap_msg=""
+    if ((USE_SNAPSHOT)) ; then
+	snap_msg=", snapshot class '$SNAPSHOT_CLASS'"
+    else
+	snap_msg=" (no-snapshot mode)"
+    fi
+    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'${snap_msg}"
 }
 
 # Check if template files exist
@@ -297,8 +328,12 @@ if [[ -z "$DELETE_BATCH" ]] ; then
     fi
 
     check_file_exists namespace.yaml
-    check_file_exists volumesnap.yaml
-    check_file_exists vm-snap.yaml
+    if ((USE_SNAPSHOT)) ; then
+	check_file_exists volumesnap.yaml
+	check_file_exists vm-snap.yaml
+    else
+	check_file_exists vm-clone.yaml
+    fi
     if [[ -n "$DATASOURCE" ]] ; then
 	check_file_exists dv-datasource.yaml
     else
@@ -327,6 +362,7 @@ Creating resources for:
   Disk source: ${DATASOURCE:+DataSource $DATASOURCE ($DATASOURCE_NS)}${DV_URL:+URL $DV_URL}${DV_URL:+
   Storage Size: $STORAGE_SIZE}
   Storage Class: $STORAGE_CLASS
+  Snapshot mode: $(if ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; else echo "disabled (direct PVC clone)"; fi)
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
@@ -569,7 +605,11 @@ create_virtualmachines() {
     log_message "Creating VirtualMachines..."
     VM_ID=1
     local vm_file
-    vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
+    if ((USE_SNAPSHOT)) ; then
+	vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
+    else
+	vm_file=$(find_file_on_path "vm-clone.yaml") || fatal "Can't find vm-clone.yaml on CREATE_VM_PATH"
+    fi
 
     # Auto-apply default cloud-init when using DataSource without explicit --cloudinit
     if [[ -n "$DATASOURCE" && -z "$CLOUDINIT_FILE" ]] ; then
@@ -718,6 +758,11 @@ main() {
 	log_message "Storage size:  $STORAGE_SIZE"
     fi
     log_message "Storage class: $STORAGE_CLASS"
+    if ((USE_SNAPSHOT)) ; then
+	log_message "Snapshot mode: enabled (class: $SNAPSHOT_CLASS)"
+    else
+	log_message "Snapshot mode: disabled (direct PVC clone)"
+    fi
     log_message "VM CPU cores:  $VM_CPU_CORES"
     log_message "VM memory:     $VM_MEMORY"
     log_message "Cloud-init:    ${CLOUDINIT_FILE:-none}"
@@ -725,12 +770,20 @@ main() {
 
     create_namespaces
     create_datavolumes
-    create_volumesnapshots
+    if ((USE_SNAPSHOT)) ; then
+	create_volumesnapshots
+    else
+	log_message "Skipping VolumeSnapshots (--no-snapshot mode)"
+    fi
     create_virtualmachines
 
     if ((doit)) ; then
 	log_message "Resource creation completed successfully!"
-	log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, $NUM_NAMESPACES VolumeSnapshots, and $NUM_VMS total VirtualMachines"
+	if ((USE_SNAPSHOT)) ; then
+	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, $NUM_NAMESPACES VolumeSnapshots, and $NUM_VMS total VirtualMachines"
+	else
+	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, and $NUM_VMS total VirtualMachines (no snapshots)"
+	fi
 
 	# Write batch manifest file
 	local manifest_file="${LOG_DIR}/batch-${BATCH_ID}.manifest"
@@ -760,7 +813,9 @@ main() {
 	echo "To check the created resources:"
 	echo "  oc get ns -l batch-id=$BATCH_ID"
 	echo "  oc get datavolumes -A -l batch-id=$BATCH_ID"
-	echo "  oc get volumesnapshots -A -l batch-id=$BATCH_ID"
+	if ((USE_SNAPSHOT)) ; then
+	    echo "  oc get volumesnapshots -A -l batch-id=$BATCH_ID"
+	fi
 	echo "  oc get vm -A -l batch-id=$BATCH_ID"
 	echo ""
 	echo "To delete all resources in this batch:"
