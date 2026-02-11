@@ -910,3 +910,227 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
   [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
 }
+
+# ===============================================================
+# Access mode options (--access-mode, --rwo, --rwx)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# AM-1: default access mode is ReadWriteMany
+# ---------------------------------------------------------------
+@test "access-mode: default is ReadWriteMany" {
+  run bash "$VMSPAWN" -n --batch-id=am0001 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+  [[ "$output" == *"ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# AM-2: --rwo shortcut sets ReadWriteOnce on all resources
+# ---------------------------------------------------------------
+@test "access-mode: --rwo sets ReadWriteOnce on DV and VM" {
+  run bash "$VMSPAWN" -n --batch-id=am0002 --rwo --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# AM-3: --access-mode=ReadWriteOnce
+# ---------------------------------------------------------------
+@test "access-mode: --access-mode=ReadWriteOnce" {
+  run bash "$VMSPAWN" -n --batch-id=am0003 --access-mode=ReadWriteOnce --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# AM-4: --rwx shortcut sets ReadWriteMany
+# ---------------------------------------------------------------
+@test "access-mode: --rwx sets ReadWriteMany" {
+  run bash "$VMSPAWN" -n --batch-id=am0004 --rwx --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+  [[ "$output" == *"ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# AM-5: --rwo with snapshot mode (VMs also get RWO)
+# ---------------------------------------------------------------
+@test "access-mode: --rwo applies to snapshot-based VMs too" {
+  run bash "$VMSPAWN" -n --batch-id=am0005 --rwo --snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# AM-6: --rwo with URL import mode
+# ---------------------------------------------------------------
+@test "access-mode: --rwo with URL import" {
+  run bash "$VMSPAWN" -n --batch-id=am0006 --rwo --no-snapshot --vms=1 --namespaces=1 \
+    --dv-url=http://example.com/disk.qcow2
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+}
+
+# ===============================================================
+# StorageProfile auto-detection (live mode with mock oc)
+# ===============================================================
+
+# Helper: create a mock oc script that satisfies all prerequisite
+# checks and returns MOCK_ACCESS_MODE for StorageProfile queries.
+# Usage: _create_mock_oc <directory>
+_create_mock_oc() {
+    local dir=$1
+    mkdir -p "$dir"
+    cat > "$dir/oc" << 'MOCKEOF'
+#!/bin/bash
+case "$1" in
+    whoami) echo "test-user" ;;
+    get)
+        case "$2" in
+            storageprofile)
+                if [[ -n "${MOCK_ACCESS_MODE:-}" ]]; then
+                    echo "$MOCK_ACCESS_MODE"
+                else
+                    exit 1
+                fi
+                ;;
+            datavolume) echo "Succeeded" ;;
+            volumesnapshot) echo "true" ;;
+            *) ;;
+        esac
+        ;;
+    apply) cat > /dev/null ;;
+    *) ;;
+esac
+MOCKEOF
+    chmod +x "$dir/oc"
+}
+
+# ---------------------------------------------------------------
+# SP-1: StorageProfile returns RWO (e.g. LVMS)
+# ---------------------------------------------------------------
+@test "auto-detect: StorageProfile returns RWO for LVMS-like storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=sp0001 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/sp0001-*.log logs/batch-sp0001.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce' from StorageProfile for 'lvms-nvme-sc'"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+}
+
+# ---------------------------------------------------------------
+# SP-2: StorageProfile returns RWX (e.g. OCS/Ceph)
+# ---------------------------------------------------------------
+@test "auto-detect: StorageProfile returns RWX for OCS-like storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteMany
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=sp0002 --storage-class=ocs-rbd-virt \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/sp0002-*.log logs/batch-sp0002.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Auto-detected access mode 'ReadWriteMany' from StorageProfile for 'ocs-rbd-virt'"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# SP-3: StorageProfile unavailable → falls back to default RWX
+# ---------------------------------------------------------------
+@test "auto-detect: StorageProfile unavailable falls back to default RWX" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  # Do NOT export MOCK_ACCESS_MODE → mock exits 1 for storageprofile
+  unset MOCK_ACCESS_MODE
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=sp0003 --storage-class=unknown-sc \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/sp0003-*.log logs/batch-sp0003.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Could not detect access mode from StorageProfile"* ]]
+  [[ "$output" == *"using default: ReadWriteMany"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+}
+
+# ---------------------------------------------------------------
+# SP-4: explicit --rwo overrides StorageProfile that says RWX
+# ---------------------------------------------------------------
+@test "auto-detect: explicit --rwo overrides StorageProfile RWX" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteMany
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=sp0004 --rwo --storage-class=ocs-rbd-virt \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/sp0004-*.log logs/batch-sp0004.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Access mode explicitly set to: ReadWriteOnce"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" != *"Auto-detected"* ]]
+}
+
+# ---------------------------------------------------------------
+# SP-5: explicit --rwx overrides StorageProfile that says RWO
+# ---------------------------------------------------------------
+@test "auto-detect: explicit --rwx overrides StorageProfile RWO" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=sp0005 --rwx --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/sp0005-*.log logs/batch-sp0005.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Access mode explicitly set to: ReadWriteMany"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+  [[ "$output" != *"Auto-detected"* ]]
+}

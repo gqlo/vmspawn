@@ -13,9 +13,11 @@ DATASOURCE_NS="openshift-virtualization-os-images"
 DV_URL=
 STORAGE_SIZE="22Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
+ACCESS_MODE="ReadWriteMany"
 SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
 USE_SNAPSHOT=1
 STORAGE_CLASS_SET=0
+ACCESS_MODE_SET=0
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="rhel9-base"
@@ -71,6 +73,9 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --storage-class=class   Storage class ($STORAGE_CLASS)
                                 | | | (auto-disables snapshots unless
                                 | | | --snapshot-class is also provided)
+        --access-mode=MODE      PVC access mode (auto-detected from
+                                | | | StorageProfile; fallback: $ACCESS_MODE)
+                                | | | Shortcuts: --rwx, --rwo
         --snapshot-class=class  Snapshot class ($SNAPSHOT_CLASS)
                                 | | | (implies --snapshot)
         --snapshot              Use VolumeSnapshots for cloning (default
@@ -124,6 +129,9 @@ process_option() {
 	dvurl)     DV_URL=$value; DATASOURCE= ;;
 	storagecl*) STORAGE_CLASS=$value; STORAGE_CLASS_SET=1 ;;
 	storagesi*|storage) STORAGE_SIZE=$value ;;
+	accessmod*|accessmode) ACCESS_MODE=$value; ACCESS_MODE_SET=1 ;;
+	rwx) ACCESS_MODE=ReadWriteMany; ACCESS_MODE_SET=1 ;;
+	rwo) ACCESS_MODE=ReadWriteOnce; ACCESS_MODE_SET=1 ;;
 	snapshotcl*) SNAPSHOT_CLASS=$value; SNAPSHOT_CLASS_SET=1 ;;
 	nosnapshot) USE_SNAPSHOT=0; SNAPSHOT_EXPLICITLY_SET=1 ;;
 	snapshot) USE_SNAPSHOT=1; SNAPSHOT_EXPLICITLY_SET=1 ;;
@@ -300,6 +308,41 @@ check_prerequisites() {
     log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'${snap_msg}"
 }
 
+# Auto-detect the PVC access mode from the CDI StorageProfile.
+# CDI creates a StorageProfile for each StorageClass containing
+# the recommended accessModes and volumeMode.  Since our templates
+# use volumeMode: Block, we prefer the access mode from the Block
+# property set.  Falls back to the first listed access mode, then
+# to the existing ACCESS_MODE default.
+# Skipped when the user explicitly sets --access-mode/--rwo/--rwx.
+detect_access_mode() {
+    if ((ACCESS_MODE_SET)) ; then
+	log_message "Access mode explicitly set to: $ACCESS_MODE"
+	return
+    fi
+
+    local detected=""
+
+    # Try to get the access mode for Block volumeMode first
+    detected=$(oc get storageprofile "$STORAGE_CLASS" \
+	-o go-template='{{range .status.claimPropertySets}}{{if eq .volumeMode "Block"}}{{index .accessModes 0}}{{break}}{{end}}{{end}}' \
+	2>/dev/null) || true
+
+    # Fall back to the first access mode in the StorageProfile
+    if [[ -z "$detected" ]] ; then
+	detected=$(oc get storageprofile "$STORAGE_CLASS" \
+	    -o jsonpath='{.status.claimPropertySets[0].accessModes[0]}' \
+	    2>/dev/null) || true
+    fi
+
+    if [[ -n "$detected" ]] ; then
+	ACCESS_MODE="$detected"
+	log_message "Auto-detected access mode '$ACCESS_MODE' from StorageProfile for '$STORAGE_CLASS'"
+    else
+	log_message "Warning: Could not detect access mode from StorageProfile for '$STORAGE_CLASS'; using default: $ACCESS_MODE"
+    fi
+}
+
 # Check if template files exist
 find_file_on_path() {
     local file=$1
@@ -326,6 +369,7 @@ if [[ -z "$DELETE_BATCH" ]] ; then
 
     if ((doit)) ; then
 	check_prerequisites
+	detect_access_mode
     fi
 
     # Validate positional arguments are numbers before using them
@@ -393,6 +437,7 @@ Creating resources for:
   Disk source: ${DATASOURCE:+DataSource $DATASOURCE ($DATASOURCE_NS)}${DV_URL:+URL $DV_URL}${DV_URL:+
   Storage Size: $STORAGE_SIZE}
   Storage Class: $STORAGE_CLASS
+  Access Mode: $ACCESS_MODE
   Snapshot mode: $(if ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; else echo "disabled (direct PVC clone)"; fi)
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
@@ -431,6 +476,7 @@ function process_template() {
         -e "s/{BASE_PVC_NAME}/$BASE_PVC_NAME/g" \
         -e "s/{STORAGE_SIZE}/$STORAGE_SIZE/g" \
         -e "s/{STORAGE_CLASS}/$STORAGE_CLASS/g" \
+        -e "s/{ACCESS_MODE}/$ACCESS_MODE/g" \
         -e "s/{SNAPSHOT_CLASS}/$SNAPSHOT_CLASS/g" \
         -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g" \
         -e "s/{VM_MEMORY}/$VM_MEMORY/g" \
@@ -508,7 +554,7 @@ check_datavolume_status() {
             "Failed")
                 fatal "Error: DataVolume $datavolume_name in namespace $namespace failed"
                 ;;
-            "Pending"|"Running"|"ImportScheduled"|"ImportInProgress")
+            "Pending"|"PendingPopulation"|"Running"|"ImportScheduled"|"ImportInProgress"|"CloneScheduled"|"CloneInProgress"|"SnapshotForSmartCloneInProgress"|"SmartClonePVCInProgress")
                 log_message "DataVolume $datavolume_name in namespace $namespace is still $status, waiting..."
                 sleep 10
                 ;;

@@ -13,6 +13,6 @@ spec:
     namespace: {DATASOURCE_NS}
   storage:
     accessModes:
-      - ReadWriteMany
+      - {ACCESS_MODE}
     volumeMode: Block
     storageClassName: {STORAGE_CLASS}

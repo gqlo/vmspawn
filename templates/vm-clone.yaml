@@ -15,7 +15,7 @@ spec:
     spec:
       storage:
         accessModes:
-        - ReadWriteMany
+        - {ACCESS_MODE}
         volumeMode: Block
         storageClassName: {STORAGE_CLASS}
       source:

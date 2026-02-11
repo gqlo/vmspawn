@@ -12,7 +12,7 @@ spec:
         url: {DV_URL}
   pvc:
     accessModes:
-      - ReadWriteMany
+      - {ACCESS_MODE}
     resources:
       requests:
         storage: {STORAGE_SIZE}
