@@ -17,19 +17,19 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 ## Quick start
 
 ```bash
-# Create 10 RHEL9 VMs (4 cores, 8Gi memory) from the built-in DataSource
+# Create 10 RHEL9 VMs (4 cores, 8Gi memory) using default OCS storage class
 ./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
-# Use a different DataSource (e.g. Fedora)
+# Use a different DataSource (e.g. Fedora) with default OCS storage
 ./vmspawn --datasource=fedora --vms=5 --namespaces=1
 
-# Import a custom QCOW2 instead of using a DataSource
+# Import a custom QCOW2 instead of using a DataSource (default OCS storage)
 ./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
-# Create VMs with a cloud-init workload injected at boot
+# Create VMs with a cloud-init workload injected at boot (default OCS storage)
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
-# Use a different DataSource with the default cloud-init (root password: password)
+# Use a different DataSource with default OCS storage (root password: password)
 ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
 # Use a non-OCS storage class (snapshots auto-disabled)
@@ -38,10 +38,10 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 # Use a custom storage class with snapshots (provide both classes)
 ./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 
-# Explicitly disable snapshots on any storage
+# Explicitly disable snapshots on default OCS storage
 ./vmspawn --no-snapshot --vms=10 --namespaces=2
 
-# Dry-run to preview generated YAML without applying
+# Dry-run to preview generated YAML without applying (default OCS storage)
 ./vmspawn -n --vms=10 --namespaces=2
 
 # Delete all resources for a batch
