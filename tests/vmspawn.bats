@@ -1009,6 +1009,12 @@ case "$1" in
                     exit 1
                 fi
                 ;;
+            storageclass)
+                # Return binding mode when -o jsonpath is used
+                if [[ "$*" == *"volumeBindingMode"* && -n "${MOCK_BIND_MODE:-}" ]]; then
+                    echo "$MOCK_BIND_MODE"
+                fi
+                ;;
             datavolume) echo "Succeeded" ;;
             volumesnapshot) echo "true" ;;
             *) ;;
@@ -1133,4 +1139,82 @@ MOCKEOF
   [[ "$output" == *"Access mode explicitly set to: ReadWriteMany"* ]]
   [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
   [[ "$output" != *"Auto-detected"* ]]
+}
+
+# ===============================================================
+# WaitForFirstConsumer handling
+# ===============================================================
+
+# ---------------------------------------------------------------
+# WFFC-1: WFFC detected → skip DV wait, proceed to VM creation
+# ---------------------------------------------------------------
+@test "wffc: skips DataVolume wait for WaitForFirstConsumer storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=wf0001 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=2 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/wf0001-*.log logs/batch-wf0001.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
+  [[ "$output" == *"Skipping DataVolume wait"* ]]
+  [[ "$output" == *"VMs will trigger PVC binding"* ]]
+  # VMs were still created despite DV wait being skipped
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# WFFC-2: Immediate binding → normal DV wait (no skip)
+# ---------------------------------------------------------------
+@test "wffc: normal DV wait for Immediate binding storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=Immediate
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=wf0002 --storage-class=lvms-nvme-sc-imm \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/wf0002-*.log logs/batch-wf0002.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Skipping DataVolume wait"* ]]
+  [[ "$output" == *"All DataVolumes are completed successfully"* ]]
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+}
+
+# ---------------------------------------------------------------
+# WFFC-3: WFFC detection also works in dry-run
+# ---------------------------------------------------------------
+@test "wffc: dry-run shows WFFC warning when oc is available" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" -n --batch-id=wf0003 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/wf0003-dryrun.yaml
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
 }
