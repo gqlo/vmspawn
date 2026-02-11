@@ -220,6 +220,14 @@ if ((doit)) ; then
     fi
 
     log_message "Log file created: $LOG_FILE"
+else
+    # In dry-run mode, save generated YAML to a file for reference
+    if (( ! quiet )) ; then
+	if [[ ! -d "$LOG_DIR" ]]; then
+	    mkdir -p "$LOG_DIR"
+	fi
+	DRYRUN_FILE="${LOG_DIR}/${BATCH_ID}-dryrun.yaml"
+    fi
 fi
 
 # Check for prerequisites: oc CLI, OpenShift Virtualization,
@@ -378,7 +386,12 @@ do_oc() {
 	local line
 	while read -r line ; do : ; done
     else
-	cat
+	if [[ -n "${DRYRUN_FILE:-}" ]] ; then
+	    tee -a "$DRYRUN_FILE"
+	    echo "---" >> "$DRYRUN_FILE"
+	else
+	    cat
+	fi
     fi
 }
 
@@ -832,4 +845,10 @@ if [[ -n "$DELETE_BATCH" ]] ; then
     delete_batch "$DELETE_BATCH"
 else
     main
+fi
+
+# Print dry-run YAML file location
+if [[ -n "${DRYRUN_FILE:-}" && -f "${DRYRUN_FILE:-}" ]] ; then
+    echo ""
+    echo "Dry-run YAML saved to: $DRYRUN_FILE"
 fi

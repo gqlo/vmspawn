@@ -336,6 +336,95 @@ VMSPAWN="./vmspawn"
 
   # --- Does not print completion message (only printed when doit=1) ---
   [[ "$output" != *"Resource creation completed successfully"* ]]
+
+  # --- Dry-run YAML file saved ---
+  [[ "$output" == *"Dry-run YAML saved to: logs/qs0009-dryrun.yaml"* ]]
+
+  # cleanup
+  rm -f logs/qs0009-dryrun.yaml
+}
+
+# ---------------------------------------------------------------
+# Dry-run YAML file tests
+# ---------------------------------------------------------------
+@test "dry-run: saves YAML file with all resources" {
+  run bash "$VMSPAWN" -n --batch-id=dry001 --vms=3 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- File exists ---
+  [ -f logs/dry001-dryrun.yaml ]
+
+  # --- File contains all resource types ---
+  local content
+  content=$(cat logs/dry001-dryrun.yaml)
+  [[ "$content" == *"kind: Namespace"* ]]
+  [[ "$content" == *"kind: DataVolume"* ]]
+  [[ "$content" == *"kind: VolumeSnapshot"* ]]
+  [[ "$content" == *"kind: VirtualMachine"* ]]
+
+  # --- File contains document separators ---
+  local separator_count
+  separator_count=$(grep -c "^---$" logs/dry001-dryrun.yaml)
+  [ "$separator_count" -ge 4 ]
+
+  # --- Message printed to stdout ---
+  [[ "$output" == *"Dry-run YAML saved to: logs/dry001-dryrun.yaml"* ]]
+
+  # cleanup
+  rm -f logs/dry001-dryrun.yaml
+}
+
+@test "dry-run: YAML file has correct batch ID and namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=dry002 --vms=2 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  [ -f logs/dry002-dryrun.yaml ]
+
+  local content
+  content=$(cat logs/dry002-dryrun.yaml)
+
+  # --- Batch ID substituted ---
+  [[ "$content" == *'batch-id: "dry002"'* ]]
+
+  # --- Both namespaces present ---
+  [[ "$content" == *"name: vm-dry002-ns-1"* ]]
+  [[ "$content" == *"name: vm-dry002-ns-2"* ]]
+
+  # --- VM names ---
+  [[ "$content" == *"name: rhel9-dry002-1"* ]]
+  [[ "$content" == *"name: rhel9-dry002-2"* ]]
+
+  # cleanup
+  rm -f logs/dry002-dryrun.yaml
+}
+
+@test "dry-run: no-snapshot mode saves PVC clone YAML" {
+  run bash "$VMSPAWN" -n --batch-id=dry003 --no-snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [ -f logs/dry003-dryrun.yaml ]
+
+  local content
+  content=$(cat logs/dry003-dryrun.yaml)
+
+  # --- PVC clone, not snapshot ---
+  [[ "$content" == *"pvc:"* ]]
+  [[ "$content" != *"smartCloneFromExistingSnapshot"* ]]
+  [[ "$content" != *"kind: VolumeSnapshot"* ]]
+
+  # cleanup
+  rm -f logs/dry003-dryrun.yaml
+}
+
+@test "dry-run: quiet mode does not create YAML file" {
+  run bash "$VMSPAWN" -q --batch-id=dry004 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- No YAML file created ---
+  [ ! -f logs/dry004-dryrun.yaml ]
+
+  # --- No "saved to" message ---
+  [[ "$output" != *"Dry-run YAML saved to"* ]]
 }
 
 # ---------------------------------------------------------------
