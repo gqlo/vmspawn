@@ -18,6 +18,7 @@ SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
 USE_SNAPSHOT=1
 STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
+WAIT_FOR_FIRST_CONSUMER=0
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="rhel9-base"
@@ -341,6 +342,20 @@ detect_access_mode() {
     else
 	log_message "Warning: Could not detect access mode from StorageProfile for '$STORAGE_CLASS'; using default: $ACCESS_MODE"
     fi
+
+    # Detect WaitForFirstConsumer storage classes.  With WFFC the base
+    # DataVolume PVC won't bind until a consumer Pod is scheduled, but
+    # vmspawn normally waits for the base DV before creating VMs.  We
+    # record WFFC so create_datavolumes can skip the wait and let VM
+    # creation proceed (the VMs' clone Pods act as consumers).
+    local bind_mode
+    bind_mode=$(oc get storageclass "$STORAGE_CLASS" -o jsonpath='{.volumeBindingMode}' 2>/dev/null) || true
+    if [[ "$bind_mode" == "WaitForFirstConsumer" ]] ; then
+	WAIT_FOR_FIRST_CONSUMER=1
+	log_message "Storage class '$STORAGE_CLASS' uses WaitForFirstConsumer binding."
+	log_message "  Will skip waiting for base DataVolume and proceed to VM creation"
+	log_message "  so that consumer Pods can trigger PVC binding."
+    fi
 }
 
 # Check if template files exist
@@ -369,6 +384,12 @@ if [[ -z "$DELETE_BATCH" ]] ; then
 
     if ((doit)) ; then
 	check_prerequisites
+    fi
+
+    # Auto-detect access mode from StorageProfile even in dry-run,
+    # so the YAML preview shows the correct value.  Silently skipped
+    # when oc is not available or not logged in.
+    if oc whoami >/dev/null 2>&1 ; then
 	detect_access_mode
     fi
 
@@ -597,7 +618,13 @@ create_datavolumes() {
         log_message "Creating DataVolume for namespace: $namespace"
         process_template "$dv_file" | do_oc
     done
-    if ((doit)) ; then wait_for_all_datavolumes; fi
+    if ((doit)) ; then
+	if ((WAIT_FOR_FIRST_CONSUMER)) ; then
+	    log_message "Skipping DataVolume wait (WaitForFirstConsumer); VMs will trigger PVC binding."
+	else
+	    wait_for_all_datavolumes
+	fi
+    fi
 }
 
 ################################################################
