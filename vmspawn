@@ -28,6 +28,10 @@ VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
 # Generate a random 6-character hex batch ID (16.7M unique values)
+if [[ -z "$(type -t xxd)" ]] ; then
+    echo "Error: xxd command is not installed (needed to generate batch IDs)"
+    exit 1
+fi
 BATCH_ID=$(head -c 3 /dev/urandom | xxd -p)
 NUM_VMS=1
 NUM_VMS_PER_NAMESPACE=
@@ -261,6 +265,25 @@ check_prerequisites() {
 	    echo "  Available storage classes:"
 	    oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
 	    ((errors++))
+	fi
+
+	if ((USE_SNAPSHOT)) ; then
+	    if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
+		echo "Error: volume snapshot class '$SNAPSHOT_CLASS' not found"
+		echo "  Available volume snapshot classes:"
+		oc get volumesnapshotclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+		echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		((errors++))
+	    fi
+	fi
+
+	if [[ -n "$DATASOURCE" ]] ; then
+	    if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
+		echo "Error: DataSource '$DATASOURCE' not found in namespace '$DATASOURCE_NS'"
+		echo "  Available DataSources:"
+		oc get datasource -n "$DATASOURCE_NS" --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+		((errors++))
+	    fi
 	fi
     fi
 
