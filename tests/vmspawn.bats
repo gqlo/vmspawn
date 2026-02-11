@@ -31,7 +31,7 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
 
   # --- DV has explicit storage size ---
-  [[ "$output" == *"storage: 22Gi"* ]]
+  [[ "$output" == *"storage: 32Gi"* ]]
 
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
@@ -128,7 +128,7 @@ VMSPAWN="./vmspawn"
   [[ "$output" != *"kind: DataSource"* ]]
 
   # --- DV uses explicit storage size ---
-  [[ "$output" == *"storage: 22Gi"* ]]
+  [[ "$output" == *"storage: 32Gi"* ]]
 
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
@@ -546,7 +546,7 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"volumeMode: Block"* ]]
   [[ "$output" == *"storageClassName:"* ]]
   # Explicit size included for WFFC compatibility
-  [[ "$output" == *"storage: 22Gi"* ]]
+  [[ "$output" == *"storage: 32Gi"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -835,7 +835,7 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"storage:"* ]]
   [[ "$output" == *"accessModes:"* ]]
   [[ "$output" == *"volumeMode: Block"* ]]
-  [[ "$output" == *"storage: 22Gi"* ]]
+  [[ "$output" == *"storage: 32Gi"* ]]
 
   # CPU and memory from flags
   [[ "$output" == *"cores: 4"* ]]

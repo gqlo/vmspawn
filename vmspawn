@@ -11,7 +11,7 @@ set -eu
 DATASOURCE="rhel9"
 DATASOURCE_NS="openshift-virtualization-os-images"
 DV_URL=
-STORAGE_SIZE="22Gi"
+STORAGE_SIZE="32Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
 SNAPSHOT_CLASS="ocs-storagecluster-rbdplugin-snapclass"
