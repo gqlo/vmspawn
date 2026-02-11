@@ -2,7 +2,8 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH). Includes ready-to-use workload scripts (in `helpers/`) that can be injected at boot via `--cloudinit` -- for example, `cloudinit-stress-workload.yaml` installs and runs **stress-ng** to generate CPU, memory load on each VM. More workload scripts will be added over time.
+Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. install packages, start services, configure SSH).
+Includes ready-to-use workload scripts (in `helpers/`) that can be injected via `--cloudinit` -- for example, `cloudinit-stress-workload.yaml` installs and runs **stress-ng** to generate CPU and memory load. More workload scripts will be added over time.
 By default it clones from OCP's built-in **DataSources** (e.g. `rhel9`, `fedora`) -- no disk URL needed. Pass `--dv-url` to import a custom QCOW2 instead.
 Each run is tagged with a unique **batch ID** for easy management -- list, inspect, or delete an entire batch with a single command, and spawn additional VMs at any time without worrying about name or namespace conflicts.
 
