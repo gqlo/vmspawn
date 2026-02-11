@@ -230,16 +230,20 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"name: vm-qs0006-ns-2"* ]]
 
   # --- Snapshots auto-disabled ---
-  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
   [[ "$output" == *"Skipping VolumeSnapshots"* ]]
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
+
+  # --- No base DV (direct DataSource clone) ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
 
   # --- Storage class applied ---
   [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
   [[ "$output" == *"Storage Class: my-nfs-sc"* ]]
 
-  # --- VMs clone from PVC ---
-  [[ "$output" == *"pvc:"* ]]
+  # --- VMs clone directly from DataSource ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
   [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
 
   # --- 10 VMs ---
@@ -295,13 +299,15 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"name: vm-qs0008-ns-1"* ]]
   [[ "$output" == *"name: vm-qs0008-ns-2"* ]]
 
-  # --- Snapshots disabled ---
-  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  # --- Snapshots disabled (DataSource direct clone) ---
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
   [[ "$output" == *"Skipping VolumeSnapshots"* ]]
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
 
-  # --- VMs clone from PVC ---
-  [[ "$output" == *"pvc:"* ]]
+  # --- No base DV, VMs clone directly from DataSource ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
   [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
 
   # --- 10 VMs ---
@@ -396,7 +402,7 @@ VMSPAWN="./vmspawn"
   rm -f logs/dry002-dryrun.yaml
 }
 
-@test "dry-run: no-snapshot mode saves PVC clone YAML" {
+@test "dry-run: no-snapshot mode saves DataSource clone YAML" {
   run bash "$VMSPAWN" -n --batch-id=dry003 --no-snapshot --vms=2 --namespaces=1
   [ "$status" -eq 0 ]
 
@@ -405,10 +411,13 @@ VMSPAWN="./vmspawn"
   local content
   content=$(cat logs/dry003-dryrun.yaml)
 
-  # --- PVC clone, not snapshot ---
-  [[ "$content" == *"pvc:"* ]]
+  # --- DataSource clone, not PVC clone, not snapshot ---
+  [[ "$content" == *"sourceRef"* ]]
+  [[ "$content" == *"kind: DataSource"* ]]
   [[ "$content" != *"smartCloneFromExistingSnapshot"* ]]
   [[ "$content" != *"kind: VolumeSnapshot"* ]]
+  # --- No standalone DataVolume (only in VM dataVolumeTemplates) ---
+  [[ "$content" != *"name: rhel9-base"* ]]
 
   # cleanup
   rm -f logs/dry003-dryrun.yaml
@@ -660,20 +669,20 @@ VMSPAWN="./vmspawn"
   [ "$status" -eq 0 ]
 
   # --- Snapshot info ---
-  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
   [[ "$output" == *"Skipping VolumeSnapshots"* ]]
 
   # --- No VolumeSnapshot YAML emitted ---
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
   [[ "$output" != *"volumeSnapshotClassName"* ]]
 
-  # --- DataVolume still created ---
-  [[ "$output" == *"Creating DataVolumes"* ]]
-  [[ "$output" == *"kind: DataVolume"* ]]
+  # --- No base DataVolume (direct DataSource clone) ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
 
-  # --- VMs still created ---
+  # --- VMs still created (with inline DataVolumeTemplates) ---
   [[ "$output" == *"Creating VirtualMachines"* ]]
   [[ "$output" == *"kind: VirtualMachine"* ]]
+  [[ "$output" == *"dataVolumeTemplates"* ]]
 
   # --- 3 VMs ---
   local vm_count
@@ -682,20 +691,23 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# NS-2: --no-snapshot VMs clone from PVC (not snapshot)
+# NS-2: --no-snapshot VMs clone directly from DataSource
 # ---------------------------------------------------------------
-@test "no-snapshot: VMs clone from PVC source instead of snapshot" {
+@test "no-snapshot: VMs clone from DataSource instead of snapshot" {
   run bash "$VMSPAWN" -n --batch-id=nosn02 --no-snapshot --vms=2 --namespaces=1
   [ "$status" -eq 0 ]
 
-  # --- VM uses PVC source (not snapshot source) ---
-  [[ "$output" == *"source:"* ]]
-  [[ "$output" == *"pvc:"* ]]
-  [[ "$output" == *"name: rhel9-base"* ]]
+  # --- VM uses DataSource sourceRef (not PVC, not snapshot) ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+  [[ "$output" == *"name: rhel9"* ]]
+  [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
+
+  # --- No base PVC reference ---
+  [[ "$output" != *"name: rhel9-base"* ]]
 
   # --- No snapshot references ---
   [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
-  [[ "$output" != *"source:"*"snapshot:"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -734,6 +746,10 @@ VMSPAWN="./vmspawn"
   # --- No snapshots ---
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
   [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+
+  # --- Direct DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -765,9 +781,12 @@ VMSPAWN="./vmspawn"
     --storage-class=my-custom-sc
   [ "$status" -eq 0 ]
 
-  # --- Storage class appears in DV and VM ---
+  # --- Storage class appears in VM ---
   [[ "$output" == *"storageClassName: my-custom-sc"* ]]
   [[ "$output" == *"Storage Class: my-custom-sc"* ]]
+
+  # --- No base DV (DataSource direct clone) ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -789,9 +808,9 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# NS-8: vm-clone.yaml template is well-formed
+# NS-8: vm-datasource.yaml template is well-formed
 # ---------------------------------------------------------------
-@test "no-snapshot: VM clone YAML is well-formed" {
+@test "no-snapshot: VM DataSource clone YAML is well-formed" {
   run bash "$VMSPAWN" -n --batch-id=nosn08 --no-snapshot --vms=1 --namespaces=1 \
     --cores=4 --memory=8Gi
   [ "$status" -eq 0 ]
@@ -805,9 +824,18 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"runStrategy: Always"* ]]
   [[ "$output" == *"dataVolumeTemplates"* ]]
 
-  # PVC clone source
-  [[ "$output" == *"pvc:"* ]]
-  [[ "$output" == *"name: rhel9-base"* ]]
+  # DataSource sourceRef (not PVC clone)
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+  [[ "$output" == *"name: rhel9"* ]]
+  [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
+  [[ "$output" != *"name: rhel9-base"* ]]
+
+  # Storage spec on inline DV
+  [[ "$output" == *"storage:"* ]]
+  [[ "$output" == *"accessModes:"* ]]
+  [[ "$output" == *"volumeMode: Block"* ]]
+  [[ "$output" == *"storage: 22Gi"* ]]
 
   # CPU and memory from flags
   [[ "$output" == *"cores: 4"* ]]
@@ -825,6 +853,206 @@ VMSPAWN="./vmspawn"
 }
 
 # ===============================================================
+# Direct DataSource clone (no-snapshot + DataSource)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# DC-1: Custom DataSource name propagates into each VM's inline DV
+# ---------------------------------------------------------------
+@test "datasource-clone: custom DataSource name in inline DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0001 --no-snapshot --datasource=fedora \
+    --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Skips base DV ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
+  # --- Each VM's DV references fedora DataSource ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+  [[ "$output" == *"name: fedora"* ]]
+  [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
+
+  # --- No fedora-base PVC ---
+  [[ "$output" != *"name: fedora-base"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-2: Default DataSource namespace appears in each VM's inline DV
+# ---------------------------------------------------------------
+@test "datasource-clone: DataSource namespace in inline DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0002 --no-snapshot --datasource=win2k22 \
+    --basename=win2k22 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- DataSource references correct name and default namespace ---
+  [[ "$output" == *"name: win2k22"* ]]
+  [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
+
+  # --- VM basename set to match DataSource ---
+  [[ "$output" == *'vm-basename: "win2k22"'* ]]
+  [[ "$output" == *"name: win2k22-dc0002-1"* ]]
+
+  # --- No base DV ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-3: Custom storage size propagates into inline DV
+# ---------------------------------------------------------------
+@test "datasource-clone: --storage-size in inline DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0003 --no-snapshot \
+    --storage-size=50Gi --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Inline DV has the custom storage size ---
+  [[ "$output" == *"storage: 50Gi"* ]]
+
+  # --- Still direct DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-4: Each VM gets a uniquely named DV (not rhel9-base)
+# ---------------------------------------------------------------
+@test "datasource-clone: per-VM unique DV names" {
+  run bash "$VMSPAWN" -n --batch-id=dc0004 --no-snapshot --vms=3 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Each VM's DV has a unique name ---
+  [[ "$output" == *"name: rhel9-dc0004-1"* ]]
+  [[ "$output" == *"name: rhel9-dc0004-2"* ]]
+  [[ "$output" == *"name: rhel9-dc0004-3"* ]]
+
+  # --- No base DV name ---
+  [[ "$output" != *"name: rhel9-base"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-5: Multiple namespaces — no base PVC per namespace
+# ---------------------------------------------------------------
+@test "datasource-clone: multi-namespace has no per-namespace base DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0005 --no-snapshot --vms=4 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-dc0005-ns-1"* ]]
+  [[ "$output" == *"name: vm-dc0005-ns-2"* ]]
+
+  # --- No base DV for any namespace ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" != *"name: rhel9-base"* ]]
+
+  # --- All 4 VMs created ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 4 ]
+
+  # --- Each VM references the DataSource ---
+  # Count sourceRef occurrences (one per VM)
+  local ds_count
+  ds_count=$(echo "$output" | grep -c "kind: DataSource")
+  [ "$ds_count" -eq 4 ]
+}
+
+# ---------------------------------------------------------------
+# DC-6: URL import + no-snapshot still creates base DV
+# ---------------------------------------------------------------
+@test "datasource-clone: URL import still creates base DV (not direct clone)" {
+  run bash "$VMSPAWN" -n --batch-id=dc0006 --no-snapshot \
+    --dv-url=http://example.com/disk.qcow2 --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Base DV IS created (URL import path) ---
+  [[ "$output" == *"Creating DataVolumes"* ]]
+  [[ "$output" == *"kind: DataVolume"* ]]
+  [[ "$output" == *"name: rhel9-base"* ]]
+  [[ "$output" != *"Skipping base DataVolume creation"* ]]
+
+  # --- Snapshot mode shows PVC clone (not DataSource clone) ---
+  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+
+  # --- VMs clone from base PVC ---
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" == *"name: rhel9-base"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-7: Snapshot mode + DataSource still creates base DV
+# ---------------------------------------------------------------
+@test "datasource-clone: snapshot mode still creates base DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0007 --snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Base DV IS created ---
+  [[ "$output" == *"Creating DataVolumes"* ]]
+  [[ "$output" == *"name: rhel9-base"* ]]
+  [[ "$output" != *"Skipping base DataVolume creation"* ]]
+
+  # --- VolumeSnapshot from base DV ---
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"persistentVolumeClaimName: rhel9-base"* ]]
+
+  # --- VMs clone from snapshot ---
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-8: Access mode applies to inline DV in vm-datasource.yaml
+# ---------------------------------------------------------------
+@test "datasource-clone: --rwo access mode on inline DV" {
+  run bash "$VMSPAWN" -n --batch-id=dc0008 --no-snapshot --rwo --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Access mode in summary ---
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+
+  # --- RWO in inline DV (no RWX anywhere) ---
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- Still direct DataSource clone ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-9: Live-mode completion message (mock oc)
+# ---------------------------------------------------------------
+@test "datasource-clone: live-mode summary says no base DVs" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=dc0009 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=2 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/dc0009-*.log logs/batch-dc0009.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"direct DataSource clone, no base DVs"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# DC-10: --stop with direct DataSource clone
+# ---------------------------------------------------------------
+@test "datasource-clone: --stop sets Halted runStrategy" {
+  run bash "$VMSPAWN" -n --batch-id=dc0010 --no-snapshot --stop --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Halted"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+}
+
+# ===============================================================
 # Auto-detection: --storage-class without --snapshot-class
 # ===============================================================
 
@@ -836,19 +1064,23 @@ VMSPAWN="./vmspawn"
   [ "$status" -eq 0 ]
 
   # --- Auto-detected no-snapshot mode ---
-  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
   [[ "$output" == *"Skipping VolumeSnapshots"* ]]
 
   # --- No VolumeSnapshot YAML emitted ---
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
   [[ "$output" != *"volumeSnapshotClassName"* ]]
 
+  # --- No base DV (direct DataSource clone) ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
   # --- Storage class applied to resources ---
   [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
   [[ "$output" == *"Storage Class: my-nfs-sc"* ]]
 
-  # --- VMs use PVC clone ---
-  [[ "$output" == *"pvc:"* ]]
+  # --- VMs use DataSource clone ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
   [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
 
   # --- 3 VMs still created ---
@@ -1146,9 +1378,9 @@ MOCKEOF
 # ===============================================================
 
 # ---------------------------------------------------------------
-# WFFC-1: WFFC detected → skip DV wait, proceed to VM creation
+# WFFC-1: WFFC + DataSource + no-snapshot → no base DV at all
 # ---------------------------------------------------------------
-@test "wffc: skips DataVolume wait for WaitForFirstConsumer storage" {
+@test "wffc: DataSource no-snapshot skips base DV entirely for WFFC" {
   local mock_dir
   mock_dir=$(mktemp -d)
   _create_mock_oc "$mock_dir"
@@ -1165,6 +1397,33 @@ MOCKEOF
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
+  # No base DV created — each VM clones directly from DataSource
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# WFFC-2: WFFC + URL import → skip DV wait, proceed to VM creation
+# ---------------------------------------------------------------
+@test "wffc: skips DataVolume wait for WaitForFirstConsumer with URL import" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=wf0002 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms=2 --namespaces=1 \
+    --dv-url=http://example.com/disk.qcow2
+
+  rm -rf "$mock_dir"
+  rm -f logs/wf0002-*.log logs/batch-wf0002.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
   [[ "$output" == *"Skipping DataVolume wait"* ]]
   [[ "$output" == *"VMs will trigger PVC binding"* ]]
   # VMs were still created despite DV wait being skipped
@@ -1173,9 +1432,9 @@ MOCKEOF
 }
 
 # ---------------------------------------------------------------
-# WFFC-2: Immediate binding → normal DV wait (no skip)
+# WFFC-3: Immediate binding + URL import → normal DV wait (no skip)
 # ---------------------------------------------------------------
-@test "wffc: normal DV wait for Immediate binding storage" {
+@test "wffc: normal DV wait for Immediate binding with URL import" {
   local mock_dir
   mock_dir=$(mktemp -d)
   _create_mock_oc "$mock_dir"
@@ -1184,11 +1443,12 @@ MOCKEOF
   export MOCK_BIND_MODE=Immediate
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0002 --storage-class=lvms-nvme-sc-imm \
-    --no-snapshot --vms=1 --namespaces=1
+  run bash "$VMSPAWN" --batch-id=wf0003 --storage-class=lvms-nvme-sc-imm \
+    --no-snapshot --vms=1 --namespaces=1 \
+    --dv-url=http://example.com/disk.qcow2
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0002-*.log logs/batch-wf0002.manifest
+  rm -f logs/wf0003-*.log logs/batch-wf0003.manifest
 
   [ "$status" -eq 0 ]
   [[ "$output" != *"Skipping DataVolume wait"* ]]
@@ -1197,7 +1457,7 @@ MOCKEOF
 }
 
 # ---------------------------------------------------------------
-# WFFC-3: WFFC detection also works in dry-run
+# WFFC-4: WFFC detection works in dry-run
 # ---------------------------------------------------------------
 @test "wffc: dry-run shows WFFC warning when oc is available" {
   local mock_dir
@@ -1208,11 +1468,11 @@ MOCKEOF
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" -n --batch-id=wf0003 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=wf0004 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0003-dryrun.yaml
+  rm -f logs/wf0004-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
