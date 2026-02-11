@@ -220,11 +220,108 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# QS-6: ./vmspawn -n --vms=10 --namespaces=2
+# QS-6: ./vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
+#   Non-OCS storage class (snapshots auto-disabled)
+# ---------------------------------------------------------------
+@test "QS: non-OCS storage class auto-disables snapshots, 10 VMs across 2 namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=qs0006 --storage-class=my-nfs-sc --vms=10 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-qs0006-ns-1"* ]]
+  [[ "$output" == *"name: vm-qs0006-ns-2"* ]]
+
+  # --- Snapshots auto-disabled ---
+  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+
+  # --- Storage class applied ---
+  [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
+  [[ "$output" == *"Storage Class: my-nfs-sc"* ]]
+
+  # --- VMs clone from PVC ---
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 10 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 10 ]
+
+  # --- Default cloud-init auto-applied ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+}
+
+# ---------------------------------------------------------------
+# QS-7: ./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+#   Custom storage + snapshot class pair (snapshots enabled)
+# ---------------------------------------------------------------
+@test "QS: custom storage and snapshot class pair, 10 VMs across 2 namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=qs0007 --storage-class=my-rbd-sc \
+    --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-qs0007-ns-1"* ]]
+  [[ "$output" == *"name: vm-qs0007-ns-2"* ]]
+
+  # --- Snapshots enabled (both classes provided) ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+
+  # --- Uses provided classes ---
+  [[ "$output" == *"storageClassName: my-rbd-sc"* ]]
+  [[ "$output" == *"volumeSnapshotClassName: my-rbd-snap"* ]]
+
+  # --- VMs clone from snapshot ---
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 10 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 10 ]
+}
+
+# ---------------------------------------------------------------
+# QS-8: ./vmspawn --no-snapshot --vms=10 --namespaces=2
+#   Explicit no-snapshot mode
+# ---------------------------------------------------------------
+@test "QS: explicit no-snapshot, 10 VMs across 2 namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=qs0008 --no-snapshot --vms=10 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-qs0008-ns-1"* ]]
+  [[ "$output" == *"name: vm-qs0008-ns-2"* ]]
+
+  # --- Snapshots disabled ---
+  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+
+  # --- VMs clone from PVC ---
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 10 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 10 ]
+
+  # --- Default cloud-init auto-applied ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+}
+
+# ---------------------------------------------------------------
+# QS-9: ./vmspawn -n --vms=10 --namespaces=2
 #   Dry-run mode (same as QS-1 but verifying dry-run behavior)
 # ---------------------------------------------------------------
 @test "QS: dry-run does not emit oc apply commands" {
-  run bash "$VMSPAWN" -n --batch-id=qs0006 --vms=10 --namespaces=2
+  run bash "$VMSPAWN" -n --batch-id=qs0009 --vms=10 --namespaces=2
   [ "$status" -eq 0 ]
 
   # --- Outputs YAML ---
@@ -242,7 +339,7 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# QS-7: ./vmspawn --delete=a3f7b2
+# QS-10: ./vmspawn --delete=a3f7b2
 #   Delete batch
 # ---------------------------------------------------------------
 @test "QS: delete batch dry-run shows correct oc delete command" {
@@ -460,4 +557,267 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"userdata:"* ]]
   [[ "$output" == *'batch-id: "yaml07"'* ]]
   [[ "$output" == *'vm-basename: "rhel9"'* ]]
+}
+
+# ===============================================================
+# --no-snapshot mode (direct PVC clone)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# NS-1: --no-snapshot skips VolumeSnapshots entirely
+# ---------------------------------------------------------------
+@test "no-snapshot: skips VolumeSnapshot creation" {
+  run bash "$VMSPAWN" -n --batch-id=nosn01 --no-snapshot --vms=3 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot info ---
+  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+
+  # --- No VolumeSnapshot YAML emitted ---
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+  [[ "$output" != *"volumeSnapshotClassName"* ]]
+
+  # --- DataVolume still created ---
+  [[ "$output" == *"Creating DataVolumes"* ]]
+  [[ "$output" == *"kind: DataVolume"* ]]
+
+  # --- VMs still created ---
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+  [[ "$output" == *"kind: VirtualMachine"* ]]
+
+  # --- 3 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------
+# NS-2: --no-snapshot VMs clone from PVC (not snapshot)
+# ---------------------------------------------------------------
+@test "no-snapshot: VMs clone from PVC source instead of snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=nosn02 --no-snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VM uses PVC source (not snapshot source) ---
+  [[ "$output" == *"source:"* ]]
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" == *"name: rhel9-base"* ]]
+
+  # --- No snapshot references ---
+  [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
+  [[ "$output" != *"source:"*"snapshot:"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-3: --no-snapshot with URL import
+# ---------------------------------------------------------------
+@test "no-snapshot: works with --dv-url" {
+  run bash "$VMSPAWN" -n --batch-id=nosn03 --no-snapshot --vms=2 --namespaces=1 \
+    --dv-url=http://example.com/disk.qcow2
+  [ "$status" -eq 0 ]
+
+  # --- DV imports from URL ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+
+  # --- No snapshots ---
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+
+  # --- VMs clone from PVC ---
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-4: --no-snapshot with custom cloud-init
+# ---------------------------------------------------------------
+@test "no-snapshot: works with custom cloud-init" {
+  run bash "$VMSPAWN" -n --batch-id=nosn04 --no-snapshot --vms=2 --namespaces=1 \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml
+  [ "$status" -eq 0 ]
+
+  # --- Cloud-init Secret created ---
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
+  [[ "$output" == *"secretRef"* ]]
+
+  # --- No snapshots ---
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-5: --no-snapshot across multiple namespaces
+# ---------------------------------------------------------------
+@test "no-snapshot: multiple namespaces, 10 VMs" {
+  run bash "$VMSPAWN" -n --batch-id=nosn05 --no-snapshot --vms=10 --namespaces=3
+  [ "$status" -eq 0 ]
+
+  # --- 3 namespaces ---
+  [[ "$output" == *"name: vm-nosn05-ns-1"* ]]
+  [[ "$output" == *"name: vm-nosn05-ns-2"* ]]
+  [[ "$output" == *"name: vm-nosn05-ns-3"* ]]
+
+  # --- 10 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 10 ]
+
+  # --- No snapshots ---
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-6: --storage-class option works
+# ---------------------------------------------------------------
+@test "storage-class option sets storage class on all resources" {
+  run bash "$VMSPAWN" -n --batch-id=nosn06 --no-snapshot --vms=1 --namespaces=1 \
+    --storage-class=my-custom-sc
+  [ "$status" -eq 0 ]
+
+  # --- Storage class appears in DV and VM ---
+  [[ "$output" == *"storageClassName: my-custom-sc"* ]]
+  [[ "$output" == *"Storage Class: my-custom-sc"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-7: --snapshot (default) still works as before
+# ---------------------------------------------------------------
+@test "explicit --snapshot produces snapshot-based flow" {
+  run bash "$VMSPAWN" -n --batch-id=nosn07 --snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot mode enabled ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+
+  # --- VolumeSnapshot created ---
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+
+  # --- VMs clone from snapshot ---
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# NS-8: vm-clone.yaml template is well-formed
+# ---------------------------------------------------------------
+@test "no-snapshot: VM clone YAML is well-formed" {
+  run bash "$VMSPAWN" -n --batch-id=nosn08 --no-snapshot --vms=1 --namespaces=1 \
+    --cores=4 --memory=8Gi
+  [ "$status" -eq 0 ]
+
+  # VM metadata
+  [[ "$output" == *"kind: VirtualMachine"* ]]
+  [[ "$output" == *"name: rhel9-nosn08-1"* ]]
+  [[ "$output" == *"namespace: vm-nosn08-ns-1"* ]]
+
+  # Spec
+  [[ "$output" == *"runStrategy: Always"* ]]
+  [[ "$output" == *"dataVolumeTemplates"* ]]
+
+  # PVC clone source
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" == *"name: rhel9-base"* ]]
+
+  # CPU and memory from flags
+  [[ "$output" == *"cores: 4"* ]]
+  [[ "$output" == *"guest: 8Gi"* ]]
+
+  # Standard VM features
+  [[ "$output" == *"bus: virtio"* ]]
+  [[ "$output" == *"masquerade"* ]]
+  [[ "$output" == *"evictionStrategy: LiveMigrate"* ]]
+  [[ "$output" == *"efi:"* ]]
+
+  # Labels
+  [[ "$output" == *'batch-id: "nosn08"'* ]]
+  [[ "$output" == *'vm-basename: "rhel9"'* ]]
+}
+
+# ===============================================================
+# Auto-detection: --storage-class without --snapshot-class
+# ===============================================================
+
+# ---------------------------------------------------------------
+# AD-1: custom storage class auto-disables snapshots
+# ---------------------------------------------------------------
+@test "auto-detect: custom storage-class without snapshot-class disables snapshots" {
+  run bash "$VMSPAWN" -n --batch-id=auto01 --storage-class=my-nfs-sc --vms=3 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Auto-detected no-snapshot mode ---
+  [[ "$output" == *"Snapshot mode: disabled (direct PVC clone)"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+
+  # --- No VolumeSnapshot YAML emitted ---
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+  [[ "$output" != *"volumeSnapshotClassName"* ]]
+
+  # --- Storage class applied to resources ---
+  [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
+  [[ "$output" == *"Storage Class: my-nfs-sc"* ]]
+
+  # --- VMs use PVC clone ---
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" != *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 3 VMs still created ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------
+# AD-2: custom storage-class + snapshot-class keeps snapshots
+# ---------------------------------------------------------------
+@test "auto-detect: custom storage-class with snapshot-class keeps snapshots enabled" {
+  run bash "$VMSPAWN" -n --batch-id=auto02 --storage-class=my-rbd-sc \
+    --snapshot-class=my-rbd-snap --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot mode enabled ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+
+  # --- Uses the provided snapshot class ---
+  [[ "$output" == *"volumeSnapshotClassName: my-rbd-snap"* ]]
+
+  # --- Uses the provided storage class ---
+  [[ "$output" == *"storageClassName: my-rbd-sc"* ]]
+
+  # --- VMs clone from snapshot ---
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# AD-3: custom storage-class + explicit --snapshot overrides
+# ---------------------------------------------------------------
+@test "auto-detect: custom storage-class with explicit --snapshot keeps snapshots" {
+  run bash "$VMSPAWN" -n --batch-id=auto03 --storage-class=my-ceph-sc \
+    --snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot mode enabled (explicit override) ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+
+  # --- Storage class applied ---
+  [[ "$output" == *"storageClassName: my-ceph-sc"* ]]
+}
+
+# ---------------------------------------------------------------
+# AD-4: default storage class (no --storage-class flag) keeps snapshots
+# ---------------------------------------------------------------
+@test "auto-detect: default storage class keeps snapshots enabled" {
+  run bash "$VMSPAWN" -n --batch-id=auto04 --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot mode enabled (default) ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
 }

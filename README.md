@@ -10,8 +10,9 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 
 - `oc` CLI logged into an OpenShift cluster
 - OpenShift Virtualization operator installed (`openshift-cnv` namespace)
-- OpenShift Data Foundation operator installed (`openshift-storage` namespace)
-- Ceph RBD storage class available (default: `ocs-storagecluster-ceph-rbd-virtualization`)
+- A storage class that supports `ReadWriteMany` block volumes
+- **With snapshots (default for OCS):** OpenShift Data Foundation with Ceph RBD storage class and a matching VolumeSnapshotClass
+- **Without snapshots:** any compatible storage class -- pass `--storage-class=CLASS` and snapshots are auto-disabled
 
 ## Quick start
 
@@ -31,6 +32,15 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 # Use a different DataSource with the default cloud-init (root password: password)
 ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
+# Use a non-OCS storage class (snapshots auto-disabled)
+./vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
+
+# Use a custom storage class with snapshots (provide both classes)
+./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+
+# Explicitly disable snapshots on any storage
+./vmspawn --no-snapshot --vms=10 --namespaces=2
+
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
 
@@ -42,12 +52,26 @@ Each run is tagged with a unique **batch ID** so you can spawn additional VMs at
 
 Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). This ID is embedded in every resource name and applied as a Kubernetes label, making each run fully isolated.
 
-The tool performs four steps in order:
+The tool performs these steps in order:
 
 1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
 2. **Create base disk** -- one DataVolume per namespace, either cloned from an OCP DataSource (default) or imported from a URL (`--dv-url`)
-3. **Snapshot base disk** -- creates a VolumeSnapshot per namespace for fast cloning
-4. **Create VMs** -- clones VMs from the local snapshot: `{basename}-{batch}-1`, `{basename}-{batch}-2`, ...
+3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning
+4. **Create VMs** -- clones VMs from the snapshot (snapshot mode) or directly from the base PVC (no-snapshot mode)
+
+### Snapshot vs. no-snapshot mode
+
+By default, vmspawn uses VolumeSnapshots for efficient cloning (each VM clones from a snapshot of the base disk). This requires a storage class that supports snapshots, such as OCS/ODF with Ceph RBD.
+
+For storage classes without snapshot support, vmspawn clones each VM directly from the base PVC. This is auto-detected based on the options you provide:
+
+| Options | Snapshot mode |
+|---|---|
+| *(defaults -- OCS storage)* | Enabled |
+| `--storage-class=X` *(no snapshot-class)* | **Auto-disabled** |
+| `--storage-class=X --snapshot-class=Y` | Enabled (matching pair) |
+| `--no-snapshot` | Disabled (explicit) |
+| `--snapshot` | Enabled (explicit override) |
 
 In DataSource mode (default), a cloud-init is auto-injected to enable root SSH with password `password`.
 
@@ -124,8 +148,11 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --datasource=NAME           Clone from OCP DataSource (default: rhel9)
     --dv-url=URL                Import disk from URL (overrides --datasource)
     --storage-size=N            Storage size for --dv-url mode (default: 22Gi)
-    --storage-class=class       Storage class name
-    --snapshot-class=class      Snapshot class name
+    --storage-class=class       Storage class name (auto-disables snapshots
+                                unless --snapshot-class is also provided)
+    --snapshot-class=class      Snapshot class name (implies --snapshot)
+    --snapshot                  Use VolumeSnapshots for cloning (default for OCS)
+    --no-snapshot               Clone VMs directly from PVC (no snapshot needed)
     --pvc-base-name=name        Base PVC name (default: rhel9-base)
 
     --cores=N                   VM CPU cores (default: 1)
@@ -192,6 +219,7 @@ templates/
   dv-datasource.yaml # DataVolume template (clone from DataSource)
   volumesnap.yaml    # VolumeSnapshot template
   vm-snap.yaml       # VirtualMachine template (clone from snapshot)
+  vm-clone.yaml      # VirtualMachine template (clone from PVC, no-snapshot mode)
   cloudinit-secret.yaml  # cloud-init userdata Secret template
 tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
