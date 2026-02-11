@@ -30,10 +30,8 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"name: rhel9"* ]]
   [[ "$output" == *"namespace: openshift-virtualization-os-images"* ]]
 
-  # --- DV has no explicit storage size (auto-sized from DataSource) ---
-  local dv_yaml
-  dv_yaml=$(echo "$output" | sed -n '/kind: DataVolume/,/^---/p' | head -20)
-  [[ "$dv_yaml" != *"storage: 22Gi"* ]]
+  # --- DV has explicit storage size ---
+  [[ "$output" == *"storage: 22Gi"* ]]
 
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
@@ -528,7 +526,7 @@ VMSPAWN="./vmspawn"
 # ---------------------------------------------------------------
 # DataSource DV template structure
 # ---------------------------------------------------------------
-@test "DataSource DV uses storage API without explicit size" {
+@test "DataSource DV uses storage API with explicit size" {
   run bash "$VMSPAWN" -n --batch-id=yaml01 --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
@@ -538,6 +536,8 @@ VMSPAWN="./vmspawn"
   [[ "$output" == *"ReadWriteMany"* ]]
   [[ "$output" == *"volumeMode: Block"* ]]
   [[ "$output" == *"storageClassName:"* ]]
+  # Explicit size included for WFFC compatibility
+  [[ "$output" == *"storage: 22Gi"* ]]
 }
 
 # ---------------------------------------------------------------
