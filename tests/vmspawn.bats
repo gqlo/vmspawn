@@ -1457,7 +1457,38 @@ MOCKEOF
 }
 
 # ---------------------------------------------------------------
-# WFFC-4: WFFC detection works in dry-run
+# WFFC-4: WFFC + explicit --snapshot → auto-disables snapshots
+# ---------------------------------------------------------------
+@test "wffc: snapshot mode auto-disabled for WFFC storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=wf0004 --storage-class=lvms-nvme-sc \
+    --snapshot --vms=2 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/wf0004-*.log logs/batch-wf0004.manifest
+
+  [ "$status" -eq 0 ]
+  # Snapshot mode was auto-disabled
+  [[ "$output" == *"Disabling snapshot mode"* ]]
+  [[ "$output" == *"WFFC storage won't bind"* ]]
+  [[ "$output" == *"Falling back to direct DataSource clone"* ]]
+  # No VolumeSnapshot created
+  [[ "$output" != *"Creating VolumeSnapshots"* ]]
+  # Direct DataSource clone used instead
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# WFFC-5: WFFC detection works in dry-run
 # ---------------------------------------------------------------
 @test "wffc: dry-run shows WFFC warning when oc is available" {
   local mock_dir

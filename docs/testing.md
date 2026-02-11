@@ -149,7 +149,7 @@ Live-mode tests using a **mock `oc`** that returns configured `StorageProfile` a
 | SP-4 | `ReadWriteMany` + `--rwo` | Explicit `--rwo` overrides StorageProfile RWX |
 | SP-5 | `ReadWriteOnce` + `--rwx` | Explicit `--rwx` overrides StorageProfile RWO |
 
-### WaitForFirstConsumer handling (WFFC-1 through WFFC-4)
+### WaitForFirstConsumer handling (WFFC-1 through WFFC-5)
 
 Live-mode tests using a mock `oc` that simulates WaitForFirstConsumer (WFFC) storage classes:
 
@@ -158,7 +158,8 @@ Live-mode tests using a mock `oc` that simulates WaitForFirstConsumer (WFFC) sto
 | WFFC-1 | WFFC + DataSource + no-snapshot | Skips base DV entirely (direct DataSource clone avoids deadlock) |
 | WFFC-2 | WFFC + URL import + no-snapshot | Skips DV wait, proceeds to VM creation (VMs trigger PVC binding) |
 | WFFC-3 | Immediate binding + URL import | Normal DV wait (no skip), all DVs complete before VMs |
-| WFFC-4 | WFFC in dry-run | WFFC warning shown when `oc` is available in dry-run |
+| WFFC-4 | WFFC + explicit `--snapshot` | Snapshot mode auto-disabled with warning, falls back to direct DataSource clone |
+| WFFC-5 | WFFC in dry-run | WFFC warning shown when `oc` is available in dry-run |
 
 ## Three clone paths
 
