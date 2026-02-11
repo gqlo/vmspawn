@@ -137,6 +137,26 @@ Tests for `--access-mode`, `--rwo`, and `--rwx` CLI options:
 | AM-5 | `--rwo --snapshot` | `--rwo` applies to snapshot-based VMs too |
 | AM-6 | `--rwo --no-snapshot --dv-url=...` | `--rwo` with URL import mode |
 
+### Missing option coverage (OPT-1 through OPT-13)
+
+Tests that ensure every CLI option has at least one test case:
+
+| Test | Command | What it validates |
+|---|---|---|
+| OPT-1 | `--pvc-base-name=custom-base --snapshot` | Custom PVC name propagates into VolumeSnapshot `persistentVolumeClaimName` |
+| OPT-2 | `--request-cpu=500m` | CPU request appears in `resources.requests.cpu` in VM spec |
+| OPT-3 | `--request-memory=512Mi` | Memory request appears in `resources.requests.memory` in VM spec |
+| OPT-4 | `--request-cpu=2 --request-memory=4Gi` | Both CPU and memory requests present together |
+| OPT-5 | `--vms-per-namespace=3 --namespaces=2` | Calculates total VMs (6), distributes 3 per namespace |
+| OPT-6 | `--run-strategy=RerunOnFailure` | Custom run strategy value propagates to VM YAML |
+| OPT-7 | `--start` | Sets `runStrategy: Always` |
+| OPT-8 | `--wait` | Option accepted without error |
+| OPT-9 | `--nowait` | Option accepted without error |
+| OPT-10 | `--create-existing-vm` | Option accepted without error |
+| OPT-11 | `--no-create-existing-vm` | Option accepted without error |
+| OPT-12 | `-h` | Displays help/usage text |
+| OPT-13 | `8 3` (positional args) | 8 VMs across 3 namespaces via positional arguments |
+
 ### StorageProfile auto-detection (SP-1 through SP-5)
 
 Live-mode tests using a **mock `oc`** that returns configured `StorageProfile` access modes:
