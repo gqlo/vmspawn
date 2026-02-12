@@ -528,6 +528,250 @@ VMSPAWN="./vmspawn"
   [ "$status" -ne 0 ]
 }
 
+# ---------------------------------------------------------------
+# ERR-1: --vms=0 rejected as non-positive
+# ---------------------------------------------------------------
+@test "ERR: --vms=0 rejected as non-positive" {
+  run bash "$VMSPAWN" -n --batch-id=err010 --vms=0 --namespaces=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Number of VMs must be a positive integer"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-2: --namespaces=0 rejected as non-positive
+# ---------------------------------------------------------------
+@test "ERR: --namespaces=0 rejected as non-positive" {
+  run bash "$VMSPAWN" -n --batch-id=err011 --vms=1 --namespaces=0
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Number of namespaces must be a positive integer"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-3: VMs fewer than namespaces is rejected
+# ---------------------------------------------------------------
+@test "ERR: --vms=2 --namespaces=5 fails (VMs < namespaces)" {
+  run bash "$VMSPAWN" -n --batch-id=err012 --vms=2 --namespaces=5
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Number of VMs must be greater than or equal to number of namespaces"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-4: too many positional arguments rejected
+# ---------------------------------------------------------------
+@test "ERR: three positional arguments rejected" {
+  run bash "$VMSPAWN" -n --batch-id=err013 10 2 extra
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Usage:"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-5: negative number as positional arg rejected
+# ---------------------------------------------------------------
+@test "ERR: negative positional arg rejected as non-numeric" {
+  run bash "$VMSPAWN" -n --batch-id=err014 -- -5
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid argument"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-6: unknown long option prints usage
+# ---------------------------------------------------------------
+@test "ERR: unknown long option rejected" {
+  run bash "$VMSPAWN" -n --batch-id=err015 --nonexistent-option
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Usage:"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-7: unknown short option prints usage
+# ---------------------------------------------------------------
+@test "ERR: unknown short option rejected" {
+  run bash "$VMSPAWN" -Z
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Usage:"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-8: --delete= with empty string fails
+# ---------------------------------------------------------------
+@test "ERR: --delete with empty value fails" {
+  run bash "$VMSPAWN" -n "--delete="
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"--delete requires a batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-9: --cloudinit pointing to a directory instead of a file
+# ---------------------------------------------------------------
+@test "ERR: --cloudinit with directory instead of file fails" {
+  run bash "$VMSPAWN" -n --batch-id=err016 --vms=1 --namespaces=1 \
+    --cloudinit=/tmp
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Cloud-init file not found"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-10: missing namespace.yaml template
+# ---------------------------------------------------------------
+@test "ERR: missing namespace.yaml template fails" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err017 --vms=1 --namespaces=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-11: missing dv-datasource.yaml in snapshot+datasource mode
+# ---------------------------------------------------------------
+@test "ERR: missing dv-datasource.yaml template fails" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  # Provide namespace.yaml and volumesnap.yaml and vm-snap.yaml so it
+  # gets past those checks and fails on dv-datasource.yaml
+  cp templates/namespace.yaml "$tmpdir/"
+  cp templates/volumesnap.yaml "$tmpdir/"
+  cp templates/vm-snap.yaml "$tmpdir/"
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err018 \
+    --vms=1 --namespaces=1 --snapshot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-12: missing dv.yaml in URL mode
+# ---------------------------------------------------------------
+@test "ERR: missing dv.yaml template fails in URL mode" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cp templates/namespace.yaml "$tmpdir/"
+  cp templates/vm-clone.yaml "$tmpdir/"
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err019 \
+    --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-13: missing vm-snap.yaml in snapshot mode
+# ---------------------------------------------------------------
+@test "ERR: missing vm-snap.yaml template fails in snapshot mode" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cp templates/namespace.yaml "$tmpdir/"
+  cp templates/volumesnap.yaml "$tmpdir/"
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err020 \
+    --vms=1 --namespaces=1 --snapshot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-14: missing vm-datasource.yaml in no-snapshot datasource mode
+# ---------------------------------------------------------------
+@test "ERR: missing vm-datasource.yaml template fails" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cp templates/namespace.yaml "$tmpdir/"
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err021 \
+    --vms=1 --namespaces=1 --no-snapshot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-15: missing vm-clone.yaml in URL no-snapshot mode
+# ---------------------------------------------------------------
+@test "ERR: missing vm-clone.yaml template fails in URL mode" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cp templates/namespace.yaml "$tmpdir/"
+  cp templates/dv.yaml "$tmpdir/"
+  run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err022 \
+    --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"not found on"* ]]
+  rm -rf "$tmpdir"
+}
+
+# ---------------------------------------------------------------
+# ERR-16: --snapshot then --no-snapshot (last wins = no-snapshot)
+# ---------------------------------------------------------------
+@test "ERR: --snapshot then --no-snapshot uses no-snapshot mode" {
+  run bash "$VMSPAWN" -n --batch-id=err023 --vms=2 --namespaces=1 \
+    --snapshot --no-snapshot
+  [ "$status" -eq 0 ]
+  [[ "$output" != *"Creating VolumeSnapshots"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-17: --no-snapshot then --snapshot (last wins = snapshot)
+# ---------------------------------------------------------------
+@test "ERR: --no-snapshot then --snapshot uses snapshot mode" {
+  run bash "$VMSPAWN" -n --batch-id=err024 --vms=2 --namespaces=1 \
+    --no-snapshot --snapshot
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"Creating VolumeSnapshots"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-18: --rwo then --rwx (last wins = ReadWriteMany)
+# ---------------------------------------------------------------
+@test "ERR: --rwo then --rwx uses ReadWriteMany" {
+  run bash "$VMSPAWN" -n --batch-id=err025 --vms=1 --namespaces=1 \
+    --rwo --rwx
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ReadWriteMany"* ]]
+  [[ "$output" != *"ReadWriteOnce"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-19: --rwx then --rwo (last wins = ReadWriteOnce)
+# ---------------------------------------------------------------
+@test "ERR: --rwx then --rwo uses ReadWriteOnce" {
+  run bash "$VMSPAWN" -n --batch-id=err026 --vms=1 --namespaces=1 \
+    --rwx --rwo
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-20: --dv-url overrides --datasource
+# ---------------------------------------------------------------
+@test "ERR: --dv-url overrides --datasource" {
+  run bash "$VMSPAWN" -n --batch-id=err027 --vms=1 --namespaces=1 \
+    --datasource=fedora --dv-url=http://example.com/disk.qcow2 --no-snapshot
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  # DataSource should not be referenced
+  [[ "$output" != *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-21: --vms=-1 rejected as non-positive
+# ---------------------------------------------------------------
+@test "ERR: --vms=-1 rejected as non-positive" {
+  run bash "$VMSPAWN" -n --batch-id=err028 --vms=-1 --namespaces=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Number of VMs must be a positive integer"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-22: --namespaces=-1 rejected as non-positive
+# ---------------------------------------------------------------
+@test "ERR: --namespaces=-1 rejected as non-positive" {
+  run bash "$VMSPAWN" -n --batch-id=err029 --namespaces=-1 --vms=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Number of namespaces must be a positive integer"* ]]
+}
+
 # ===============================================================
 # YAML structure validation
 # ===============================================================
