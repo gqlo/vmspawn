@@ -1,0 +1,105 @@
+#!/bin/bash
+
+# Pre-commit hook for vmspawn
+# Runs relevant checks based on which files are staged.
+#
+# Install with:
+#   git config core.hooksPath hooks
+# Or:
+#   ln -sf ../../hooks/pre-commit .git/hooks/pre-commit
+
+set -eu
+
+errors=0
+
+# Get list of staged files (excludes deleted files)
+staged_files=$(git diff --cached --name-only --diff-filter=d)
+
+if [[ -z "$staged_files" ]] ; then
+    exit 0
+fi
+
+# --- Bats tests ---
+# Run tests if the main script, any template, any helper, or test files changed.
+run_tests=0
+while IFS= read -r file ; do
+    case "$file" in
+        vmspawn|templates/*|helpers/*|tests/*.bats)
+            run_tests=1
+            break
+            ;;
+    esac
+done <<< "$staged_files"
+
+if ((run_tests)) ; then
+    if [[ -z "$(type -t bats)" ]] ; then
+        echo "pre-commit: WARNING -- bats not installed, skipping tests"
+    else
+        echo "pre-commit: running bats tests..."
+        if ! bats tests/ ; then
+            echo "pre-commit: bats tests FAILED"
+            ((errors++))
+        else
+            echo "pre-commit: bats tests passed"
+        fi
+    fi
+fi
+
+# --- YAML lint ---
+yaml_files=()
+while IFS= read -r file ; do
+    case "$file" in
+        helpers/*.yaml|templates/*.yaml)
+            yaml_files+=("$file")
+            ;;
+    esac
+done <<< "$staged_files"
+
+if ((${#yaml_files[@]} > 0)) ; then
+    if [[ -z "$(type -t yamllint)" ]] ; then
+        echo "pre-commit: WARNING -- yamllint not installed, skipping YAML lint"
+    else
+        echo "pre-commit: running yamllint on ${#yaml_files[@]} file(s)..."
+        if ! yamllint "${yaml_files[@]}" ; then
+            echo "pre-commit: yamllint FAILED"
+            ((errors++))
+        else
+            echo "pre-commit: yamllint passed"
+        fi
+    fi
+fi
+
+# --- Markdown lint ---
+md_files=()
+while IFS= read -r file ; do
+    case "$file" in
+        *.md)
+            md_files+=("$file")
+            ;;
+    esac
+done <<< "$staged_files"
+
+if ((${#md_files[@]} > 0)) ; then
+    if [[ -z "$(type -t markdownlint-cli2)" ]] ; then
+        echo "pre-commit: WARNING -- markdownlint-cli2 not installed, skipping Markdown lint"
+    else
+        echo "pre-commit: running markdownlint on ${#md_files[@]} file(s)..."
+        if ! markdownlint-cli2 "${md_files[@]}" ; then
+            echo "pre-commit: markdownlint FAILED"
+            ((errors++))
+        else
+            echo "pre-commit: markdownlint passed"
+        fi
+    fi
+fi
+
+# --- Summary ---
+if ((errors > 0)) ; then
+    echo ""
+    echo "pre-commit: $errors check(s) failed -- commit aborted"
+    echo "Fix the issues above and try again, or use --no-verify to skip (not recommended)."
+    exit 1
+fi
+
+echo "pre-commit: all checks passed"
+exit 0

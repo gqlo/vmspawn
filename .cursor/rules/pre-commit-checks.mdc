@@ -1,0 +1,34 @@
+---
+description: Instructs the AI to run all checks before committing code
+alwaysApply: true
+---
+
+# Pre-Commit Checks
+
+Before creating any `git commit`, always run the following checks and fix any failures.
+
+## Required Checks
+
+1. **Tests**: Run `bats tests/` and verify all tests pass
+2. **YAML lint**: Run `yamllint` on any changed YAML files in `helpers/` or `templates/`
+3. **Markdown lint**: Run `markdownlint-cli2` on any changed `.md` files
+
+## Rules
+
+- If any check fails, **fix the issue before committing** -- do not commit broken code
+- Never use `--no-verify` to bypass pre-commit hooks
+- After committing, run `git status` to verify the commit succeeded
+- If a pre-commit hook rejects the commit, fix the reported issue and create a new commit (do not amend)
+
+## Check Commands
+
+```bash
+# Run all tests
+bats tests/
+
+# Lint YAML (check changed files)
+yamllint helpers/*.yaml
+
+# Lint Markdown (check changed files)
+markdownlint-cli2 "**/*.md"
+```
