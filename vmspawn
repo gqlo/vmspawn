@@ -21,8 +21,10 @@ ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
-BASE_PVC_NAME="rhel9-base"
-VM_BASENAME="rhel9"
+BASE_PVC_NAME="vm-base"
+VM_BASENAME="vm"
+BASENAME_SET=0
+PVC_BASE_NAME_SET=0
 VM_CPU_CORES="1"
 VM_MEMORY="1Gi"
 # Default to using the templates/ directory relative to this script.
@@ -136,8 +138,8 @@ process_option() {
 	snapshotcl*) SNAPSHOT_CLASS=$value; SNAPSHOT_CLASS_SET=1 ;;
 	nosnapshot) USE_SNAPSHOT=0; SNAPSHOT_EXPLICITLY_SET=1 ;;
 	snapshot) USE_SNAPSHOT=1; SNAPSHOT_EXPLICITLY_SET=1 ;;
-	pvc*)      BASE_PVC_NAME=$value ;;
-	base*)	   VM_BASENAME=$value ;;
+	pvc*)      BASE_PVC_NAME=$value; PVC_BASE_NAME_SET=1 ;;
+	base*)	   VM_BASENAME=$value; BASENAME_SET=1 ;;
 	core*)	   VM_CPU_CORES=$value ;;
 	mem*)	   VM_MEMORY=$value ;;
 	requestm*) VM_MEMORY_REQUEST=$value ;;
@@ -170,6 +172,17 @@ done
 
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
+
+# Auto-derive VM_BASENAME and BASE_PVC_NAME from the DataSource name
+# when the user hasn't explicitly set --basename or --pvc-base-name.
+if [[ -n "$DATASOURCE" ]] ; then
+    if (( ! BASENAME_SET )) ; then
+	VM_BASENAME="$DATASOURCE"
+    fi
+    if (( ! PVC_BASE_NAME_SET )) ; then
+	BASE_PVC_NAME="${VM_BASENAME}-base"
+    fi
+fi
 
 # Auto-disable snapshots when a custom storage class is used without
 # a matching snapshot class.  The hardcoded SNAPSHOT_CLASS only works

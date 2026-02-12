@@ -133,8 +133,8 @@ VMSPAWN="./vmspawn"
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"name: rhel9-vm-qs0003-ns-1"* ]]
-  [[ "$output" == *"name: rhel9-vm-qs0003-ns-2"* ]]
+  [[ "$output" == *"name: vm-vm-qs0003-ns-1"* ]]
+  [[ "$output" == *"name: vm-vm-qs0003-ns-2"* ]]
 
   # --- 10 VMs ---
   local vm_count
@@ -967,7 +967,7 @@ VMSPAWN="./vmspawn"
   # --- Base DV IS created (URL import path) ---
   [[ "$output" == *"Creating DataVolumes"* ]]
   [[ "$output" == *"kind: DataVolume"* ]]
-  [[ "$output" == *"name: rhel9-base"* ]]
+  [[ "$output" == *"name: vm-base"* ]]
   [[ "$output" != *"Skipping base DataVolume creation"* ]]
 
   # --- Snapshot mode shows PVC clone (not DataSource clone) ---
@@ -975,7 +975,7 @@ VMSPAWN="./vmspawn"
 
   # --- VMs clone from base PVC ---
   [[ "$output" == *"pvc:"* ]]
-  [[ "$output" == *"name: rhel9-base"* ]]
+  [[ "$output" == *"name: vm-base"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -1687,4 +1687,999 @@ MOCKEOF
   [[ "$output" == *"name: vm-opt013-ns-2"* ]]
   [[ "$output" == *"name: vm-opt013-ns-3"* ]]
   [[ "$output" != *"vm-opt013-ns-4"* ]]
+}
+
+# ===============================================================
+# Category 1: Clone Path x Storage Options (combos 1-9)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-1: --storage-class + --rwo + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: storage-class + rwo + no-snapshot on DataSource clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb001 --storage-class=my-sc --rwo \
+    --no-snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom storage class applied ---
+  [[ "$output" == *"storageClassName: my-sc"* ]]
+  [[ "$output" == *"Storage Class: my-sc"* ]]
+
+  # --- RWO access mode ---
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- No-snapshot DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-2: --storage-class + --snapshot-class + --rwo
+# ---------------------------------------------------------------
+@test "combo: storage-class + snapshot-class + rwo in snapshot path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb002 --storage-class=my-rbd \
+    --snapshot-class=my-snap --rwo --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom storage class ---
+  [[ "$output" == *"storageClassName: my-rbd"* ]]
+
+  # --- Custom snapshot class ---
+  [[ "$output" == *"volumeSnapshotClassName: my-snap"* ]]
+
+  # --- RWO access mode ---
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- Snapshot mode enabled ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-3: --storage-class + --rwo + --dv-url
+# ---------------------------------------------------------------
+@test "combo: storage-class + rwo + dv-url on URL import path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb003 --storage-class=my-sc --rwo \
+    --dv-url=http://example.com/disk.qcow2 --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom storage class on base DV and VM ---
+  [[ "$output" == *"storageClassName: my-sc"* ]]
+
+  # --- RWO access mode ---
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- URL import DV ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"kind: DataVolume"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-4: --storage-class + --storage-size + --dv-url
+# ---------------------------------------------------------------
+@test "combo: storage-class + storage-size + dv-url" {
+  run bash "$VMSPAWN" -n --batch-id=cmb004 --storage-class=my-sc \
+    --storage-size=50Gi --dv-url=http://example.com/disk.qcow2 \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom storage class ---
+  [[ "$output" == *"storageClassName: my-sc"* ]]
+
+  # --- Custom size on base DV ---
+  [[ "$output" == *"storage: 50Gi"* ]]
+
+  # --- URL import ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-5: --storage-size + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: storage-size + no-snapshot on DataSource inline DV" {
+  run bash "$VMSPAWN" -n --batch-id=cmb005 --storage-size=50Gi \
+    --no-snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom size in inline DV ---
+  [[ "$output" == *"storage: 50Gi"* ]]
+
+  # --- No base DV ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-6: --storage-size + --snapshot
+# ---------------------------------------------------------------
+@test "combo: storage-size + snapshot on base DV and snapshot flow" {
+  run bash "$VMSPAWN" -n --batch-id=cmb006 --storage-size=50Gi \
+    --snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom size on base DV ---
+  [[ "$output" == *"storage: 50Gi"* ]]
+
+  # --- Snapshot flow ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"Creating DataVolumes"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-7: --rwx + --dv-url + --snapshot
+# ---------------------------------------------------------------
+@test "combo: rwx + dv-url + snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb007 --rwx \
+    --dv-url=http://example.com/disk.qcow2 --snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- RWX access mode ---
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+  [[ "$output" == *"ReadWriteMany"* ]]
+
+  # --- URL import with snapshots ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-8: --rwo + --storage-class + --no-snapshot + --storage-size
+# ---------------------------------------------------------------
+@test "combo: all storage options on DataSource clone path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb008 --rwo --storage-class=my-sc \
+    --no-snapshot --storage-size=50Gi --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- All storage options applied ---
+  [[ "$output" == *"storageClassName: my-sc"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" == *"storage: 50Gi"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- DataSource direct clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-9: --access-mode=ReadWriteOnce + --storage-class + --snapshot-class
+# ---------------------------------------------------------------
+@test "combo: long-form access-mode + storage-class + snapshot-class" {
+  run bash "$VMSPAWN" -n --batch-id=cmb009 --access-mode=ReadWriteOnce \
+    --storage-class=my-rbd --snapshot-class=my-snap --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Long-form access mode ---
+  [[ "$output" == *"Access Mode: ReadWriteOnce"* ]]
+  [[ "$output" == *"ReadWriteOnce"* ]]
+  [[ "$output" != *"ReadWriteMany"* ]]
+
+  # --- Custom classes ---
+  [[ "$output" == *"storageClassName: my-rbd"* ]]
+  [[ "$output" == *"volumeSnapshotClassName: my-snap"* ]]
+
+  # --- Snapshot mode enabled ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+}
+
+# ===============================================================
+# Category 2: Clone Path x Cloud-init (combos 10-14)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-10: --dv-url + --snapshot + --cloudinit
+# ---------------------------------------------------------------
+@test "combo: dv-url + snapshot + custom cloudinit" {
+  run bash "$VMSPAWN" -n --batch-id=cmb010 \
+    --dv-url=http://example.com/disk.qcow2 --snapshot \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- URL import ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+
+  # --- Snapshot mode ---
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- Custom cloud-init Secret ---
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
+  [[ "$output" == *"secretRef"* ]]
+
+  # --- NOT auto-applied ---
+  [[ "$output" != *"applying default cloud-init"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-11: --dv-url + --no-snapshot + --cloudinit
+# ---------------------------------------------------------------
+@test "combo: dv-url + no-snapshot + custom cloudinit" {
+  run bash "$VMSPAWN" -n --batch-id=cmb011 \
+    --dv-url=http://example.com/disk.qcow2 --no-snapshot \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- URL import with PVC clone ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"pvc:"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+
+  # --- Cloud-init Secret ---
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
+  [[ "$output" == *"secretRef"* ]]
+
+  # --- NOT auto-applied (URL mode) ---
+  [[ "$output" != *"applying default cloud-init"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-12: --no-snapshot + --cloudinit + --namespaces=3
+# ---------------------------------------------------------------
+@test "combo: no-snapshot + cloudinit + 3 namespaces (Secret per ns)" {
+  run bash "$VMSPAWN" -n --batch-id=cmb012 --no-snapshot \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml \
+    --vms=6 --namespaces=3
+  [ "$status" -eq 0 ]
+
+  # --- 3 namespaces ---
+  [[ "$output" == *"name: vm-cmb012-ns-1"* ]]
+  [[ "$output" == *"name: vm-cmb012-ns-2"* ]]
+  [[ "$output" == *"name: vm-cmb012-ns-3"* ]]
+
+  # --- 3 Secrets (one per namespace) ---
+  local secret_count
+  secret_count=$(echo "$output" | grep -c "kind: Secret")
+  [ "$secret_count" -eq 3 ]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-13: --dv-url + --snapshot (no --cloudinit) → no auto cloud-init
+# ---------------------------------------------------------------
+@test "combo: dv-url + snapshot without cloudinit has no auto cloud-init" {
+  run bash "$VMSPAWN" -n --batch-id=cmb013 \
+    --dv-url=http://example.com/disk.qcow2 --snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- URL + snapshot mode ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+
+  # --- No cloud-init ---
+  [[ "$output" != *"applying default cloud-init"* ]]
+  [[ "$output" != *"kind: Secret"* ]]
+  [[ "$output" != *"cloudInitNoCloud"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-14: --no-snapshot + --basename=fedora + --cloudinit
+# ---------------------------------------------------------------
+@test "combo: no-snapshot + custom basename + cloudinit" {
+  run bash "$VMSPAWN" -n --batch-id=cmb014 --no-snapshot --basename=fedora \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Custom basename in Secret name ---
+  [[ "$output" == *"name: fedora-cloudinit"* ]]
+
+  # --- Custom basename in VM name ---
+  [[ "$output" == *"name: fedora-cmb014-1"* ]]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+
+  # --- Cloud-init ---
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
+  [[ "$output" == *"secretRef"* ]]
+}
+
+# ===============================================================
+# Category 3: Clone Path x VM Resource Requests (combos 15-18)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-15: --request-cpu + --request-memory + --snapshot
+# ---------------------------------------------------------------
+@test "combo: request-cpu + request-memory in snapshot path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb015 --request-cpu=2 --request-memory=4Gi \
+    --snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Resource requests in vm-snap.yaml output ---
+  [[ "$output" == *"resources:"* ]]
+  [[ "$output" == *"requests:"* ]]
+  [[ "$output" == *"cpu: 2"* ]]
+  [[ "$output" == *"memory: 4Gi"* ]]
+
+  # --- Snapshot mode ---
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-16: --request-cpu + --request-memory + --dv-url + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: request-cpu + request-memory in URL PVC clone path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb016 --request-cpu=2 --request-memory=4Gi \
+    --dv-url=http://example.com/disk.qcow2 --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Resource requests in vm-clone.yaml output ---
+  [[ "$output" == *"resources:"* ]]
+  [[ "$output" == *"requests:"* ]]
+  [[ "$output" == *"cpu: 2"* ]]
+  [[ "$output" == *"memory: 4Gi"* ]]
+
+  # --- URL PVC clone ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"pvc:"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-17: --cores + --memory + --request-cpu + --request-memory (snapshot)
+# ---------------------------------------------------------------
+@test "combo: cores + memory + request-cpu + request-memory in snapshot path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb017 --cores=4 --memory=8Gi \
+    --request-cpu=2 --request-memory=4Gi --snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- CPU/memory limits ---
+  [[ "$output" == *"cores: 4"* ]]
+  [[ "$output" == *"guest: 8Gi"* ]]
+
+  # --- CPU/memory requests ---
+  [[ "$output" == *"resources:"* ]]
+  [[ "$output" == *"requests:"* ]]
+  [[ "$output" == *"cpu: 2"* ]]
+  [[ "$output" == *"memory: 4Gi"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-18: --cores + --memory + --request-cpu + --request-memory (no-snapshot)
+# ---------------------------------------------------------------
+@test "combo: cores + memory + request-cpu + request-memory in DataSource clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb018 --cores=4 --memory=8Gi \
+    --request-cpu=2 --request-memory=4Gi --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- CPU/memory limits ---
+  [[ "$output" == *"cores: 4"* ]]
+  [[ "$output" == *"guest: 8Gi"* ]]
+
+  # --- CPU/memory requests ---
+  [[ "$output" == *"resources:"* ]]
+  [[ "$output" == *"requests:"* ]]
+  [[ "$output" == *"cpu: 2"* ]]
+  [[ "$output" == *"memory: 4Gi"* ]]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"sourceRef"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+}
+
+# ===============================================================
+# Category 4: Clone Path x VM Lifecycle (combos 19-24)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-19: --stop + --snapshot
+# ---------------------------------------------------------------
+@test "combo: stop + snapshot sets Halted in snapshot path" {
+  run bash "$VMSPAWN" -n --batch-id=cmb019 --stop --snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Halted"* ]]
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-20: --stop + --dv-url + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: stop + dv-url + no-snapshot sets Halted in URL clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb020 --stop \
+    --dv-url=http://example.com/disk.qcow2 --no-snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Halted"* ]]
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"pvc:"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-21: --start + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: start + no-snapshot sets Always in DataSource clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb021 --start --no-snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Always"* ]]
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-22: --run-strategy=Manual + --snapshot
+# ---------------------------------------------------------------
+@test "combo: run-strategy Manual + snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb022 --run-strategy=Manual --snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Manual"* ]]
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-23: --run-strategy=Manual + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: run-strategy Manual + no-snapshot DataSource clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb023 --run-strategy=Manual --no-snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Manual"* ]]
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-24: --run-strategy=Manual + --dv-url + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: run-strategy Manual + dv-url + no-snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb024 --run-strategy=Manual \
+    --dv-url=http://example.com/disk.qcow2 --no-snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"runStrategy: Manual"* ]]
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" == *"pvc:"* ]]
+}
+
+# ===============================================================
+# Category 5: Scale x Clone Path (combos 25-29)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-25: --vms-per-namespace + --namespaces + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: vms-per-namespace + namespaces + no-snapshot DataSource clone" {
+  run bash "$VMSPAWN" -n --batch-id=cmb025 --vms-per-namespace=3 --namespaces=2 \
+    --no-snapshot
+  [ "$status" -eq 0 ]
+
+  # --- Total VMs = 3 * 2 = 6 ---
+  [[ "$output" == *"Total VMs: 6"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 6 ]
+
+  # --- DataSource direct clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"sourceRef"* ]]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-cmb025-ns-1"* ]]
+  [[ "$output" == *"name: vm-cmb025-ns-2"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-26: --vms-per-namespace + --namespaces + --snapshot
+# ---------------------------------------------------------------
+@test "combo: vms-per-namespace + namespaces + snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb026 --vms-per-namespace=3 --namespaces=2 \
+    --snapshot
+  [ "$status" -eq 0 ]
+
+  # --- Total VMs = 3 * 2 = 6 ---
+  [[ "$output" == *"Total VMs: 6"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 6 ]
+
+  # --- Snapshot flow ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
+
+  # --- 2 VolumeSnapshots (one per namespace) ---
+  local snap_count
+  snap_count=$(echo "$output" | grep -c "kind: VolumeSnapshot")
+  [ "$snap_count" -eq 2 ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-27: --vms-per-namespace + --namespaces + --cloudinit
+# ---------------------------------------------------------------
+@test "combo: vms-per-namespace + namespaces + cloudinit (Secret per ns)" {
+  run bash "$VMSPAWN" -n --batch-id=cmb027 --vms-per-namespace=4 --namespaces=3 \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml
+  [ "$status" -eq 0 ]
+
+  # --- Total VMs = 4 * 3 = 12 ---
+  [[ "$output" == *"Total VMs: 12"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 12 ]
+
+  # --- 3 cloud-init Secrets (one per namespace) ---
+  local secret_count
+  secret_count=$(echo "$output" | grep -c "kind: Secret")
+  [ "$secret_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-28: positional 7 3 + --no-snapshot + --cloudinit
+# ---------------------------------------------------------------
+@test "combo: positional args + no-snapshot + cloudinit" {
+  run bash "$VMSPAWN" -n --batch-id=cmb028 --no-snapshot \
+    --cloudinit=helpers/cloudinit-stress-workload.yaml 7 3
+  [ "$status" -eq 0 ]
+
+  # --- 7 VMs across 3 namespaces ---
+  [[ "$output" == *"Total VMs: 7"* ]]
+  [[ "$output" == *"Namespaces: 3"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 7 ]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
+  # --- 3 Secrets ---
+  local secret_count
+  secret_count=$(echo "$output" | grep -c "kind: Secret")
+  [ "$secret_count" -eq 3 ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-29: positional 5 2 + --cores + --memory
+# ---------------------------------------------------------------
+@test "combo: positional args + cores + memory" {
+  run bash "$VMSPAWN" -n --batch-id=cmb029 --cores=4 --memory=8Gi 5 2
+  [ "$status" -eq 0 ]
+
+  # --- 5 VMs across 2 namespaces ---
+  [[ "$output" == *"Total VMs: 5"* ]]
+  [[ "$output" == *"Namespaces: 2"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 5 ]
+
+  # --- Custom CPU/memory ---
+  [[ "$output" == *"cores: 4"* ]]
+  [[ "$output" == *"guest: 8Gi"* ]]
+}
+
+# ===============================================================
+# Category 6: Naming x Clone Path (combos 30-34)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-30: --basename + --pvc-base-name + --snapshot
+# ---------------------------------------------------------------
+@test "combo: basename + pvc-base-name + snapshot (both naming options)" {
+  run bash "$VMSPAWN" -n --batch-id=cmb030 --basename=myvm \
+    --pvc-base-name=myvm-base --snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VM name uses basename ---
+  [[ "$output" == *"name: myvm-cmb030-1"* ]]
+
+  # --- VolumeSnapshot references pvc-base-name ---
+  [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
+
+  # --- DV base name uses VM_BASENAME pattern ---
+  [[ "$output" == *"name: myvm-base"* ]]
+
+  # --- Labels use basename ---
+  [[ "$output" == *'vm-basename: "myvm"'* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-31: --basename=myvm + --snapshot (default pvc-base-name)
+# ---------------------------------------------------------------
+@test "combo: basename + snapshot with default pvc-base-name" {
+  run bash "$VMSPAWN" -n --batch-id=cmb031 --basename=myvm --snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VM name uses custom basename ---
+  [[ "$output" == *"name: myvm-cmb031-1"* ]]
+
+  # --- VolumeSnapshot PVC references the auto-derived pvc-base-name (myvm-base) ---
+  [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
+
+  # --- DV base name also uses VM_BASENAME ---
+  # The DV is named {VM_BASENAME}-base = myvm-base
+  [[ "$output" == *"name: myvm-base"* ]]
+
+  # --- Labels ---
+  [[ "$output" == *'vm-basename: "myvm"'* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-32: --datasource=fedora + --basename=custom-vm + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: datasource + different basename + no-snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb032 --datasource=fedora \
+    --basename=custom-vm --no-snapshot --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Uses fedora DataSource ---
+  [[ "$output" == *"name: fedora"* ]]
+  [[ "$output" == *"kind: DataSource"* ]]
+
+  # --- VM uses custom basename ---
+  [[ "$output" == *"name: custom-vm-cmb032-1"* ]]
+  [[ "$output" == *"name: custom-vm-cmb032-2"* ]]
+
+  # --- Labels use custom basename ---
+  [[ "$output" == *'vm-basename: "custom-vm"'* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-33: --basename=myvm + --no-snapshot + --namespaces=2
+# ---------------------------------------------------------------
+@test "combo: basename + no-snapshot + multiple namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=cmb033 --basename=myvm --no-snapshot \
+    --vms=4 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- VM names use custom basename ---
+  [[ "$output" == *"name: myvm-cmb033-1"* ]]
+  [[ "$output" == *"name: myvm-cmb033-2"* ]]
+  [[ "$output" == *"name: myvm-cmb033-3"* ]]
+  [[ "$output" == *"name: myvm-cmb033-4"* ]]
+
+  # --- 2 namespaces ---
+  [[ "$output" == *"name: vm-cmb033-ns-1"* ]]
+  [[ "$output" == *"name: vm-cmb033-ns-2"* ]]
+
+  # --- DataSource clone ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-34: --basename=myvm + --dv-url + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: basename + dv-url + no-snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb034 --basename=myvm \
+    --dv-url=http://example.com/disk.qcow2 --no-snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VM name uses custom basename ---
+  [[ "$output" == *"name: myvm-cmb034-1"* ]]
+
+  # --- Base DV uses custom basename ---
+  [[ "$output" == *"name: myvm-base"* ]]
+
+  # --- URL import ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+
+  # --- PVC clone ---
+  [[ "$output" == *"pvc:"* ]]
+}
+
+# ===============================================================
+# Category 7: Option Precedence and Conflicts (combos 35-42)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-35: --vms-per-namespace overrides --vms
+# ---------------------------------------------------------------
+@test "combo: vms-per-namespace overrides vms flag" {
+  run bash "$VMSPAWN" -n --batch-id=cmb035 --vms-per-namespace=3 --vms=10 \
+    --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- vms-per-namespace wins: total = 3 * 2 = 6, not 10 ---
+  [[ "$output" == *"Total VMs: 6"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 6 ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-36: --vms=10 + positional arg 5 → positional overrides
+# ---------------------------------------------------------------
+@test "combo: positional arg overrides --vms flag" {
+  run bash "$VMSPAWN" -n --batch-id=cmb036 --vms=10 5
+  [ "$status" -eq 0 ]
+
+  # --- Positional arg 5 overrides --vms=10 ---
+  [[ "$output" == *"Total VMs: 5"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 5 ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-37: --snapshot-class + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: snapshot-class + no-snapshot (explicit no-snapshot wins)" {
+  run bash "$VMSPAWN" -n --batch-id=cmb037 --snapshot-class=my-snap \
+    --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Explicit --no-snapshot wins over --snapshot-class ---
+  [[ "$output" == *"Snapshot mode: disabled"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-38: --snapshot-class alone (no --storage-class)
+# ---------------------------------------------------------------
+@test "combo: snapshot-class alone keeps snapshot mode on" {
+  run bash "$VMSPAWN" -n --batch-id=cmb038 --snapshot-class=my-snap \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot mode stays enabled ---
+  [[ "$output" == *"Snapshot mode: enabled"* ]]
+  [[ "$output" == *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"volumeSnapshotClassName: my-snap"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-39: --stop + --wait (dry-run; Halted VMs won't run)
+# ---------------------------------------------------------------
+@test "combo: stop + wait accepted without error in dry-run" {
+  run bash "$VMSPAWN" -n --batch-id=cmb039 --stop --wait \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Both flags accepted ---
+  [[ "$output" == *"runStrategy: Halted"* ]]
+  [[ "$output" == *"kind: VirtualMachine"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-40: --dv-url + --datasource (dv-url clears datasource)
+# ---------------------------------------------------------------
+@test "combo: dv-url overrides datasource" {
+  run bash "$VMSPAWN" -n --batch-id=cmb040 \
+    --datasource=fedora --dv-url=http://example.com/disk.qcow2 \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- URL import used, not DataSource ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+  [[ "$output" != *"sourceRef"* ]]
+  [[ "$output" != *"kind: DataSource"* ]]
+
+  # --- DV source is URL, not DataSource ---
+  [[ "$output" == *"Disk source: URL"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-41: --start + --stop (last one wins)
+# ---------------------------------------------------------------
+@test "combo: start then stop — last flag wins" {
+  run bash "$VMSPAWN" -n --batch-id=cmb041 --start --stop \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- --stop is last, so Halted ---
+  [[ "$output" == *"runStrategy: Halted"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-42: --run-strategy=Halted + --start (start overrides)
+# ---------------------------------------------------------------
+@test "combo: run-strategy Halted then start — start overrides" {
+  run bash "$VMSPAWN" -n --batch-id=cmb042 --run-strategy=Halted --start \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- --start is last, so Always ---
+  [[ "$output" == *"runStrategy: Always"* ]]
+}
+
+# ===============================================================
+# Category 8: WFFC x Other Options (combos 43-46, mock oc)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-43: WFFC + --cloudinit + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo-wffc: cloudinit + no-snapshot with WFFC storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=cmb043 --storage-class=lvms-nvme-sc \
+    --no-snapshot --cloudinit=helpers/cloudinit-stress-workload.yaml \
+    --vms=2 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/cmb043-*.log logs/batch-cmb043.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
+  # --- Cloud-init Secret still created ---
+  [[ "$output" == *"Creating cloud-init Secret"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-44: WFFC + --dv-url (auto-detected RWO)
+# Note: explicit --rwo would skip detect_access_mode() entirely,
+#       bypassing WFFC detection. So we let the mock auto-detect.
+# ---------------------------------------------------------------
+@test "combo-wffc: dv-url with WFFC storage (auto-detected RWO)" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=cmb044 --storage-class=lvms-nvme-sc \
+    --no-snapshot --dv-url=http://example.com/disk.qcow2 \
+    --vms=1 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/cmb044-*.log logs/batch-cmb044.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
+  [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce'"* ]]
+  [[ "$output" == *"Skipping DataVolume wait"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-45: WFFC + --vms-per-namespace + --namespaces
+# ---------------------------------------------------------------
+@test "combo-wffc: vms-per-namespace + namespaces with WFFC storage" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=cmb045 --storage-class=lvms-nvme-sc \
+    --no-snapshot --vms-per-namespace=3 --namespaces=2
+
+  rm -rf "$mock_dir"
+  rm -f logs/cmb045-*.log logs/batch-cmb045.manifest
+
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"WaitForFirstConsumer"* ]]
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+
+  # --- 6 VMs total ---
+  [[ "$output" == *"6 VMs"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-46: WFFC + --snapshot + --cloudinit (auto-disables snapshot)
+# ---------------------------------------------------------------
+@test "combo-wffc: snapshot + cloudinit — WFFC auto-disables snapshot" {
+  local mock_dir
+  mock_dir=$(mktemp -d)
+  _create_mock_oc "$mock_dir"
+
+  export MOCK_ACCESS_MODE=ReadWriteOnce
+  export MOCK_BIND_MODE=WaitForFirstConsumer
+  export PATH="$mock_dir:$PATH"
+
+  run bash "$VMSPAWN" --batch-id=cmb046 --storage-class=lvms-nvme-sc \
+    --snapshot --cloudinit=helpers/cloudinit-stress-workload.yaml \
+    --vms=2 --namespaces=1
+
+  rm -rf "$mock_dir"
+  rm -f logs/cmb046-*.log logs/batch-cmb046.manifest
+
+  [ "$status" -eq 0 ]
+
+  # --- Snapshot auto-disabled ---
+  [[ "$output" == *"Disabling snapshot mode"* ]]
+  [[ "$output" == *"Falling back to direct DataSource clone"* ]]
+
+  # --- Cloud-init still works ---
+  [[ "$output" == *"Creating cloud-init Secret"* ]]
+  [[ "$output" == *"Resource creation completed successfully"* ]]
+}
+
+# ===============================================================
+# Category 9: Dry-run / Quiet x Clone Path (combos 47-49)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# COMBO-47: -q + --no-snapshot
+# ---------------------------------------------------------------
+@test "combo: quiet mode + no-snapshot DataSource clone" {
+  run bash "$VMSPAWN" -q --batch-id=cmb047 --no-snapshot --vms=3 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Quiet mode: no YAML output ---
+  [[ "$output" != *"apiVersion:"* ]]
+  [[ "$output" != *"kind: VirtualMachine"* ]]
+
+  # --- Log messages still appear ---
+  [[ "$output" == *"Skipping base DataVolume creation"* ]]
+  [[ "$output" == *"Skipping VolumeSnapshots"* ]]
+
+  # --- No YAML file created ---
+  [ ! -f logs/cmb047-dryrun.yaml ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-48: -q + --dv-url
+# ---------------------------------------------------------------
+@test "combo: quiet mode + dv-url URL import" {
+  run bash "$VMSPAWN" -q --batch-id=cmb048 \
+    --dv-url=http://example.com/disk.qcow2 --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- Quiet mode: no YAML output ---
+  [[ "$output" != *"apiVersion:"* ]]
+  [[ "$output" != *"kind: VirtualMachine"* ]]
+
+  # --- Log messages still appear ---
+  [[ "$output" == *"Creating DataVolumes"* ]]
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+
+  # --- No YAML file ---
+  [ ! -f logs/cmb048-dryrun.yaml ]
+}
+
+# ---------------------------------------------------------------
+# COMBO-49: -q + --delete
+# ---------------------------------------------------------------
+@test "combo: quiet mode + delete" {
+  run bash "$VMSPAWN" -q --delete=abc123
+  [ "$status" -eq 0 ]
+
+  # --- Delete dry-run still shows info ---
+  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"abc123"* ]]
 }

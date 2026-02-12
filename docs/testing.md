@@ -181,6 +181,106 @@ Live-mode tests using a mock `oc` that simulates WaitForFirstConsumer (WFFC) sto
 | WFFC-4 | WFFC + explicit `--snapshot` | Snapshot mode auto-disabled with warning, falls back to direct DataSource clone |
 | WFFC-5 | WFFC in dry-run | WFFC warning shown when `oc` is available in dry-run |
 
+### Option combination tests (COMBO-1 through COMBO-49)
+
+Multi-option combination tests that validate interactions between 3+ options used together. Organized into 9 categories:
+
+#### Category 1: Clone path x Storage options (COMBO-1 through COMBO-9)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-1 | `--storage-class=X --rwo --no-snapshot` | Custom SC + access mode on inline DataSource DV |
+| COMBO-2 | `--storage-class=X --snapshot-class=Y --rwo` | All 3 storage options in snapshot path |
+| COMBO-3 | `--storage-class=X --rwo --dv-url=...` | Custom SC + access mode on URL base DV + PVC clone VM |
+| COMBO-4 | `--storage-class=X --storage-size=50Gi --dv-url=...` | Custom SC + size on URL import DV |
+| COMBO-5 | `--storage-size=50Gi --no-snapshot` | Custom size on inline DataSource DV |
+| COMBO-6 | `--storage-size=50Gi --snapshot` | Custom size on base DV + snapshot flow |
+| COMBO-7 | `--rwx --dv-url=... --snapshot` | RWX on URL + snapshot path |
+| COMBO-8 | `--rwo --storage-class=X --no-snapshot --storage-size=50Gi` | All storage options on DataSource clone path |
+| COMBO-9 | `--access-mode=ReadWriteOnce --storage-class=X --snapshot-class=Y` | Long-form access mode with custom SC pair |
+
+#### Category 2: Clone path x Cloud-init (COMBO-10 through COMBO-14)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-10 | `--dv-url=... --snapshot --cloudinit=FILE` | URL + snapshot + custom cloud-init |
+| COMBO-11 | `--dv-url=... --no-snapshot --cloudinit=FILE` | URL + no-snapshot + custom cloud-init |
+| COMBO-12 | `--no-snapshot --cloudinit=FILE --namespaces=3` | Secret created per namespace in DataSource clone |
+| COMBO-13 | `--dv-url=... --snapshot` (no `--cloudinit`) | URL+snapshot: no auto cloud-init applied |
+| COMBO-14 | `--no-snapshot --basename=fedora --cloudinit=FILE` | Custom basename affects Secret name + DataSource clone |
+
+#### Category 3: Clone path x VM resource requests (COMBO-15 through COMBO-18)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-15 | `--request-cpu=2 --request-memory=4Gi --snapshot` | Resource requests in `vm-snap.yaml` template |
+| COMBO-16 | `--request-cpu=2 --request-memory=4Gi --dv-url=... --no-snapshot` | Resource requests in `vm-clone.yaml` template |
+| COMBO-17 | `--cores=4 --memory=8Gi --request-cpu=2 --request-memory=4Gi` | Limits and requests all together (snapshot path) |
+| COMBO-18 | `--cores=4 --memory=8Gi --request-cpu=2 --request-memory=4Gi --no-snapshot` | Same on DataSource clone path |
+
+#### Category 4: Clone path x VM lifecycle (COMBO-19 through COMBO-24)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-19 | `--stop --snapshot` | `runStrategy: Halted` in snapshot VM template |
+| COMBO-20 | `--stop --dv-url=... --no-snapshot` | Halted with URL import PVC clone |
+| COMBO-21 | `--start --no-snapshot` | `runStrategy: Always` explicit on DataSource clone |
+| COMBO-22 | `--run-strategy=Manual --snapshot` | Custom strategy on snapshot path |
+| COMBO-23 | `--run-strategy=Manual --no-snapshot` | Custom strategy on DataSource clone |
+| COMBO-24 | `--run-strategy=Manual --dv-url=... --no-snapshot` | Custom strategy on URL PVC clone |
+
+#### Category 5: Scale x Clone path (COMBO-25 through COMBO-29)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-25 | `--vms-per-namespace=3 --namespaces=2 --no-snapshot` | VMs-per-ns with DataSource direct clone |
+| COMBO-26 | `--vms-per-namespace=3 --namespaces=2 --snapshot` | VMs-per-ns with snapshot flow |
+| COMBO-27 | `--vms-per-namespace=4 --namespaces=3 --cloudinit=FILE` | VMs-per-ns + cloud-init Secret per namespace |
+| COMBO-28 | positional `7 3` + `--no-snapshot --cloudinit=FILE` | Positional args with clone path + cloud-init |
+| COMBO-29 | positional `5 2` + `--cores=4 --memory=8Gi` | Positional args with VM config options |
+
+#### Category 6: Naming x Clone path (COMBO-30 through COMBO-34)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-30 | `--basename=myvm --pvc-base-name=myvm-base --snapshot` | Both naming options set (different from defaults) |
+| COMBO-31 | `--basename=myvm --snapshot` (default pvc-base-name) | basename changes VM/DV/snapshot names, PVC name stays `rhel9-base` |
+| COMBO-32 | `--datasource=fedora --basename=custom-vm --no-snapshot` | DataSource and basename are different values |
+| COMBO-33 | `--basename=myvm --no-snapshot --namespaces=2` | Custom basename on DataSource clone across namespaces |
+| COMBO-34 | `--basename=myvm --dv-url=... --no-snapshot` | Custom basename on URL import path |
+
+#### Category 7: Option precedence and conflicts (COMBO-35 through COMBO-42)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-35 | `--vms-per-namespace=3 --vms=10 --namespaces=2` | `--vms-per-namespace` overrides `--vms` (total=6, not 10) |
+| COMBO-36 | `--vms=10` + positional `5` | Positional arg overrides `--vms` |
+| COMBO-37 | `--snapshot-class=X --no-snapshot` | Explicit `--no-snapshot` wins over `--snapshot-class` |
+| COMBO-38 | `--snapshot-class=X` (no `--storage-class`) | `--snapshot-class` alone keeps snapshot mode enabled |
+| COMBO-39 | `--stop --wait` | Both accepted without error in dry-run |
+| COMBO-40 | `--dv-url=... --datasource=fedora` | `--dv-url` clears DataSource |
+| COMBO-41 | `--start --stop` | Last flag wins (Halted) |
+| COMBO-42 | `--run-strategy=Halted --start` | `--start` overrides previous `--run-strategy` |
+
+#### Category 8: WFFC x Other options (COMBO-43 through COMBO-46)
+
+Live-mode tests using a mock `oc` that simulates WFFC storage combined with other features:
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-43 | WFFC + `--cloudinit=FILE --no-snapshot` | Cloud-init Secret still created under WFFC |
+| COMBO-44 | WFFC + `--dv-url=...` (auto-detected RWO) | WFFC + URL import skips DV wait |
+| COMBO-45 | WFFC + `--vms-per-namespace=3 --namespaces=2` | WFFC at scale |
+| COMBO-46 | WFFC + `--snapshot --cloudinit=FILE` | WFFC auto-disables snapshot, cloud-init still works |
+
+#### Category 9: Dry-run / Quiet x Clone path (COMBO-47 through COMBO-49)
+
+| Test | Combination | What it validates |
+|---|---|---|
+| COMBO-47 | `-q --no-snapshot --vms=3` | Quiet mode with DataSource clone path |
+| COMBO-48 | `-q --dv-url=... --vms=2` | Quiet mode with URL import |
+| COMBO-49 | `-q --delete=abc123` | Quiet mode with delete |
+
 ## Three clone paths
 
 vmspawn uses three different clone strategies depending on the mode:
