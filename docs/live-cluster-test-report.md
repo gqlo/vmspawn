@@ -1,4 +1,4 @@
-# Live Cluster Test Report -- 2026-02-12
+# Live Cluster Test Report
 
 ## Environment
 
@@ -27,6 +27,10 @@
 
 **26 VMs created, 26/26 reached Running state. 6/7 tests fully passed. 1 partial (guest image issue).**
 
+### Run history
+
+- **2026-02-12** -- Initial run (Tests 1-7)
+
 ---
 
 ## Test 1 -- Default DataSource, custom CPU/memory, snapshot mode
@@ -39,7 +43,7 @@
 
 **Batch ID:** `54a52e`
 
-### Options verified
+### Options verified -- Test 1
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -68,7 +72,7 @@
 
 **Batch ID:** `1ed721`
 
-### Options verified
+### Options verified -- Test 2
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -92,7 +96,7 @@
 
 **Batch ID:** `c9c0ac`
 
-### Options verified
+### Options verified -- Test 3
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -116,7 +120,7 @@
 
 **Batch ID:** `c71106`
 
-### Options verified
+### Options verified -- Test 4
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -142,7 +146,7 @@
 
 **Batch ID:** `84afd3`
 
-### Options verified
+### Options verified -- Test 5
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -172,7 +176,7 @@
 
 **Batch ID:** `6e1dbd`
 
-### Options verified
+### Options verified -- Test 6
 
 | Option | Expected | Verified |
 |---|---|---|
@@ -200,7 +204,7 @@
 
 **Batch ID:** `ec19bf`
 
-### Options verified
+### Options verified -- Test 7
 
 | Option | Expected | Verified |
 |---|---|---|
