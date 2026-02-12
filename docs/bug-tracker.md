@@ -72,11 +72,11 @@ A linter like `shellcheck` would have flagged `$file` as an undefined variable (
 | **File** | `vmspawn`, lines 158 and 169 |
 | **Found by** | Agent -- discovered during error-handling review |
 
-### Description
+### Problem
 
 When a user passed an unrecognized option (e.g. `--foobar` or `-Z`), the script printed the full help/usage text and exited with status 1, but never told the user *which* option was unrecognized. For long options like `--foobar`, there was no indication at all of what went wrong -- it just looked like the user asked for help.
 
-### Before (unhelpful)
+### Before
 
 ```
 $ ./vmspawn --foobar
@@ -87,7 +87,7 @@ Usage: ./vmspawn [options] [number_of_vms ...
         (50+ lines of help text)
 ```
 
-### After (fixed)
+### After
 
 ```
 $ ./vmspawn --foobar
