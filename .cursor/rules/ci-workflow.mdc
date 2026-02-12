@@ -1,0 +1,31 @@
+---
+description: CI/CD pipeline guidelines for GitHub Actions workflows
+globs: .github/workflows/*.yaml
+alwaysApply: false
+---
+
+# CI/CD Workflow Guidelines
+
+## Current Pipeline
+
+Three independent jobs in `.github/workflows/test.yaml`:
+
+| Job | Tool | What it checks |
+|---|---|---|
+| `test` | `bats` | Runs `bats tests/` (all unit tests) |
+| `lint-yaml` | `yamllint` | Lints `helpers/*.yaml` |
+| `lint-markdown` | `markdownlint-cli2` | Lints `**/*.md` |
+
+## Conventions
+
+- **Triggers**: push and pull_request to `main`
+- **Runner**: all jobs use `ubuntu-latest`
+- **Tool installation**: Bats via `apt-get`, yamllint via `pip`, markdownlint via `DavidAnson/markdownlint-cli2-action`
+- **Jobs must be independent** and run in parallel -- never add dependencies between lint jobs
+
+## When Modifying
+
+- Adding YAML files outside `helpers/`: update the yamllint glob in the workflow
+- Adding a new linter (e.g. shellcheck): add it as a **new job**, not inline in an existing one
+- Adding new template YAML files in `templates/`: consider extending yamllint scope
+- Keep each job focused on one tool for clear failure reporting

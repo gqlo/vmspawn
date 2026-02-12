@@ -266,6 +266,8 @@ helpers/
   stress_ng_random_vm.sh            # standalone stress-ng workload script
   cloudinit-default.yaml            # default cloud-init (root password SSH)
   cloudinit-stress-workload.yaml    # cloud-init user-data for stress workload
+hooks/
+  pre-commit         # git pre-commit hook (runs tests and linters)
 templates/
   namespace.yaml     # namespace template
   dv.yaml            # DataVolume template (import from URL)
@@ -279,3 +281,21 @@ tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
 ```
+
+## Pre-commit hook
+
+A git pre-commit hook is included in `hooks/` that automatically runs tests and linters before each commit. To enable it:
+
+```bash
+git config core.hooksPath hooks
+```
+
+The hook runs only the checks relevant to the files you are committing:
+
+| Staged files | Check |
+|---|---|
+| `vmspawn`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
+| `helpers/*.yaml`, `templates/*.yaml` | `yamllint` on changed files |
+| `*.md` | `markdownlint-cli2` on changed files |
+
+If any check fails, the commit is aborted. Fix the issues and commit again. In emergencies, use `git commit --no-verify` to skip the hook.

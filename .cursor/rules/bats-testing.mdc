@@ -1,0 +1,50 @@
+---
+description: Bats test patterns and naming conventions for vmspawn tests
+globs: tests/*.bats
+alwaysApply: false
+---
+
+# Bats Testing Patterns
+
+## Test Naming
+
+Use `@test "PREFIX: descriptive title"` where PREFIX is a category code:
+
+- `QS` -- Quick Start (README examples)
+- `NS` -- No-snapshot mode
+- `DC` -- Direct DataSource clone
+- `AD` -- Auto-detection
+- `AM` -- Access mode
+- `SP` -- StorageProfile auto-detection
+- `WFFC` -- WaitForFirstConsumer
+- `COMBO` -- Option combinations
+- `OPT` -- Option coverage
+
+## Test Structure
+
+```bash
+# ---------------------------------------------------------------
+# PREFIX-N: brief description of what is tested
+# ---------------------------------------------------------------
+@test "PREFIX: descriptive title" {
+  run bash "$VMSPAWN" -n --batch-id=XXXX [options]
+  [ "$status" -eq 0 ]
+
+  # Assertions
+  [[ "$output" == *"expected substring"* ]]
+  [[ "$output" != *"unexpected substring"* ]]
+}
+```
+
+## Key Patterns
+
+- Always use **dry-run mode** (`-n`) with a fixed `--batch-id` for deterministic output
+- Use `[[ "$output" == *"..."* ]]` for substring matching
+- Use `grep -c` to count occurrences: `vm_count=$(echo "$output" | grep -c "pattern")`
+- Mock `oc` by creating a script in a temp dir and prepending it to `PATH`
+- `$VMSPAWN` is defined at the top of the file as `./vmspawn`
+
+## File Organization
+
+- Test groups are separated by comment banners: `# ===...===`
+- Each test has a header comment block with its test ID and the command being tested
