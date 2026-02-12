@@ -30,6 +30,7 @@
 ### Run history
 
 - **2026-02-12** -- Initial run (Tests 1-7)
+- **2026-02-12** -- Re-run after auto-derive basename change (Tests 1-7): 26/26 Running, same results
 
 ---
 
@@ -41,7 +42,7 @@
 ./vmspawn --cores=4 --memory=8Gi --vms=3 --namespaces=2
 ```
 
-**Batch ID:** `54a52e`
+**Batch ID:** `e2c4ef` (re-run), previously `54a52e`
 
 ### Options verified -- Test 1
 
@@ -70,7 +71,7 @@
 ./vmspawn --datasource=fedora --vms=5 --namespaces=1
 ```
 
-**Batch ID:** `1ed721`
+**Batch ID:** `e12d11` (re-run), previously `1ed721`
 
 ### Options verified -- Test 2
 
@@ -79,9 +80,9 @@
 | `--datasource=fedora` | Base DV clones from `fedora` DataSource | Yes -- `sourceRef.kind=DataSource, sourceRef.name=fedora` |
 | `--vms=5` | 5 total VMs | Yes -- 5 VMs created |
 | `--namespaces=1` | 1 namespace | Yes -- `vm-1ed721-ns-1` |
-| Snapshot mode (default) | Base DV + VolumeSnapshot | Yes -- 1 DV (`rhel9-base`), 1 VolumeSnapshot (readyToUse=true) |
+| Snapshot mode (default) | Base DV + VolumeSnapshot | Yes -- 1 DV (`fedora-base`), 1 VolumeSnapshot (readyToUse=true) |
 | Default cores/memory | 1 core, 1Gi | Yes -- `cores: 1`, `guest: 1Gi` |
-| Auto cloud-init | Default cloud-init applied | Yes -- `rhel9-cloudinit` Secret present |
+| Auto cloud-init | Default cloud-init applied | Yes -- `fedora-cloudinit` Secret present |
 | SSH | Root login with password | Yes -- all 5 VMs (CPUs=1, RAM=863Mi) |
 
 ---
@@ -94,7 +95,7 @@
 ./vmspawn --dv-url=http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow --vms=2 --namespaces=2
 ```
 
-**Batch ID:** `c9c0ac`
+**Batch ID:** `f392c3` (re-run), previously `c9c0ac`
 
 ### Options verified -- Test 3
 
@@ -118,7 +119,7 @@
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=5 --namespaces=2
 ```
 
-**Batch ID:** `c71106`
+**Batch ID:** `4bdda2` (re-run), previously `c71106`
 
 ### Options verified -- Test 4
 
@@ -144,7 +145,7 @@
 ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 ```
 
-**Batch ID:** `84afd3`
+**Batch ID:** `ccd3f7` (re-run), previously `84afd3`
 
 ### Options verified -- Test 5
 
@@ -153,8 +154,8 @@
 | `--datasource=centos-stream9` | Base DV clones from `centos-stream9` DataSource | Yes -- `sourceRef.name=centos-stream9` |
 | `--vms=5` | 5 total VMs | Yes -- all 5 Running |
 | `--namespaces=1` | 1 namespace | Yes |
-| Snapshot mode | Base DV + VolumeSnapshot | Yes -- 1 DV, 1 VolumeSnapshot (readyToUse=true) |
-| Auto cloud-init | Default cloud-init applied | Yes -- `rhel9-cloudinit` Secret present |
+| Snapshot mode | Base DV + VolumeSnapshot | Yes -- 1 DV (`centos-stream9-base`), 1 VolumeSnapshot (readyToUse=true) |
+| Auto cloud-init | Default cloud-init applied | Yes -- `centos-stream9-cloudinit` Secret present |
 | SSH | Root login with password | **FAILED** -- all 5 VMs unreachable (see below) |
 
 ### SSH failure details
@@ -174,7 +175,7 @@
 ./vmspawn --storage-class=ocs-storagecluster-ceph-rbd --vms=5 --namespaces=2
 ```
 
-**Batch ID:** `6e1dbd`
+**Batch ID:** `fbf6df` (re-run), previously `6e1dbd`
 
 ### Options verified -- Test 6
 
@@ -202,7 +203,7 @@
 ./vmspawn --no-snapshot --vms=1 --namespaces=1
 ```
 
-**Batch ID:** `ec19bf`
+**Batch ID:** `8d5b6c` (re-run), previously `ec19bf`
 
 ### Options verified -- Test 7
 
@@ -224,13 +225,13 @@
 
 | Batch ID | Test | VMs | Namespaces |
 |---|---|---|---|
-| `54a52e` | Test 1 | 3 | 2 |
-| `1ed721` | Test 2 | 5 | 1 |
-| `c9c0ac` | Test 3 | 2 | 2 |
-| `c71106` | Test 4 | 5 | 2 |
-| `84afd3` | Test 5 | 5 | 1 |
-| `6e1dbd` | Test 6 | 5 | 2 |
-| `ec19bf` | Test 7 | 1 | 1 |
+| `e2c4ef` | Test 1 | 3 | 2 |
+| `e12d11` | Test 2 | 5 | 1 |
+| `f392c3` | Test 3 | 2 | 2 |
+| `4bdda2` | Test 4 | 5 | 2 |
+| `ccd3f7` | Test 5 | 5 | 1 |
+| `fbf6df` | Test 6 | 5 | 2 |
+| `8d5b6c` | Test 7 | 1 | 1 |
 
 **Total: 26 VMs across 11 namespaces.**
 
@@ -239,11 +240,11 @@
 To delete all test resources:
 
 ```bash
-./vmspawn --delete=54a52e
-./vmspawn --delete=1ed721
-./vmspawn --delete=c9c0ac
-./vmspawn --delete=c71106
-./vmspawn --delete=84afd3
-./vmspawn --delete=6e1dbd
-./vmspawn --delete=ec19bf
+./vmspawn --delete=e2c4ef
+./vmspawn --delete=e12d11
+./vmspawn --delete=f392c3
+./vmspawn --delete=4bdda2
+./vmspawn --delete=ccd3f7
+./vmspawn --delete=fbf6df
+./vmspawn --delete=8d5b6c
 ```
