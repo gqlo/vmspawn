@@ -392,7 +392,7 @@ find_file_on_path() {
 }
 
 check_file_exists() {
-    find_file_on_path "${1:-}" >/dev/null || fatal "$file not found on $CREATE_VM_PATH"
+    find_file_on_path "${1:-}" >/dev/null || fatal "${1:-} not found on $CREATE_VM_PATH"
 }
 
 # Skip creation-specific validation when deleting
