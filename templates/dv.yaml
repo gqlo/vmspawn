@@ -8,8 +8,8 @@ metadata:
     vm-basename: "{VM_BASENAME}"
 spec:
   source:
-      http:
-        url: {DV_URL}
+    http:
+      url: {DV_URL}
   pvc:
     accessModes:
       - {ACCESS_MODE}
