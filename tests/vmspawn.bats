@@ -574,21 +574,25 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# ERR-6: unknown long option prints usage
+# ERR-6: unknown long option shows error with option name
 # ---------------------------------------------------------------
-@test "ERR: unknown long option rejected" {
+@test "ERR: unknown long option rejected with name" {
   run bash "$VMSPAWN" -n --batch-id=err015 --nonexistent-option
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage:"* ]]
+  [[ "$output" == *"unrecognized option"* ]]
+  [[ "$output" == *"--nonexistent-option"* ]]
+  [[ "$output" == *"-h"* ]]
 }
 
 # ---------------------------------------------------------------
-# ERR-7: unknown short option prints usage
+# ERR-7: unknown short option shows error with option name
 # ---------------------------------------------------------------
-@test "ERR: unknown short option rejected" {
+@test "ERR: unknown short option rejected with name" {
   run bash "$VMSPAWN" -Z
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Usage:"* ]]
+  [[ "$output" == *"unrecognized option"* ]]
+  [[ "$output" == *"-Z"* ]]
+  [[ "$output" == *"-h"* ]]
 }
 
 # ---------------------------------------------------------------

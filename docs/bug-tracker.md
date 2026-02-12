@@ -62,4 +62,51 @@ A linter like `shellcheck` would have flagged `$file` as an undefined variable (
 
 ---
 
+## BUG-002: Unrecognized options show no error message
+
+| Field | Value |
+|---|---|
+| **Date found** | 2026-02-12 |
+| **Severity** | Low |
+| **Status** | Fixed |
+| **File** | `vmspawn`, lines 158 and 169 |
+| **Found by** | Agent -- discovered during error-handling review |
+
+### Description
+
+When a user passed an unrecognized option (e.g. `--foobar` or `-Z`), the script printed the full help/usage text and exited with status 1, but never told the user *which* option was unrecognized. For long options like `--foobar`, there was no indication at all of what went wrong -- it just looked like the user asked for help.
+
+### Before (unhelpful)
+
+```
+$ ./vmspawn --foobar
+Usage: ./vmspawn [options] [number_of_vms ...
+    options:
+        -n                      Show what commands would be run
+        ...
+        (50+ lines of help text)
+```
+
+### After (fixed)
+
+```
+$ ./vmspawn --foobar
+Error: unrecognized option '--foobar'. Run './vmspawn -h' to see all options.
+
+$ ./vmspawn -Z
+Error: unrecognized option '-Z'. Run './vmspawn -h' to see all options.
+```
+
+### Fix
+
+1. Changed the `*` catch-all in `process_option()` to call `fatal` with the option name instead of `help`
+2. Changed the `*` catch-all in the `getopts` loop to call `fatal` with `OPTARG` (the actual option character)
+3. Prefixed the `getopts` optstring with `:` to suppress default error messages and let us show our own
+
+### Tests updated
+
+ERR-6 and ERR-7 in `tests/vmspawn.bats` now verify that the error message includes the unrecognized option name and a hint to run `-h`.
+
+---
+
 <!-- Add new bugs above this line using the next sequential BUG-NNN number -->

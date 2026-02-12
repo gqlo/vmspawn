@@ -155,18 +155,19 @@ process_option() {
 	nocreate*) RECREATE_EXISTING_VMS=0 ;;
 	start)     RUN_STRATEGY=Always ;;
 	stop)      RUN_STRATEGY=Halted ;;
-	*) 	   help ;;
+	*) 	   fatal "Error: unrecognized option '--${optstr%%=*}'. Run '$0 -h' to see all options." ;;
     esac
 }
 
 # process all the options one by one, - is treated as the option"-"
-while getopts 'nqh-:' opt "$@" ; do
+# Leading : suppresses getopts default error so we can show our own message.
+while getopts ':nqh-:' opt "$@" ; do
     case "$opt" in
 	n) doit=0		    ;;
 	q) quiet=1; doit=0	    ;;
 	h) help			    ;;
 	-) process_option "$OPTARG" ;;
-	*) help	                    ;;
+	*) fatal "Error: unrecognized option '-${OPTARG:-$opt}'. Run '$0 -h' to see all options." ;;
     esac
 done
 
