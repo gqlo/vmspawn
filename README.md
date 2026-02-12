@@ -18,32 +18,59 @@ Each run is tagged with a unique **batch ID** for easy management -- list, inspe
 
 ## Quick start
 
+### Defaults
+
+Unless overridden, vmspawn uses these built-in defaults:
+
+| Setting | Default | Notes |
+|---|---|---|
+| DataSource | `rhel9` | From `openshift-virtualization-os-images` namespace |
+| Storage class | `ocs-storagecluster-ceph-rbd-virtualization` | OCS virtualization-optimized class |
+| Snapshot class | `ocs-storagecluster-rbdplugin-snapclass` | Used when snapshot mode is enabled |
+| Snapshot mode | **enabled** | Auto-disabled when custom `--storage-class` is used without `--snapshot-class` |
+| Storage size | `32Gi` | Per-VM disk size |
+| Access mode | Auto-detected from StorageProfile | Falls back to `ReadWriteMany` |
+| CPU cores | `1` | Per VM |
+| Memory | `1Gi` | Per VM |
+| Run strategy | `Always` | VMs start immediately |
+| Cloud-init | Auto-injected for DataSource VMs | Sets root password to `password`; not injected for `--dv-url` |
+| VM basename | Derived from DataSource name | e.g. `rhel9`, `fedora`, `centos-stream9`; generic `vm` for `--dv-url` |
+| VMs | `1` | Total VMs |
+| Namespaces | `1` | Total namespaces |
+
+### Examples
+
 ```bash
 # Create 10 RHEL9 VMs (4 cores, 8Gi memory) using default OCS storage class
+# Defaults: datasource=rhel9, snapshot mode=on, access mode=auto-detect, cloud-init=auto
 ./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
 # Use a different DataSource (e.g. Fedora) with default OCS storage
+# VM basename auto-derived: "fedora", base DV: "fedora-base", secret: "fedora-cloudinit"
 ./vmspawn --datasource=fedora --vms=5 --namespaces=1
 
 # Import a custom QCOW2 instead of using a DataSource (default OCS storage)
+# No cloud-init auto-injected in URL mode; VM basename: "vm", base DV: "vm-base"
 ./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
 # Create VMs with a cloud-init workload injected at boot (default OCS storage)
+# Custom cloud-init replaces the default auto-injected one
 ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
 # Use a different DataSource with default OCS storage (root password: password)
+# VM basename auto-derived: "centos-stream9"
 ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
-# Use a non-OCS storage class (snapshots auto-disabled)
+# Use a non-OCS storage class (snapshots auto-disabled because no --snapshot-class)
 ./vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
 
-# Use a custom storage class with snapshots (provide both classes)
+# Use a custom storage class with snapshots (provide both classes to keep snapshots on)
 ./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 
-# Explicitly disable snapshots on default OCS storage
+# Explicitly disable snapshots on default OCS storage (VMs clone directly from DataSource)
 ./vmspawn --no-snapshot --vms=10 --namespaces=2
 
-# Dry-run to preview generated YAML without applying (default OCS storage)
+# Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
 
 # Delete all resources for a batch
