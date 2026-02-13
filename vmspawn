@@ -45,6 +45,8 @@ RUN_STRATEGY=Always
 WAIT=0
 RECREATE_EXISTING_VMS=1
 DELETE_BATCH=
+DELETE_ALL=0
+CONFIRM_DELETE=0
 yamlpath=()
 declare -A expected_vms=()
 # If CREATE_VM_PATH is explicitly provided, search for
@@ -107,6 +109,8 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. helpers/cloudinit-stress-workload.yaml)
         --delete=BATCH_ID       Delete all resources for the given batch
+        --delete-all            Delete ALL vmspawn batches on the cluster
+        -y / --yes              Skip confirmation prompt for delete operations
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
 EOF
@@ -126,8 +130,10 @@ process_option() {
     # Convert the option to lowercase for case-insensitive matching
     case "${option,,}" in
 	batchid)   BATCH_ID=$value ;;
-	delete*)   [[ -n "$value" ]] || fatal "--delete requires a batch ID (e.g. --delete=abc123)"
+	delete)    [[ -n "$value" ]] || fatal "--delete requires a batch ID (e.g. --delete=abc123)"
 		   DELETE_BATCH=$value ;;
+	deleteall) DELETE_ALL=1 ;;
+	yes)       CONFIRM_DELETE=1 ;;
 	datasourc*) DATASOURCE=$value ;;
 	dvurl)     DV_URL=$value; DATASOURCE= ;;
 	storagecl*) STORAGE_CLASS=$value; STORAGE_CLASS_SET=1 ;;
@@ -161,10 +167,11 @@ process_option() {
 
 # process all the options one by one, - is treated as the option"-"
 # Leading : suppresses getopts default error so we can show our own message.
-while getopts ':nqh-:' opt "$@" ; do
+while getopts ':nqyh-:' opt "$@" ; do
     case "$opt" in
 	n) doit=0		    ;;
 	q) quiet=1; doit=0	    ;;
+	y) CONFIRM_DELETE=1	    ;;
 	h) help			    ;;
 	-) process_option "$OPTARG" ;;
 	*) fatal "Error: unrecognized option '-${OPTARG:-$opt}'. Run '$0 -h' to see all options." ;;
@@ -396,8 +403,23 @@ check_file_exists() {
     find_file_on_path "${1:-}" >/dev/null || fatal "${1:-} not found on $CREATE_VM_PATH"
 }
 
+# Validate batch ID format for --delete (Kubernetes label value rules:
+# alphanumeric, dots, hyphens, underscores; 1-63 chars; starts/ends alphanumeric).
+# This blocks wildcards, commas, spaces, and other special characters that
+# could confuse label selectors or cause unexpected behavior.
+if [[ -n "$DELETE_BATCH" ]] ; then
+    if ! [[ "$DELETE_BATCH" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$ ]]; then
+	fatal "Invalid batch ID '$DELETE_BATCH': must be 1-63 alphanumeric characters (plus . _ -), starting and ending with alphanumeric"
+    fi
+fi
+
+# --delete and --delete-all are mutually exclusive
+if [[ -n "$DELETE_BATCH" ]] && ((DELETE_ALL)) ; then
+    fatal "Cannot use --delete and --delete-all together"
+fi
+
 # Skip creation-specific validation when deleting
-if [[ -z "$DELETE_BATCH" ]] ; then
+if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
     # no more than 2 positional arguments are allowed
     if (($# > 2)) ; then
 	help
@@ -848,8 +870,10 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
 
 ################################################################
 # Delete all resources for a batch
+# Args: $1 = batch ID, $2 = "skip-confirm" (optional, used by delete_all_batches)
 delete_batch() {
     local batch=$1
+    local skip_confirm=${2:-}
 
     if ((! doit)) ; then
         echo "(dry-run) Would delete all resources for batch '$batch':"
@@ -878,6 +902,25 @@ delete_batch() {
         return 0
     fi
 
+    # Safety: verify all matching namespaces look like vmspawn-created ones.
+    # This prevents accidental deletion of operator/system namespaces that
+    # may have been manually tagged with a batch-id label.
+    local ns_name
+    while read -r ns_name ; do
+	if [[ -n "$ns_name" && ! "$ns_name" =~ ^vm-[a-zA-Z0-9._-]+-ns-[0-9]+$ ]] ; then
+	    fatal "Refusing to delete namespace '$ns_name': does not match vmspawn naming pattern (vm-{batch}-ns-{N})"
+	fi
+    done <<< "$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1}')"
+
+    # Confirmation prompt (unless --yes or called from delete_all_batches)
+    if (( ! CONFIRM_DELETE )) && [[ "$skip_confirm" != "skip-confirm" ]] ; then
+	read -r -p "Delete these resources? [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    echo "Aborted."
+	    return 0
+	fi
+    fi
+
     # Delete namespaces (cascades VMs, DVs, snapshots, PVCs)
     log_message "Deleting namespaces for batch '$batch'..."
     oc delete ns -l batch-id="$batch"
@@ -889,6 +932,60 @@ delete_batch() {
         rm -f "$manifest"
         log_message "Removed manifest: $manifest"
     fi
+}
+
+################################################################
+# Delete ALL vmspawn batches on the cluster
+delete_all_batches() {
+    # Discover all vmspawn-created namespaces by the batch-id label,
+    # then extract unique batch IDs from the namespace names.
+    local all_batches
+
+    if ((! doit)) ; then
+	echo "(dry-run) Would discover and delete all vmspawn batches."
+	echo "  oc get ns -l batch-id --no-headers"
+	echo ""
+	echo "This finds all namespaces with a batch-id label matching"
+	echo "the vmspawn naming pattern (vm-{batch}-ns-{N}) and deletes them."
+	return 0
+    fi
+
+    all_batches=$(oc get ns -l batch-id --no-headers 2>/dev/null |
+	awk '{print $1}' |
+	grep -oP '^vm-\K[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
+	sort -u) || true
+
+    if [[ -z "$all_batches" ]] ; then
+	echo "No vmspawn batches found on the cluster."
+	return 0
+    fi
+
+    echo "Found vmspawn batches:"
+    local batch
+    while read -r batch ; do
+	local ns_count
+	ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	local vm_count
+	vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	echo "  $batch  ($ns_count namespaces, $vm_count VMs)"
+    done <<< "$all_batches"
+    echo ""
+
+    # Confirmation (unless --yes)
+    if (( ! CONFIRM_DELETE )) ; then
+	read -r -p "Delete ALL batches above? This is irreversible. [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    echo "Aborted."
+	    return 0
+	fi
+    fi
+
+    # Delete each batch; skip per-batch confirmation since we already confirmed
+    while read -r batch ; do
+	delete_batch "$batch" skip-confirm
+    done <<< "$all_batches"
+
+    log_message "All vmspawn batches deleted."
 }
 
 ################################################################
@@ -979,7 +1076,9 @@ main() {
 }
 
 # Run delete or create
-if [[ -n "$DELETE_BATCH" ]] ; then
+if (( DELETE_ALL )) ; then
+    delete_all_batches
+elif [[ -n "$DELETE_BATCH" ]] ; then
     delete_batch "$DELETE_BATCH"
 else
     main

@@ -2931,3 +2931,149 @@ MOCKEOF
   [[ "$output" == *"dry-run"* ]]
   [[ "$output" == *"abc123"* ]]
 }
+
+# ===============================================================
+# Delete hardening -- batch ID validation
+# ===============================================================
+
+# ---------------------------------------------------------------
+# ERR-10: --delete='*' rejected (wildcard not a valid batch ID)
+# ---------------------------------------------------------------
+@test "ERR: --delete with wildcard is rejected" {
+  run bash "$VMSPAWN" -n "--delete=*"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-11: --delete='a,b' rejected (comma in batch ID)
+# ---------------------------------------------------------------
+@test "ERR: --delete with comma is rejected" {
+  run bash "$VMSPAWN" -n "--delete=a,b"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-12: --delete with spaces rejected
+# ---------------------------------------------------------------
+@test "ERR: --delete with spaces is rejected" {
+  run bash "$VMSPAWN" -n "--delete=abc 123"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-13: --delete with semicolons rejected
+# ---------------------------------------------------------------
+@test "ERR: --delete with semicolons is rejected" {
+  run bash "$VMSPAWN" -n "--delete=abc;rm -rf /"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-14: --delete with value ending in hyphen rejected
+# ---------------------------------------------------------------
+@test "ERR: --delete with trailing hyphen is rejected" {
+  run bash "$VMSPAWN" -n "--delete=abc-"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid batch ID"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-15: --delete and --delete-all mutually exclusive
+# ---------------------------------------------------------------
+@test "ERR: --delete and --delete-all together rejected" {
+  run bash "$VMSPAWN" -n --delete=abc123 --delete-all
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Cannot use --delete and --delete-all together"* ]]
+}
+
+# ---------------------------------------------------------------
+# Valid batch IDs accepted by --delete
+# ---------------------------------------------------------------
+@test "delete: valid 6-char hex batch ID accepted" {
+  run bash "$VMSPAWN" -n --delete=a3f7b2
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"a3f7b2"* ]]
+}
+
+@test "delete: alphanumeric batch ID accepted" {
+  run bash "$VMSPAWN" -n --delete=mytest01
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "delete: batch ID with dots and hyphens accepted" {
+  run bash "$VMSPAWN" -n --delete=test.run-1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "delete: single-char batch ID accepted" {
+  run bash "$VMSPAWN" -n --delete=a
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+# ---------------------------------------------------------------
+# --delete no longer matches fuzzy variants
+# ---------------------------------------------------------------
+@test "ERR: --deleteall as single token is unrecognized (use --delete-all)" {
+  # Before the fix, delete*) would match deleteall.
+  # Now delete) requires exact match and deleteall is its own case.
+  # --deleteall (no value) should still be recognized as --delete-all.
+  run bash "$VMSPAWN" -n --deleteall
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "ERR: --deletebatch is unrecognized option" {
+  run bash "$VMSPAWN" -n "--deletebatch=abc123"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"unrecognized option"* ]]
+}
+
+# ===============================================================
+# --delete-all dry-run
+# ===============================================================
+
+# ---------------------------------------------------------------
+# --delete-all shows dry-run info
+# ---------------------------------------------------------------
+@test "delete-all: dry-run shows discovery message" {
+  run bash "$VMSPAWN" -n --delete-all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+  [[ "$output" == *"all vmspawn batches"* ]]
+}
+
+@test "delete-all: dry-run with --yes accepted" {
+  run bash "$VMSPAWN" -n --delete-all --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "delete-all: dry-run with -y accepted" {
+  run bash "$VMSPAWN" -ny --delete-all
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+# ===============================================================
+# --yes / -y option
+# ===============================================================
+
+@test "OPT: --yes accepted with --delete dry-run" {
+  run bash "$VMSPAWN" -n --delete=abc123 --yes
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
+
+@test "OPT: -y short flag accepted with --delete dry-run" {
+  run bash "$VMSPAWN" -ny --delete=abc123
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"dry-run"* ]]
+}
