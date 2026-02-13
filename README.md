@@ -2,11 +2,25 @@
 
 Batch VM creation tool for OpenShift Virtualization.
 
-Creates VirtualMachines at scale with **cloud-init injection** to customize VMs at boot (e.g. start systemd services). Works with supported storage backend -- OCS/Ceph, LVMS, NFS, or other block-capable storage. Access modes, clone strategy, and snapshot usage are **auto-detected** from the cluster, so you just point it at a storage class and go.
+- **Scale** -- create hundreds of VMs across multiple namespaces with one command
+- **Auto-detect** -- storage access modes, clone strategy, and snapshot usage are detected from the cluster
+- **Cloud-init** -- inject custom workloads at boot (e.g. stress-ng for bursty CPU/memory load)
+- **Batch management** -- each run gets a unique batch ID; inspect or delete entire batches instantly
+- **Storage flexible** -- works with OCS/Ceph, LVMS, NFS, or any block-capable storage class
+- **Test coverage** -- 168 unit tests, live cluster validation, CI on every push (as of Feb 2026)
 
-Includes ready-to-use workload scripts (in `helpers/`) that can be injected via `--cloudinit` -- for example, `cloudinit-stress-workload.yaml` installs and runs **stress-ng** to generate random bursty CPU and memory load. More workload scripts will be added over time.
+---
 
-Each run is tagged with a unique **batch ID** for easy management -- list, inspect, or delete an entire batch with a single command, and spawn additional VMs at any time without worrying about name or namespace conflicts.
+- [Prerequisites](#prerequisites)
+- [Quick start](#quick-start)
+- [How it works](#how-it-works)
+- [Managing batches](#managing-batches)
+- [Options](#options)
+- [Cloud-init](#cloud-init)
+- [Development](#development)
+- **Docs:** [logging](docs/logging.md) | [stress workload](docs/stress-workload.md) | [testing](docs/testing.md) | [bug tracker](docs/bug-tracker.md)
+
+---
 
 ## Prerequisites
 
@@ -17,26 +31,6 @@ Each run is tagged with a unique **batch ID** for easy management -- list, inspe
 - **Without snapshots:** any compatible storage class -- pass `--storage-class=CLASS` and snapshots are auto-disabled
 
 ## Quick start
-
-### Defaults
-
-Unless overridden, vmspawn uses these built-in defaults:
-
-| Setting | Default | Notes |
-|---|---|---|
-| DataSource | `rhel9` | From `openshift-virtualization-os-images` namespace |
-| Storage class | `ocs-storagecluster-ceph-rbd-virtualization` | OCS virtualization-optimized class |
-| Snapshot class | `ocs-storagecluster-rbdplugin-snapclass` | Used when snapshot mode is enabled |
-| Snapshot mode | **enabled** | Auto-disabled when custom `--storage-class` is used without `--snapshot-class` |
-| Storage size | `32Gi` | Per-VM disk size |
-| Access mode | Auto-detected from StorageProfile | Falls back to `ReadWriteMany` |
-| CPU cores | `1` | Visible to guest VM; Kubernetes CPU request defaults to cores/10 |
-| Memory | `1Gi` | Visible to guest VM; no resource limit set by default |
-| Run strategy | `Always` | VMs start immediately |
-| Cloud-init | Auto-injected for DataSource VMs | Sets root password to `password`; not injected for `--dv-url` |
-| VM basename | Derived from DataSource name | e.g. `rhel9`, `fedora`, `centos-stream9`; generic `vm` for `--dv-url` |
-| VMs | `1` | Total VMs |
-| Namespaces | `1` | Total namespaces |
 
 ### Examples
 
@@ -79,6 +73,26 @@ Unless overridden, vmspawn uses these built-in defaults:
 # Delete ALL vmspawn batches on the cluster
 ./vmspawn --delete-all
 ```
+
+### Defaults
+
+Unless overridden, vmspawn uses these built-in defaults:
+
+| Setting | Default | Notes |
+|---|---|---|
+| CPU cores | `1` | Visible to guest VM; Kubernetes CPU request defaults to cores/10 |
+| Memory | `1Gi` | Visible to guest VM; no resource limit set by default |
+| VMs | `1` | Total VMs |
+| Namespaces | `1` | Total namespaces |
+| Storage class | `ocs-storagecluster-ceph-rbd-virtualization` | OCS virtualization-optimized class |
+| Storage size | `32Gi` | Per-VM disk size |
+| Access mode | Auto-detected from StorageProfile | Falls back to `ReadWriteMany` |
+| DataSource | `rhel9` | From `openshift-virtualization-os-images` namespace |
+| Snapshot mode | **enabled** | Auto-disabled when custom `--storage-class` is used without `--snapshot-class` |
+| Snapshot class | `ocs-storagecluster-rbdplugin-snapclass` | Used when snapshot mode is enabled |
+| Run strategy | `Always` | VMs start immediately |
+| Cloud-init | Auto-injected for DataSource VMs | Sets root password to `password`; not injected for `--dv-url` |
+| VM basename | Derived from DataSource name | e.g. `rhel9`, `fedora`, `centos-stream9`; generic `vm` for `--dv-url` |
 
 ## How it works
 
@@ -129,7 +143,9 @@ In DataSource mode (default), a cloud-init is auto-injected to enable root SSH w
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
-## Resource naming
+## Managing batches
+
+### Resource naming
 
 | Resource | Name pattern | Example |
 |---|---|---|
@@ -138,14 +154,31 @@ VMs are distributed evenly across namespaces, with any remainder allocated to th
 | VolumeSnapshot | `{basename}-vm-{batch}-ns-{N}` *(snapshot mode only)* | `rhel9-vm-a3f7b2-ns-1` |
 | VirtualMachine | `{basename}-{batch}-{ID}` | `rhel9-a3f7b2-3` |
 
-## Labels
+### Labels
 
 All resources are labeled for easy querying:
 
 - `batch-id` -- the batch ID for this run
 - `vm-basename` -- the base image name (on DataVolumes, VolumeSnapshots, and VMs)
 
-## Deleting batches
+### Inspecting batches
+
+After creation, the tool prints ready-to-use commands:
+
+```bash
+# List all VMs in a batch
+oc get vm -A -l batch-id=a3f7b2
+
+# List all namespaces in a batch
+oc get ns -l batch-id=a3f7b2
+
+# List all batch manifest files
+ls logs/*.manifest
+```
+
+A manifest file (`logs/batch-{BATCH_ID}.manifest`) is written after each run with a summary of all created resources. See [docs/logging.md](docs/logging.md) for details on log files, manifests, and the `logs/` directory structure.
+
+### Deleting batches
 
 Use `--delete` to remove all resources for a specific batch, or `--delete-all` to clean up every vmspawn batch on the cluster:
 
@@ -173,23 +206,6 @@ Safety features:
 - **Batch ID validation** -- rejects wildcards (`*`), commas, spaces, and other special characters that could confuse label selectors
 - **Namespace pattern check** -- refuses to delete any namespace that doesn't match the `vm-{batch}-ns-{N}` naming pattern, protecting system and operator namespaces
 - **Confirmation prompt** -- asks before deleting (bypass with `-y` or `--yes`)
-
-## Inspecting batches
-
-After creation, the tool prints ready-to-use commands:
-
-```bash
-# List all VMs in a batch
-oc get vm -A -l batch-id=a3f7b2
-
-# List all namespaces in a batch
-oc get ns -l batch-id=a3f7b2
-
-# List all batch manifest files
-ls logs/*.manifest
-```
-
-A manifest file (`logs/batch-{BATCH_ID}.manifest`) is written after each run with a summary of all created resources. See [docs/logging.md](docs/logging.md) for details on log files, manifests, and the `logs/` directory structure.
 
 ## Options
 
@@ -271,7 +287,39 @@ Use `--cloudinit=FILE` to inject any cloud-init user-data file:
 
 The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
 
-## Project layout
+## Development
+
+### CI workflow
+
+GitHub Actions runs three independent jobs on every push and pull request to `main` (defined in `.github/workflows/test.yaml`):
+
+| Job | Tool | What it checks |
+|---|---|---|
+| `test` | `bats` | Runs all unit tests (`bats tests/`) |
+| `lint-yaml` | `yamllint` | Lints helper YAML files (`helpers/*.yaml`) |
+| `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
+
+All three jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook.
+
+### Pre-commit hook
+
+A git pre-commit hook is included in `hooks/` that automatically runs tests and linters before each commit. To enable it:
+
+```bash
+git config core.hooksPath hooks
+```
+
+The hook runs only the checks relevant to the files you are committing:
+
+| Staged files | Check |
+|---|---|
+| `vmspawn`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
+| `helpers/*.yaml`, `templates/*.yaml` | `yamllint` on changed files |
+| `*.md` | `markdownlint-cli2` on changed files |
+
+If any check fails, the commit is aborted. Fix the issues and commit again. In emergencies, use `git commit --no-verify` to skip the hook.
+
+### Project layout
 
 ```
 vmspawn              # main script
@@ -301,21 +349,3 @@ tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
 ```
-
-## Pre-commit hook
-
-A git pre-commit hook is included in `hooks/` that automatically runs tests and linters before each commit. To enable it:
-
-```bash
-git config core.hooksPath hooks
-```
-
-The hook runs only the checks relevant to the files you are committing:
-
-| Staged files | Check |
-|---|---|
-| `vmspawn`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
-| `helpers/*.yaml`, `templates/*.yaml` | `yamllint` on changed files |
-| `*.md` | `markdownlint-cli2` on changed files |
-
-If any check fails, the commit is aborted. Fix the issues and commit again. In emergencies, use `git commit --no-verify` to skip the hook.
