@@ -1,13 +1,13 @@
 # vmspawn
 
-Batch VM creation tool for OpenShift Virtualization.
-
-- **Scale** -- create hundreds of VMs across multiple namespaces with one command
-- **Auto-detect** -- storage access modes, clone strategy, and snapshot usage are detected from the cluster
-- **Cloud-init** -- inject custom workloads at boot (e.g. stress-ng for bursty CPU/memory load)
-- **Batch management** -- each run gets a unique batch ID; inspect or delete entire batches instantly
-- **Storage flexible** -- works with OCS/Ceph, LVMS, NFS, or any block-capable storage class
-- **Test coverage** -- 168 unit tests, live cluster validation, CI on every push (as of Feb 2026)
+Scale up hundreds of VMs across multiple namespaces with a single command on
+OpenShift Virtualization -- no YAML to write. It auto-detects
+storage access modes, clone strategy, and snapshot support from the cluster, so
+it works out of the box with OCS/Ceph, LVMS, NFS, or any block-capable storage
+class. Each run gets a unique batch ID for easy inspection and cleanup.
+Cloud-init injection lets you push custom workloads (e.g. stress-ng) at boot.
+Backed by 168 unit tests, live cluster validation, and CI on every push
+(as of Feb 2026).
 
 ---
 
@@ -18,7 +18,8 @@ Batch VM creation tool for OpenShift Virtualization.
 - [Options](#options)
 - [Cloud-init](#cloud-init)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [stress workload](docs/stress-workload.md) | [testing](docs/testing.md) | [bug tracker](docs/bug-tracker.md)
+- **Docs:** [logging](docs/logging.md) | [stress workload](docs/stress-workload.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md)
+- **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl) | [stress_ng_random_vm.sh](helpers/stress_ng_random_vm.sh)
 
 ---
 
