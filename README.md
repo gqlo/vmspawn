@@ -30,8 +30,8 @@ Unless overridden, vmspawn uses these built-in defaults:
 | Snapshot mode | **enabled** | Auto-disabled when custom `--storage-class` is used without `--snapshot-class` |
 | Storage size | `32Gi` | Per-VM disk size |
 | Access mode | Auto-detected from StorageProfile | Falls back to `ReadWriteMany` |
-| CPU cores | `1` | Per VM |
-| Memory | `1Gi` | Per VM |
+| CPU cores | `1` | Visible to guest VM; Kubernetes CPU request defaults to cores/10 |
+| Memory | `1Gi` | Visible to guest VM; no resource limit set by default |
 | Run strategy | `Always` | VMs start immediately |
 | Cloud-init | Auto-injected for DataSource VMs | Sets root password to `password`; not injected for `--dv-url` |
 | VM basename | Derived from DataSource name | e.g. `rhel9`, `fedora`, `centos-stream9`; generic `vm` for `--dv-url` |
@@ -73,8 +73,11 @@ Unless overridden, vmspawn uses these built-in defaults:
 # Dry-run to preview generated YAML without applying
 ./vmspawn -n --vms=10 --namespaces=2
 
-# Delete all resources for a batch
+# Delete all resources for a batch (prompts for confirmation)
 ./vmspawn --delete=a3f7b2
+
+# Delete ALL vmspawn batches on the cluster
+./vmspawn --delete-all
 ```
 
 ## How it works
@@ -144,23 +147,32 @@ All resources are labeled for easy querying:
 
 ## Deleting batches
 
-Use `--delete` to remove all resources for a batch:
+Use `--delete` to remove all resources for a specific batch, or `--delete-all` to clean up every vmspawn batch on the cluster:
 
 ```bash
 # Preview what would be deleted
 ./vmspawn -n --delete=a3f7b2
 
-# Delete all resources for a batch
+# Delete all resources for a batch (prompts for confirmation)
 ./vmspawn --delete=a3f7b2
+
+# Skip the confirmation prompt (for scripting)
+./vmspawn --delete=a3f7b2 --yes
+
+# Discover and delete ALL vmspawn batches on the cluster
+./vmspawn --delete-all
+
+# Delete all batches without prompting
+./vmspawn --delete-all -y
 ```
 
 This deletes the batch's namespaces, which cascades and removes all VMs, DataVolumes, VolumeSnapshots, and PVCs inside them. The batch manifest file is also cleaned up.
 
-To delete all batches at once via `oc` directly:
+Safety features:
 
-```bash
-oc delete ns -l batch-id
-```
+- **Batch ID validation** -- rejects wildcards (`*`), commas, spaces, and other special characters that could confuse label selectors
+- **Namespace pattern check** -- refuses to delete any namespace that doesn't match the `vm-{batch}-ns-{N}` naming pattern, protecting system and operator namespaces
+- **Confirmation prompt** -- asks before deleting (bypass with `-y` or `--yes`)
 
 ## Inspecting batches
 
@@ -184,43 +196,51 @@ A manifest file (`logs/batch-{BATCH_ID}.manifest`) is written after each run wit
 ```
 Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
-    -n                          Dry-run (show YAML without applying)
-    -q                          Quiet (show only log messages)
     -h                          Show help
+    -n                          Dry-run (show YAML without applying)
 
-    --batch-id=ID               Set batch ID (auto-generated if omitted)
-    --basename=name             VM base name (default: rhel9)
+    --cores=N                   CPU cores visible to the guest VM (default: 1)
+    --memory=N                  Memory visible to the guest VM (default: 1Gi)
+    --request-cpu=N             Kubernetes CPU request for scheduling (default: cores/10)
+    --request-memory=N          Kubernetes memory request for scheduling (default: memory + overhead)
+
     --vms=N                     Total number of VMs (default: 1)
     --namespaces=N              Number of namespaces (default: 1)
     --vms-per-namespace=N       VMs per namespace (overrides --vms)
 
-    --datasource=NAME           Clone from OCP DataSource (default: rhel9)
-    --dv-url=URL                Import disk from URL (overrides --datasource)
-    --storage-size=N            Disk size (default: 32Gi; must be >= source image)
     --storage-class=class       Storage class name (auto-disables snapshots
                                 unless --snapshot-class is also provided)
-    --snapshot-class=class      Snapshot class name (implies --snapshot)
-    --snapshot                  Use VolumeSnapshots for cloning (default for OCS)
-    --no-snapshot               Clone VMs directly (no snapshot needed)
+    --storage-size=N            Disk size (default: 32Gi; must be >= source image)
     --access-mode=MODE          PVC access mode (auto-detected from StorageProfile)
     --rwo                       Shortcut for --access-mode=ReadWriteOnce
     --rwx                       Shortcut for --access-mode=ReadWriteMany
-    --pvc-base-name=name        Base PVC name (default: rhel9-base)
 
-    --cores=N                   VM CPU cores (default: 1)
-    --memory=N                  VM memory (default: 1Gi)
-    --request-cpu=N             CPU request (defaults to cores)
-    --request-memory=N          Memory request (defaults to memory)
+    --datasource=NAME           Clone from OCP DataSource (default: rhel9)
+    --dv-url=URL                Import disk from URL (overrides --datasource)
+    --snapshot-class=class      Snapshot class name (implies --snapshot)
+    --snapshot                  Use VolumeSnapshots for cloning (default for OCS)
+    --no-snapshot               Clone VMs directly (no snapshot needed)
 
-    --run-strategy=strategy     Run strategy (default: Always)
     --start                     Start VMs (equivalent to --run-strategy=Always)
     --stop                      Don't start VMs (equivalent to --run-strategy=Halted)
+    --run-strategy=strategy     Run strategy (default: Always)
     --wait                      Wait for all VMs to reach Running state
     --nowait                    Don't wait (default)
-
     --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
+
     --delete=BATCH_ID           Delete all resources for the given batch
+    --delete-all                Delete ALL vmspawn batches on the cluster
+    -y / --yes                  Skip confirmation prompt for delete operations
+
+    --batch-id=ID               Set batch ID (auto-generated if omitted)
+    --basename=name             VM base name (default: rhel9)
+    --pvc-base-name=name        Base PVC name (default: rhel9-base)
+    -q                          Quiet (show only log messages)
 ```
+
+Note: KubeVirt sets **no resource limits** by default -- only requests. The guest VM
+cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request
+to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 ## Cloud-init
 
