@@ -1,10 +1,25 @@
 #!/bin/bash
 # A simple script to simulate bursty CPU and memory consumption in cycles
 
-# Check if stress-ng is installed
+# Install stress-ng if not already present
 if ! command -v stress-ng &> /dev/null; then
-    echo "Error: stress-ng is not installed. Please install it first."
-    exit 1
+    echo "stress-ng not found, installing..."
+    if command -v dnf &> /dev/null; then
+        dnf install -y epel-release 2>/dev/null || true
+        dnf install -y stress-ng
+    elif command -v yum &> /dev/null; then
+        yum install -y epel-release 2>/dev/null || true
+        yum install -y stress-ng
+    elif command -v apt-get &> /dev/null; then
+        apt-get update && apt-get install -y stress-ng
+    else
+        echo "Error: no supported package manager found."
+        exit 1
+    fi
+    if ! command -v stress-ng &> /dev/null; then
+        echo "Error: failed to install stress-ng."
+        exit 1
+    fi
 fi
 
 # Function to generate a random number between min and max

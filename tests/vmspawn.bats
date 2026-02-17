@@ -2643,6 +2643,101 @@ MOCKEOF
   [[ "$output" == *"pvc:"* ]]
 }
 
+# ---------------------------------------------------------------
+# COMBO-34a: --basename=myvm + --dv-url + --snapshot
+#   The exact bug scenario: BASE_PVC_NAME must be derived from
+#   VM_BASENAME even when DATASOURCE is empty (--dv-url).
+# ---------------------------------------------------------------
+@test "combo: basename + dv-url + snapshot" {
+  run bash "$VMSPAWN" -n --batch-id=cmb034a --basename=myvm \
+    --dv-url=http://example.com/disk.qcow2 --snapshot \
+    --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VolumeSnapshot references auto-derived PVC name (myvm-base) ---
+  [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
+
+  # --- VM snapshot source points to the per-namespace snapshot ---
+  [[ "$output" == *"name: myvm-vm-cmb034a-ns-1"* ]]
+
+  # --- Base DV is named myvm-base ---
+  [[ "$output" == *"name: myvm-base"* ]]
+
+  # --- The old broken default must NOT appear ---
+  [[ "$output" != *"persistentVolumeClaimName: vm-base"* ]]
+
+  # --- URL import ---
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+
+  # --- Two VMs ---
+  [[ "$output" == *"name: myvm-cmb034a-1"* ]]
+  [[ "$output" == *"name: myvm-cmb034a-2"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-34b: --dv-url + --snapshot (default basename=vm)
+#   Verifies the default VM_BASENAME=vm still produces a matching
+#   BASE_PVC_NAME=vm-base.
+# ---------------------------------------------------------------
+@test "combo: dv-url + snapshot with default basename" {
+  run bash "$VMSPAWN" -n --batch-id=cmb034b \
+    --dv-url=http://example.com/disk.qcow2 --snapshot \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  # --- VolumeSnapshot references vm-base (default) ---
+  [[ "$output" == *"persistentVolumeClaimName: vm-base"* ]]
+
+  # --- Base DV named vm-base ---
+  [[ "$output" == *"name: vm-base"* ]]
+
+  # --- VM uses snapshot clone path ---
+  [[ "$output" == *"snapshot:"* ]]
+  [[ "$output" == *"name: vm-vm-cmb034b-ns-1"* ]]
+}
+
+# ---------------------------------------------------------------
+# COMBO-34c: --basename=myvm + --dv-url + --snapshot + 2 namespaces
+#   Per-namespace consistency: each ns gets its own DV, snapshot,
+#   and VMs, all using the custom basename.
+# ---------------------------------------------------------------
+@test "combo: basename + dv-url + snapshot + multiple namespaces" {
+  run bash "$VMSPAWN" -n --batch-id=cmb034c --basename=myvm \
+    --dv-url=http://example.com/disk.qcow2 --snapshot \
+    --vms=4 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- VolumeSnapshot in each ns references myvm-base ---
+  [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
+
+  # --- 2 base DataVolumes ---
+  local dv_count
+  dv_count=$(echo "$output" | grep -c "kind: DataVolume")
+  # 2 base DVs + 4 inline DataVolumeTemplates = but we just check base DVs
+  # appear in both namespaces
+  [[ "$output" == *"namespace: vm-cmb034c-ns-1"* ]]
+  [[ "$output" == *"namespace: vm-cmb034c-ns-2"* ]]
+
+  # --- 2 VolumeSnapshots ---
+  local snap_count
+  snap_count=$(echo "$output" | grep -c "kind: VolumeSnapshot")
+  [ "$snap_count" -eq 2 ]
+
+  # --- 4 VMs ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "kind: VirtualMachine")
+  [ "$vm_count" -eq 4 ]
+
+  # --- VM names use myvm- prefix ---
+  [[ "$output" == *"name: myvm-cmb034c-1"* ]]
+  [[ "$output" == *"name: myvm-cmb034c-2"* ]]
+  [[ "$output" == *"name: myvm-cmb034c-3"* ]]
+  [[ "$output" == *"name: myvm-cmb034c-4"* ]]
+
+  # --- The old broken default must NOT appear ---
+  [[ "$output" != *"persistentVolumeClaimName: vm-base"* ]]
+}
+
 # ===============================================================
 # Category 7: Option Precedence and Conflicts (combos 35-42)
 # ===============================================================

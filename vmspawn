@@ -187,15 +187,20 @@ done
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
 
-# Auto-derive VM_BASENAME and BASE_PVC_NAME from the DataSource name
-# when the user hasn't explicitly set --basename or --pvc-base-name.
-if [[ -n "$DATASOURCE" ]] ; then
-    if (( ! BASENAME_SET )) ; then
-	VM_BASENAME="$DATASOURCE"
-    fi
-    if (( ! PVC_BASE_NAME_SET )) ; then
-	BASE_PVC_NAME="${VM_BASENAME}-base"
-    fi
+# Auto-derive VM_BASENAME from the DataSource name when the user
+# hasn't explicitly set --basename.
+if [[ -n "$DATASOURCE" ]] && (( ! BASENAME_SET )) ; then
+    VM_BASENAME="$DATASOURCE"
+fi
+
+# Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
+# explicitly set --pvc-base-name.  Previously this derivation only ran
+# inside the DATASOURCE block, so --dv-url + --basename left
+# BASE_PVC_NAME at the default "vm-base" while the DV template created
+# a PVC named "{VM_BASENAME}-base", causing VolumeSnapshot to reference
+# a non-existent PVC.
+if (( ! PVC_BASE_NAME_SET )) ; then
+    BASE_PVC_NAME="${VM_BASENAME}-base"
 fi
 
 # Auto-disable snapshots when a custom storage class is used without
@@ -208,7 +213,7 @@ fi
 
 # Setup logging
 LOG_DIR="logs"
-LOG_FILE="${LOG_DIR}/${BATCH_ID}-$(date +%Y-%m-%dT%H:%M:%S).log"
+LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
 
 # Function to log with timestamp
 # Output may be provided on command line; if not, it is
@@ -886,6 +891,104 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
 }
 
 ################################################################
+# Verify cloud-init completed successfully inside each VM.
+# Uses virtctl ssh + sshpass for non-interactive access.
+# Polls in rounds (30s apart, up to 5 min) until each VM
+# reports "done" or "error".  Gracefully skips if tools
+# are missing.
+verify_cloudinit() {
+    if [[ -z "$(type -t virtctl)" ]]; then
+	log_message "Note: install 'virtctl' to enable automatic cloud-init verification"
+	log_message "  Manual check: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
+	return 0
+    fi
+    if [[ -z "$(type -t sshpass)" ]]; then
+	log_message "Note: install 'sshpass' to enable automatic cloud-init verification"
+	log_message "  Manual check: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
+	return 0
+    fi
+
+    # Collect VMs for this batch from the cluster
+    local -a all_vms=()
+    local ns vm_name
+    while read -r ns vm_name _rest; do
+	[[ -n "$vm_name" ]] || continue
+	all_vms+=("$ns/$vm_name")
+    done <<< "$(oc get vm -A -l batch-id="$BATCH_ID" --no-headers 2>/dev/null | awk '{print $1, $2}')"
+
+    local -i total=${#all_vms[@]}
+    if ((total == 0)); then return 0; fi
+
+    # Sample up to 3 random VMs to keep verification fast at any scale
+    local -i max_sample=3
+    local -A vm_pending=()
+    if ((total <= max_sample)); then
+	for vm_key in "${all_vms[@]}"; do
+	    vm_pending["$vm_key"]=1
+	done
+    else
+	local -A picked=()
+	while ((${#picked[@]} < max_sample)); do
+	    local idx=$((RANDOM % total))
+	    if [[ -z "${picked[$idx]:-}" ]]; then
+		picked[$idx]=1
+		vm_pending["${all_vms[$idx]}"]=1
+	    fi
+	done
+    fi
+
+    local -i sample=${#vm_pending[@]}
+    log_message "Verifying cloud-init on $sample of $total VM(s) (polling up to 5 minutes)..."
+
+    local -i ok_count=0
+    local -i fail_count=0
+    local -i round
+    local vm_key ci_status
+
+    for ((round=1; round<=10; round++)); do
+	((${#vm_pending[@]} > 0)) || break
+	if ((round > 1)); then sleep 30; fi
+
+	for vm_key in "${!vm_pending[@]}"; do
+	    ns="${vm_key%%/*}"
+	    vm_name="${vm_key##*/}"
+
+	    ci_status=$(sshpass -p password virtctl ssh -n "$ns" \
+		--local-ssh-opts="-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o ConnectTimeout=10" \
+		root@"$vm_name" --command "cloud-init status" 2>/dev/null) || ci_status=""
+
+	    if [[ "$ci_status" == *"done"* ]]; then
+		log_message "  $vm_name: cloud-init OK"
+		unset "vm_pending[$vm_key]"
+		((ok_count++))
+	    elif [[ "$ci_status" == *"error"* ]]; then
+		log_message "  WARNING: $vm_name: cloud-init FAILED"
+		unset "vm_pending[$vm_key]"
+		((fail_count++))
+	    fi
+	done
+
+	if ((${#vm_pending[@]} > 0)); then
+	    log_message "  $((ok_count + fail_count))/${sample} checked, ${#vm_pending[@]} still running..."
+	fi
+    done
+
+    # Remaining VMs timed out
+    for vm_key in "${!vm_pending[@]}"; do
+	vm_name="${vm_key##*/}"
+	log_message "  WARNING: $vm_name: cloud-init verification timed out"
+	((fail_count++))
+    done
+
+    if ((fail_count > 0)); then
+	log_message "Cloud-init: $ok_count OK, $fail_count FAILED or timed out (sampled $sample of $total)"
+	log_message "  Inspect: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
+    else
+	log_message "Cloud-init: $sample of $total VM(s) sampled -- all OK"
+    fi
+}
+
+################################################################
 # Delete all resources for a batch
 # Args: $1 = batch ID, $2 = "skip-confirm" (optional, used by delete_all_batches)
 delete_batch() {
@@ -1195,6 +1298,11 @@ main() {
 	log_message "Skipping VolumeSnapshots (--no-snapshot mode)"
     fi
     create_virtualmachines
+
+    # TODO: re-enable once verify_cloudinit is improved
+    # if ((doit && WAIT)) && [[ -n "$CLOUDINIT_FILE" ]]; then
+    #     verify_cloudinit
+    # fi
 
     if ((doit)) ; then
 	log_message "Resource creation completed successfully!"
