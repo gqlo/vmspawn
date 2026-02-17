@@ -1,0 +1,23 @@
+# Build the cluster-profiler binary from the upstream kubevirt source.
+# Usage:
+#   podman build -t cluster-profiler helpers/profiler/
+#   podman create --name cp-tmp cluster-profiler
+#   podman cp cp-tmp:/cluster-profiler ./cluster-profiler
+#   podman rm cp-tmp
+
+ARG KUBEVIRT_VERSION=v1.4.0
+ARG GO_VERSION=1.22
+
+FROM docker.io/library/golang:${GO_VERSION} AS builder
+
+ARG KUBEVIRT_VERSION
+
+RUN git clone --depth 1 --branch ${KUBEVIRT_VERSION} \
+    https://github.com/kubevirt/kubevirt.git /kubevirt
+
+WORKDIR /kubevirt
+RUN CGO_ENABLED=0 GOOS=linux go build -o /cluster-profiler ./tools/cluster-profiler/
+
+FROM docker.io/library/alpine:3.19
+COPY --from=builder /cluster-profiler /cluster-profiler
+ENTRYPOINT ["/cluster-profiler"]
