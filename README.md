@@ -6,6 +6,9 @@ storage access modes, clone strategy, and snapshot support from the cluster, so
 it works out of the box with OCS/Ceph, LVMS, NFS, or any block-capable storage
 class. Each run gets a unique batch ID for easy inspection and cleanup.
 Cloud-init injection lets you push custom workloads (e.g. stress-ng) at boot.
+Integrated cluster profiling (`--profile`) captures Go runtime-level
+performance data -- CPU, heap, mutex, and other pprof profiles -- from
+the KubeVirt control plane during batch runs.
 Backed by 168 unit tests, live cluster validation, and CI on every push
 (as of Feb 2026).
 
@@ -17,8 +20,9 @@ Backed by 168 unit tests, live cluster validation, and CI on every push
 - [Managing batches](#managing-batches)
 - [Options](#options)
 - [Cloud-init](#cloud-init)
+- [Cluster profiling](#cluster-profiling)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [stress workload](docs/stress-workload.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md)
+- **Docs:** [logging](docs/logging.md) | [stress workload](docs/stress-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md)
 - **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl) | [stress_ng_random_vm.sh](helpers/stress_ng_random_vm.sh)
 
 ---
@@ -249,6 +253,9 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --delete-all                Delete ALL vmspawn batches on the cluster
     -y / --yes                  Skip confirmation prompt for delete operations
 
+    --profile[=COMPONENT]       Profile KubeVirt control plane (CPU + memory + more)
+                                Optional: virt-api, virt-controller, virt-handler, virt-operator
+
     --batch-id=ID               Set batch ID (auto-generated if omitted)
     --basename=name             VM base name (default: rhel9)
     --pvc-base-name=name        Base PVC name (default: rhel9-base)
@@ -287,6 +294,33 @@ Use `--cloudinit=FILE` to inject any cloud-init user-data file:
 ```
 
 The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
+
+## Cluster profiling
+
+vmspawn can profile the KubeVirt control plane during VM creation using the
+upstream
+[cluster-profiler](https://github.com/kubevirt/kubevirt/blob/main/tools/cluster-profiler/cluster-profiler.go)
+tool. The `--profile` flag wraps the normal VM creation flow with profiler
+lifecycle management -- `start` begins CPU sampling, your VMs are created, then
+`stop` + `dump` retrieves the CPU profile along with point-in-time snapshots of
+all other Go pprof profile types (heap, allocs, goroutine, blocking, mutex,
+threadcreate). Only CPU profiling requires the start/stop window; all other
+profiles are captured as instantaneous snapshots at dump time.
+
+```bash
+# Profile all control-plane components during a 20-VM batch creation
+./vmspawn --profile --vms=20 --namespaces=4
+
+# Profile only virt-controller during a 50-VM stress workload run
+./vmspawn --profile=virt-controller --cloudinit=helpers/cloudinit-stress-workload.yaml \
+  --vms=50 --namespaces=10
+```
+
+Results are saved to `logs/profile-{BATCH_ID}/` with one subdirectory per pod,
+each containing `cpu.pprof`, `heap.pprof`, `allocs.pprof`, `goroutine.pprof`,
+`block.pprof`, `mutex.pprof`, and `threadcreate.pprof`. See
+[docs/cluster-profiler.md](docs/cluster-profiler.md) for prerequisites,
+feature gate management, and analysis instructions.
 
 ## Development
 

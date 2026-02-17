@@ -3077,3 +3077,93 @@ MOCKEOF
   [ "$status" -eq 0 ]
   [[ "$output" == *"dry-run"* ]]
 }
+
+# ===============================================================
+# --profile option
+# ===============================================================
+
+# ---------------------------------------------------------------
+# PROF-1: --profile accepted in dry-run mode (default target: all)
+# ---------------------------------------------------------------
+@test "PROF: --profile dry-run shows profiling messages" {
+  run bash "$VMSPAWN" -n --batch-id=prof01 --profile
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would ensure cluster-profiler binary is available"* ]]
+  [[ "$output" == *"(dry-run) Would check/enable ClusterProfiler feature gate"* ]]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+  [[ "$output" == *"(dry-run) Would prompt to stop profiling and dump results"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-2: --profile=virt-controller accepted in dry-run
+# ---------------------------------------------------------------
+@test "PROF: --profile=virt-controller dry-run accepted" {
+  run bash "$VMSPAWN" -n --batch-id=prof02 --profile=virt-controller
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-3: --profile=virt-api accepted in dry-run
+# ---------------------------------------------------------------
+@test "PROF: --profile=virt-api dry-run accepted" {
+  run bash "$VMSPAWN" -n --batch-id=prof03 --profile=virt-api
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-4: --profile=virt-handler accepted in dry-run
+# ---------------------------------------------------------------
+@test "PROF: --profile=virt-handler dry-run accepted" {
+  run bash "$VMSPAWN" -n --batch-id=prof04 --profile=virt-handler
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-5: --profile=virt-operator accepted in dry-run
+# ---------------------------------------------------------------
+@test "PROF: --profile=virt-operator dry-run accepted" {
+  run bash "$VMSPAWN" -n --batch-id=prof05 --profile=virt-operator
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-6: --profile with invalid component name fails
+# ---------------------------------------------------------------
+@test "PROF: --profile=invalid fails with error" {
+  run bash "$VMSPAWN" -n --batch-id=prof06 --profile=invalid
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Invalid --profile value"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-7: --profile + --delete fails
+# ---------------------------------------------------------------
+@test "PROF: --profile + --delete is rejected" {
+  run bash "$VMSPAWN" -n --batch-id=prof07 --profile --delete=abc123
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot use --profile with --delete or --delete-all"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-8: --profile + --delete-all fails
+# ---------------------------------------------------------------
+@test "PROF: --profile + --delete-all is rejected" {
+  run bash "$VMSPAWN" -n --batch-id=prof08 --profile --delete-all
+  [ "$status" -eq 1 ]
+  [[ "$output" == *"Cannot use --profile with --delete or --delete-all"* ]]
+}
+
+# ---------------------------------------------------------------
+# PROF-9: --profile=all dry-run shows normal VM creation output too
+# ---------------------------------------------------------------
+@test "PROF: --profile=all dry-run includes VM creation and profiling" {
+  run bash "$VMSPAWN" -n --batch-id=prof09 --profile=all --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"(dry-run) Would start profiling before VM creation"* ]]
+  [[ "$output" == *"Creating VirtualMachines"* ]]
+  [[ "$output" == *"(dry-run) Would prompt to stop profiling and dump results"* ]]
+}

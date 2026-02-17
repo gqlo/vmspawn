@@ -47,6 +47,7 @@ RECREATE_EXISTING_VMS=1
 DELETE_BATCH=
 DELETE_ALL=0
 CONFIRM_DELETE=0
+PROFILE_TARGET=
 yamlpath=()
 declare -A expected_vms=()
 # If CREATE_VM_PATH is explicitly provided, search for
@@ -108,6 +109,10 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 (equivalent to --run-strategy=Halted)
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. helpers/cloudinit-stress-workload.yaml)
+        --profile[=COMPONENT]   Profile KubeVirt control plane during
+                                | | | VM creation (CPU, memory, goroutine, etc.)
+                                | | | COMPONENT: virt-api, virt-controller,
+                                | | | virt-handler, virt-operator (default: all)
         --delete=BATCH_ID       Delete all resources for the given batch
         --delete-all            Delete ALL vmspawn batches on the cluster
         -y / --yes              Skip confirmation prompt for delete operations
@@ -161,6 +166,7 @@ process_option() {
 	nocreate*) RECREATE_EXISTING_VMS=0 ;;
 	start)     RUN_STRATEGY=Always ;;
 	stop)      RUN_STRATEGY=Halted ;;
+	profile)   PROFILE_TARGET=${value:-all} ;;
 	*) 	   fatal "Error: unrecognized option '--${optstr%%=*}'. Run '$0 -h' to see all options." ;;
     esac
 }
@@ -416,6 +422,17 @@ fi
 # --delete and --delete-all are mutually exclusive
 if [[ -n "$DELETE_BATCH" ]] && ((DELETE_ALL)) ; then
     fatal "Cannot use --delete and --delete-all together"
+fi
+
+# --profile is incompatible with --delete and --delete-all
+if [[ -n "$PROFILE_TARGET" ]] ; then
+    if [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) ; then
+	fatal "Cannot use --profile with --delete or --delete-all"
+    fi
+    case "$PROFILE_TARGET" in
+	all|virt-api|virt-controller|virt-handler|virt-operator) ;;
+	*) fatal "Invalid --profile value '$PROFILE_TARGET'. Valid values: virt-api, virt-controller, virt-handler, virt-operator, all" ;;
+    esac
 fi
 
 # Skip creation-specific validation when deleting
@@ -989,6 +1006,162 @@ delete_all_batches() {
 }
 
 ################################################################
+# Cluster profiler functions
+PROFILER_BIN=
+PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vmspawn/releases/latest/download/cluster-profiler-linux-amd64"
+
+ensure_profiler_binary() {
+    # 1. Check if cluster-profiler is on PATH
+    if command -v cluster-profiler &>/dev/null ; then
+	PROFILER_BIN=$(command -v cluster-profiler)
+	log_message "Using cluster-profiler from PATH: $PROFILER_BIN"
+	return 0
+    fi
+
+    # 2. Check cached binary
+    local cache_dir="$HOME/.vmspawn/bin"
+    local cached_bin="$cache_dir/cluster-profiler"
+    if [[ -x "$cached_bin" ]] ; then
+	PROFILER_BIN="$cached_bin"
+	log_message "Using cached cluster-profiler: $PROFILER_BIN"
+	return 0
+    fi
+
+    # 3. Download pre-built binary from GitHub Releases
+    log_message "Downloading cluster-profiler binary..."
+    mkdir -p "$cache_dir"
+
+    if command -v curl &>/dev/null ; then
+	curl -fsSL -o "$cached_bin" "$PROFILER_DOWNLOAD_URL" ||
+	    fatal "Failed to download cluster-profiler from $PROFILER_DOWNLOAD_URL"
+    elif command -v wget &>/dev/null ; then
+	wget -q -O "$cached_bin" "$PROFILER_DOWNLOAD_URL" ||
+	    fatal "Failed to download cluster-profiler from $PROFILER_DOWNLOAD_URL"
+    else
+	fatal "Neither curl nor wget is available. Install cluster-profiler manually or install curl/wget."
+    fi
+
+    chmod +x "$cached_bin"
+    PROFILER_BIN="$cached_bin"
+    log_message "cluster-profiler binary downloaded to: $PROFILER_BIN"
+}
+
+ensure_profiler_feature_gate() {
+    # Detect OCP/CNV vs upstream KubeVirt
+    local hco_exists
+    hco_exists=$(oc get hco kubevirt-hyperconverged -n openshift-cnv -o name 2>/dev/null) || true
+
+    if [[ -n "$hco_exists" ]] ; then
+	# OCP/CNV: check via jsonpatch annotation on HCO CR
+	local annotation
+	annotation=$(oc get hco kubevirt-hyperconverged -n openshift-cnv \
+	    -o jsonpath='{.metadata.annotations.kubevirt\.kubevirt\.io/jsonpatch}' \
+	    2>/dev/null) || true
+
+	if echo "$annotation" | grep -q "ClusterProfiler" ; then
+	    log_message "ClusterProfiler feature gate is already enabled (OCP/CNV)"
+	    return 0
+	fi
+
+	echo ""
+	echo "ClusterProfiler feature gate is not enabled on this cluster."
+	echo "This is required for profiling KubeVirt control-plane components."
+	echo ""
+	read -r -p "Enable ClusterProfiler feature gate now? [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
+	fi
+
+	log_message "Enabling ClusterProfiler feature gate via HCO annotation..."
+	if [[ -z "$annotation" || "$annotation" == "null" ]] ; then
+	    # No existing jsonpatch annotation -- simple case
+	    oc annotate --overwrite -n openshift-cnv hco kubevirt-hyperconverged \
+		'kubevirt.kubevirt.io/jsonpatch=[{"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "ClusterProfiler"}]' ||
+		fatal "Failed to enable ClusterProfiler feature gate"
+	else
+	    # Existing annotation present -- need to merge
+	    # Parse the existing JSON array and append the ClusterProfiler entry
+	    local new_entry='{"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "ClusterProfiler"}'
+	    local merged
+	    # Remove trailing ] and append new entry
+	    merged="${annotation%]}, ${new_entry}]"
+	    oc annotate --overwrite -n openshift-cnv hco kubevirt-hyperconverged \
+		"kubevirt.kubevirt.io/jsonpatch=${merged}" ||
+		fatal "Failed to enable ClusterProfiler feature gate"
+	fi
+	log_message "ClusterProfiler feature gate enabled. Waiting for rollout..."
+	sleep 5
+    else
+	# Upstream KubeVirt: check feature gates directly on KubeVirt CR
+	local feature_gates
+	feature_gates=$(oc get kubevirt kubevirt -n kubevirt \
+	    -o jsonpath='{.spec.configuration.developerConfiguration.featureGates}' \
+	    2>/dev/null) || true
+
+	if echo "$feature_gates" | grep -q "ClusterProfiler" ; then
+	    log_message "ClusterProfiler feature gate is already enabled (upstream KubeVirt)"
+	    return 0
+	fi
+
+	echo ""
+	echo "ClusterProfiler feature gate is not enabled on this cluster."
+	echo "This is required for profiling KubeVirt control-plane components."
+	echo ""
+	read -r -p "Enable ClusterProfiler feature gate now? [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
+	fi
+
+	log_message "Enabling ClusterProfiler feature gate on KubeVirt CR..."
+	oc patch kubevirt kubevirt -n kubevirt --type=json \
+	    -p '[{"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "ClusterProfiler"}]' ||
+	    fatal "Failed to enable ClusterProfiler feature gate"
+	log_message "ClusterProfiler feature gate enabled. Waiting for rollout..."
+	sleep 5
+    fi
+}
+
+profiler_start() {
+    log_message "Starting KubeVirt control-plane profiling..."
+    "$PROFILER_BIN" --cmd start ||
+	fatal "Failed to start cluster profiling"
+    log_message "Profiling started successfully"
+}
+
+profiler_prompt_and_stop() {
+    echo ""
+    echo "================================================================"
+    echo "  Cluster profiling is in progress"
+    echo "  KubeVirt control plane profiling is active (CPU, memory, etc.)"
+    echo "================================================================"
+    echo ""
+    read -r -p "Press Enter to stop profiling and dump results (or Ctrl+C to abort)..."
+    echo ""
+
+    log_message "Stopping KubeVirt control-plane profiling..."
+    "$PROFILER_BIN" --cmd stop ||
+	fatal "Failed to stop cluster profiling"
+    log_message "Profiling stopped"
+
+    local output_dir="${LOG_DIR}/profile-${BATCH_ID}"
+    log_message "Dumping profiling results to $output_dir..."
+
+    if [[ "$PROFILE_TARGET" == "all" ]] ; then
+	"$PROFILER_BIN" --cmd dump --output-dir "$output_dir" ||
+	    fatal "Failed to dump profiling results"
+    else
+	"$PROFILER_BIN" --cmd dump -l "kubevirt.io=$PROFILE_TARGET" --output-dir "$output_dir" ||
+	    fatal "Failed to dump profiling results for $PROFILE_TARGET"
+    fi
+
+    log_message "Profiling results saved to: $output_dir"
+    echo ""
+    echo "Profiling results: $output_dir"
+    echo "Analyze with: go tool pprof $output_dir/<pod>/<profile>.pprof"
+    echo "Plot with:    go tool pprof -svg $output_dir/<pod>/cpu.pprof > cpu.svg"
+}
+
+################################################################
 # Main execution
 main() {
     log_message "Starting resource creation process..."
@@ -1081,7 +1254,25 @@ if (( DELETE_ALL )) ; then
 elif [[ -n "$DELETE_BATCH" ]] ; then
     delete_batch "$DELETE_BATCH"
 else
+    if [[ -n "$PROFILE_TARGET" ]] ; then
+	if ((doit)) ; then
+	    ensure_profiler_binary
+	    ensure_profiler_feature_gate
+	    profiler_start
+	else
+	    echo "(dry-run) Would ensure cluster-profiler binary is available"
+	    echo "(dry-run) Would check/enable ClusterProfiler feature gate"
+	    echo "(dry-run) Would start profiling before VM creation"
+	fi
+    fi
     main
+    if [[ -n "$PROFILE_TARGET" ]] ; then
+	if ((doit)) ; then
+	    profiler_prompt_and_stop
+	else
+	    echo "(dry-run) Would prompt to stop profiling and dump results"
+	fi
+    fi
 fi
 
 # Print dry-run YAML file location
