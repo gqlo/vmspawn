@@ -1263,7 +1263,10 @@ profiler_prompt_and_stop() {
 	"$PROFILER_BIN" --cmd dump --output-dir "$output_dir" ||
 	    fatal "Failed to dump profiling results"
     else
-	"$PROFILER_BIN" --cmd dump -l "kubevirt.io=$PROFILE_TARGET" --output-dir "$output_dir" ||
+	# region agent log
+	echo "{\"id\":\"log_dump_cmd\",\"timestamp\":$(date +%s%3N),\"location\":\"vmspawn:1266\",\"message\":\"profiler dump command\",\"data\":{\"target\":\"$PROFILE_TARGET\",\"cmd\":\"$PROFILER_BIN --cmd dump --l kubevirt.io=$PROFILE_TARGET --output-dir $output_dir\"},\"hypothesisId\":\"A\"}" >> /home/guoqingli/work/vmspawn/.cursor/debug.log
+	# endregion
+	"$PROFILER_BIN" --cmd dump --l "kubevirt.io=$PROFILE_TARGET" --output-dir "$output_dir" ||
 	    fatal "Failed to dump profiling results for $PROFILE_TARGET"
     fi
 
