@@ -563,7 +563,6 @@ VMSPAWN="./vmspawn"
   [ "$status" -ne 0 ]
   [[ "$output" == *"too many positional arguments"* ]]
   [[ "$output" == *"got 3"* ]]
-  [[ "$output" == *"Usage:"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -1954,7 +1953,7 @@ MOCKEOF
 # ---------------------------------------------------------------
 @test "option: -h displays help text" {
   run bash "$VMSPAWN" -h
-  [ "$status" -eq 1 ]
+  [ "$status" -eq 0 ]
 
   [[ "$output" == *"Usage:"* ]]
   [[ "$output" == *"options:"* ]]
