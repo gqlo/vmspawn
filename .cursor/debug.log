@@ -1,1 +1,0 @@
-{"id":"log_dump_cmd","timestamp":1771373513653,"location":"vmspawn:1266","message":"profiler dump command","data":{"target":"virt-controller","cmd":"/home/guoqingli/work/kubevirt/tools/cluster-profiler/cluster-profiler --cmd dump --l kubevirt.io=virt-controller --output-dir logs/profile-2ba5af"},"hypothesisId":"A"}

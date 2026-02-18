@@ -43,7 +43,7 @@ NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
 RUN_STRATEGY=Always
 WAIT=0
-RECREATE_EXISTING_VMS=1
+RECREATE_EXISTING_VMS=0
 DELETE_BATCH=
 DELETE_ALL=0
 CONFIRM_DELETE=0
@@ -98,8 +98,9 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY)
-        --create-existing-vm    Attempt to re-create existing VMs
-        --no-create-existing-vm Do not attempt to re-create existing VMs (default)
+        --create-existing-vm    Re-apply all VMs even if they already exist
+                                | | | Use with --batch-id to update an existing
+                                | | | batch (e.g. to resize CPU or memory)
         --wait                  Wait for VMs to start
         --nowait                Do not wait for VMs to start (default)
         --start                 Start the VMs
@@ -168,7 +169,6 @@ process_option() {
 	nowait)	   WAIT=0 ;;
 	cloudinit) CLOUDINIT_FILE=$value ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
-	nocreate*) RECREATE_EXISTING_VMS=0 ;;
 	start)     RUN_STRATEGY=Always ;;
 	stop)      RUN_STRATEGY=Halted ;;
 	profile)   PROFILE_TARGET=${value:-all} ;;
