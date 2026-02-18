@@ -66,6 +66,9 @@ One test per README Quick Start example. Each validates the full YAML output end
 - Non-numeric positional arguments are rejected
 - `--cloudinit` with a missing file fails
 - `--dv-url=` with no URL fails
+- Too many positional arguments rejected with diagnostic count
+- Misplaced options after positional arguments are detected (ERR-23 through ERR-26)
+- `--` end-of-options marker does not trigger false positives (ERR-27)
 
 ### YAML structure
 
