@@ -65,7 +65,6 @@ fatal() {
 
 # | | | represents spaces that creates indentation for te continuation lines
 help() {
-    if [[ -n "$*" ]] ; then echo "$*" ; fi
     cat <<EOF
 Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (default $NUM_NAMESPACES)]]
     options:
@@ -119,6 +118,12 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
 EOF
+    exit 0
+}
+
+usage_error() {
+    echo "$*" >&2
+    echo "Try '$0 --help' for more information." >&2
     exit 1
 }
 
@@ -219,6 +224,40 @@ fi
 # without providing a snapshot class means snapshots won't work.
 if (( ! SNAPSHOT_EXPLICITLY_SET && STORAGE_CLASS_SET && ! SNAPSHOT_CLASS_SET )); then
     USE_SNAPSHOT=0
+fi
+
+# Validate arguments early -- before creating log files or contacting the
+# cluster -- so pure input errors are reported instantly.
+if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
+    if (($# > 2)) ; then
+	usage_error "Error: too many positional arguments (expected at most 2, got $#)"
+    fi
+
+    if [[ -n "${1:-}" ]] && ! [[ "$1" =~ ^[0-9]+$ ]]; then
+	fatal "Invalid argument '$1': expected a number for total VMs"
+    fi
+    if [[ -n "${2:-}" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
+	fatal "Invalid argument '$2': expected a number for namespaces"
+    fi
+
+    NUM_VMS=${1:-$NUM_VMS}
+    NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
+
+    if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
+	NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
+    fi
+
+    if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
+	usage_error "Error: Number of VMs must be a positive integer"
+    fi
+
+    if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
+	usage_error "Error: Number of namespaces must be a positive integer"
+    fi
+
+    if ((NUM_VMS < NUM_NAMESPACES)) ; then
+	usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
+    fi
 fi
 
 # Setup logging
@@ -450,13 +489,8 @@ if [[ -n "$PROFILE_TARGET" ]] ; then
     esac
 fi
 
-# Skip creation-specific validation when deleting
+# Skip creation-specific checks when deleting
 if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
-    # no more than 2 positional arguments are allowed
-    if (($# > 2)) ; then
-	help "Error: too many positional arguments (expected at most 2, got $#)"
-    fi
-
     if ((doit)) ; then
 	check_prerequisites
     fi
@@ -466,36 +500,6 @@ if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
     # when oc is not available or not logged in.
     if oc whoami >/dev/null 2>&1 ; then
 	detect_access_mode
-    fi
-
-    # Validate positional arguments are numbers before using them
-    if [[ -n "${1:-}" ]] && ! [[ "$1" =~ ^[0-9]+$ ]]; then
-	fatal "Invalid argument '$1': expected a number for total VMs"
-    fi
-    if [[ -n "${2:-}" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
-	fatal "Invalid argument '$2': expected a number for namespaces"
-    fi
-
-    NUM_VMS=${1:-$NUM_VMS}
-    NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
-
-    # If user specified --vms-per-namespace, calculate the total number of
-    # VMs from that.
-    if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
-	NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
-    fi
-
-    # Validate inputs
-    if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
-	help "Error: Number of VMs must be a positive integer"
-    fi
-
-    if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
-	help "Error: Number of namespaces must be a positive integer"
-    fi
-
-    if ((NUM_VMS < NUM_NAMESPACES)) ; then
-	help "Error: Number of VMs must be greater than or equal to number of namespaces"
     fi
 
     check_file_exists namespace.yaml
@@ -1072,11 +1076,13 @@ delete_all_batches() {
     local all_batches
 
     if ((! doit)) ; then
-	echo "(dry-run) Would discover and delete all vmspawn batches."
-	echo "  oc get ns -l batch-id --no-headers"
-	echo ""
-	echo "This finds all namespaces with a batch-id label matching"
-	echo "the vmspawn naming pattern (vm-{batch}-ns-{N}) and deletes them."
+	cat <<-EOF
+	(dry-run) Would discover and delete all vmspawn batches.
+	  oc get ns -l batch-id --no-headers
+
+	This finds all namespaces with a batch-id label matching
+	the vmspawn naming pattern (vm-{batch}-ns-{N}) and deletes them.
+	EOF
 	return 0
     fi
 
@@ -1176,10 +1182,12 @@ ensure_profiler_feature_gate() {
 	    return 0
 	fi
 
-	echo ""
-	echo "ClusterProfiler feature gate is not enabled on this cluster."
-	echo "This is required for profiling KubeVirt control-plane components."
-	echo ""
+	cat <<-EOF
+
+	ClusterProfiler feature gate is not enabled on this cluster.
+	This is required for profiling KubeVirt control-plane components.
+
+	EOF
 	read -r -p "Enable ClusterProfiler feature gate now? [y/N] " confirm
 	if [[ "${confirm,,}" != "y" ]] ; then
 	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
@@ -1216,10 +1224,12 @@ ensure_profiler_feature_gate() {
 	    return 0
 	fi
 
-	echo ""
-	echo "ClusterProfiler feature gate is not enabled on this cluster."
-	echo "This is required for profiling KubeVirt control-plane components."
-	echo ""
+	cat <<-EOF
+
+	ClusterProfiler feature gate is not enabled on this cluster.
+	This is required for profiling KubeVirt control-plane components.
+
+	EOF
 	read -r -p "Enable ClusterProfiler feature gate now? [y/N] " confirm
 	if [[ "${confirm,,}" != "y" ]] ; then
 	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
@@ -1349,23 +1359,27 @@ main() {
 	MANIFEST
 	log_message "Batch manifest written to: $manifest_file"
 
-	echo ""
-	echo "Batch ID: $BATCH_ID"
-	echo ""
-	echo "To check the created resources:"
-	echo "  oc get ns -l batch-id=$BATCH_ID"
-	echo "  oc get datavolumes -A -l batch-id=$BATCH_ID"
+	cat <<-EOF
+
+	Batch ID: $BATCH_ID
+
+	To check the created resources:
+	  oc get ns -l batch-id=$BATCH_ID
+	  oc get datavolumes -A -l batch-id=$BATCH_ID
+	EOF
 	if ((USE_SNAPSHOT)) ; then
 	    echo "  oc get volumesnapshots -A -l batch-id=$BATCH_ID"
 	fi
-	echo "  oc get vm -A -l batch-id=$BATCH_ID"
-	echo ""
-	echo "To delete all resources in this batch:"
-	echo "  oc delete vm -A -l batch-id=$BATCH_ID"
-	echo "  oc delete ns -l batch-id=$BATCH_ID"
-	echo ""
-	echo "To list all batches:"
-	echo "  ls ${LOG_DIR}/*.manifest"
+	cat <<-EOF
+	  oc get vm -A -l batch-id=$BATCH_ID
+
+	To delete all resources in this batch:
+	  oc delete vm -A -l batch-id=$BATCH_ID
+	  oc delete ns -l batch-id=$BATCH_ID
+
+	To list all batches:
+	  ls ${LOG_DIR}/*.manifest
+	EOF
     fi
 }
 
