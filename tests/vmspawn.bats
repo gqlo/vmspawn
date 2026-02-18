@@ -556,11 +556,13 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# ERR-4: too many positional arguments rejected
+# ERR-4: too many positional arguments rejected with diagnostic
 # ---------------------------------------------------------------
-@test "ERR: three positional arguments rejected" {
-  run bash "$VMSPAWN" -n --batch-id=err013 10 2 extra
+@test "ERR: three positional arguments rejected with count" {
+  run bash "$VMSPAWN" -n --batch-id=err013 10 2 3
   [ "$status" -ne 0 ]
+  [[ "$output" == *"too many positional arguments"* ]]
+  [[ "$output" == *"got 3"* ]]
   [[ "$output" == *"Usage:"* ]]
 }
 
@@ -774,6 +776,51 @@ VMSPAWN="./vmspawn"
   run bash "$VMSPAWN" -n --batch-id=err029 --namespaces=-1 --vms=1
   [ "$status" -ne 0 ]
   [[ "$output" == *"Number of namespaces must be a positive integer"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-23: option placed after positional arg is detected
+# ---------------------------------------------------------------
+@test "ERR: option after positional arg detected" {
+  run bash "$VMSPAWN" -n 10 --cores=4
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Misplaced option '--cores=4'"* ]]
+  [[ "$output" == *"before positional arguments"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-24: option sandwiched between valid option and positional
+# ---------------------------------------------------------------
+@test "ERR: trailing option after positional arg detected" {
+  run bash "$VMSPAWN" --cores=4 10 --memory=2Gi
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Misplaced option '--memory=2Gi'"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-25: multiple misplaced options (first one is reported)
+# ---------------------------------------------------------------
+@test "ERR: first misplaced option is reported" {
+  run bash "$VMSPAWN" 10 --cores=4 --memory=2Gi
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Misplaced option '--cores=4'"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-26: misplaced --delete after positional arg
+# ---------------------------------------------------------------
+@test "ERR: misplaced --delete after positional arg detected" {
+  run bash "$VMSPAWN" -n 5 --delete=abc123
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Misplaced option '--delete=abc123'"* ]]
+}
+
+# ---------------------------------------------------------------
+# ERR-27: -- end-of-options marker still works (not a false positive)
+# ---------------------------------------------------------------
+@test "ERR: -- end-of-options does not trigger misplaced option check" {
+  run bash "$VMSPAWN" -n --batch-id=err030 --vms=1 --namespaces=1 -- 5
+  [ "$status" -eq 0 ]
 }
 
 # ===============================================================
