@@ -9,7 +9,7 @@ Cloud-init injection lets you push custom workloads (e.g. stress-ng) at boot.
 Integrated cluster profiling (`--profile`) captures Go runtime-level
 performance data -- CPU, heap, mutex, and other pprof profiles -- from
 the KubeVirt control plane during batch runs.
-Backed by 168 unit tests, live cluster validation, and CI on every push
+Backed by 185 unit tests, live cluster validation, and CI on every push
 (as of Feb 2026).
 
 ---
