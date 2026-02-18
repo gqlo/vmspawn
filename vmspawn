@@ -187,6 +187,16 @@ done
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
 
+# Detect options misplaced after positional arguments.  Bash getopts
+# stops at the first non-option word, so any --option that appears
+# after a positional argument is silently treated as a positional
+# argument instead of being parsed.  Catch that mistake early.
+for _arg in "$@"; do
+    if [[ "$_arg" == --* ]]; then
+	fatal "Misplaced option '$_arg': all options must appear before positional arguments. Run '$0 -h' for usage."
+    fi
+done
+
 # Auto-derive VM_BASENAME from the DataSource name when the user
 # hasn't explicitly set --basename.
 if [[ -n "$DATASOURCE" ]] && (( ! BASENAME_SET )) ; then
@@ -444,7 +454,7 @@ fi
 if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
     # no more than 2 positional arguments are allowed
     if (($# > 2)) ; then
-	help
+	help "Error: too many positional arguments (expected at most 2, got $#)"
     fi
 
     if ((doit)) ; then
