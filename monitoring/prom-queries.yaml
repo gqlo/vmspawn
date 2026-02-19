@@ -7,7 +7,7 @@
 # Global time range applied to all queries (individual queries can override)
 defaults:
   start: "2026-02-19 19:07:37"
-  end: "2026-02-19 19:21:25"
+  end: "2026-02-19 19:55:25"
   step: 15s
 
 memory-per-worker:

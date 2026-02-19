@@ -188,6 +188,11 @@ resolve_timestamp() {
 
 # ---------------------------------------------------------------------------
 # Run a single query and output CSV to stdout
+#
+# NOTE: We use "oc exec" (not "oc rsh") to run curl inside the Prometheus pod.
+# oc rsh allocates a pseudo-terminal (PTY) whose line discipline corrupts
+# large responses (injected newlines at column boundaries, doubled chars).
+# oc exec streams raw bytes without a PTY, keeping the JSON intact.
 # ---------------------------------------------------------------------------
 
 run_query() {
@@ -215,19 +220,19 @@ run_query() {
 		ts_end=$(resolve_timestamp "$range_end") || exit 1
 		echo "  Range [$(date -u -d @"$ts_start" '+%H:%M:%S') -> $(date -u -d @"$ts_end" '+%H:%M:%S') step $range_step]" >&2
 
-		raw_json=$(oc rsh -c "$CONTAINER" -n "$NAMESPACE" "$POD" \
+		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
 			curl -sf \
 			--data-urlencode "query=$query" \
 			--data-urlencode "start=$ts_start" \
 			--data-urlencode "end=$ts_end" \
 			--data-urlencode "step=$range_step" \
 			http://localhost:9090/api/v1/query_range 2>/dev/null) \
-			|| fatal "oc rsh / curl failed — check pod name, namespace, and query syntax"
+			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
 	else
-		raw_json=$(oc rsh -c "$CONTAINER" -n "$NAMESPACE" "$POD" \
+		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
 			curl -sf --data-urlencode "query=$query" \
 			http://localhost:9090/api/v1/query 2>/dev/null) \
-			|| fatal "oc rsh / curl failed — check pod name, namespace, and query syntax"
+			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
 	fi
 
 	echo "$raw_json" | python3 -c '
