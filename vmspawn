@@ -357,6 +357,45 @@ else
     fi
 fi
 
+# Run oc whoami with timeout; prints "Checking..." every 3s while waiting.
+# Returns: 0 = success, 124 = timeout, non-zero = failure.
+# On failure (non-zero, non-124), sets OC_WHOAMI_ERR to the stderr from oc.
+check_oc_connectivity() {
+	OC_WHOAMI_ERR=""
+	local oc_timeout=${OC_CONNECT_TIMEOUT:-30}
+	local stderr_file
+	stderr_file=$(mktemp)
+	trap 'rm -f "${stderr_file:-}" 2>/dev/null; trap - RETURN' RETURN
+
+	oc whoami >/dev/null 2>"$stderr_file" &
+	local oc_pid=$!
+	local elapsed=0
+	local rc=0
+
+	while ((elapsed < oc_timeout)); do
+		if ! kill -0 "$oc_pid" 2>/dev/null; then
+			wait "$oc_pid" 2>/dev/null || rc=$?
+			break
+		fi
+		if ((elapsed > 0 && elapsed % 3 == 0)); then
+			echo "${C_VAL}Checking OpenShift cluster connection...${C_RST}"
+		fi
+		sleep 1
+		((elapsed += 1))
+	done
+
+	if kill -0 "$oc_pid" 2>/dev/null; then
+		kill "$oc_pid" 2>/dev/null || true
+		wait "$oc_pid" 2>/dev/null || true
+		return 124
+	fi
+
+	if ((rc != 0)); then
+		OC_WHOAMI_ERR=$(cat "$stderr_file" 2>/dev/null || true)
+	fi
+	return "$rc"
+}
+
 # Check for prerequisites: oc CLI, OpenShift Virtualization,
 # ODF storage, and the configured storage class.
 # Reports all missing prerequisites before exiting.
@@ -368,12 +407,16 @@ check_prerequisites() {
 	((errors++))
     else
 	local rc=0
-	timeout "${OC_CONNECT_TIMEOUT:-30}" oc whoami >/dev/null 2>&1 || rc=$?
+	check_oc_connectivity || rc=$?
 	if ((rc == 124)) ; then
 	    echo "${C_ERR}Error:${C_RST} timed out reaching OpenShift cluster (${C_VAL}${OC_CONNECT_TIMEOUT:-30}s${C_RST}) -- check network connectivity"
 	    ((errors++))
 	elif ((rc != 0)) ; then
-	    echo "${C_ERR}Error:${C_RST} not logged into an OpenShift cluster (run 'oc login' first)"
+	    if [[ -n "${OC_WHOAMI_ERR:-}" ]] ; then
+		echo "${C_ERR}Error:${C_RST} ${OC_WHOAMI_ERR}"
+	    else
+		echo "${C_ERR}Error:${C_RST} not logged into an OpenShift cluster (run 'oc login' first)"
+	    fi
 	    ((errors++))
 	fi
     fi
