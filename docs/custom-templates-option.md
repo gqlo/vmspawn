@@ -93,7 +93,12 @@ When using custom templates, the template may have **literal values** instead of
 - **Option matches template** — Use the template's value (no replacement needed). If the user passed `--batch-id=abc123` and the template has `abc123`, skip replacement.
 - **Option differs** — Use the option value. If the user passed `--batch-id=xyz` and the template has `abc123`, replace with `xyz`.
 
-Placeholders like `{BATCH_ID}` are always expanded. This rule applies only to literal values in known YAML contexts (e.g. `batch-id: "..."`, `vm-basename: "..."`). Implementation: before processing, scan templates for literal values in known fields; when the option was not given, extract and set the corresponding variable. During `process_template`, for literal values: replace only when the option was given and differs from the template.
+Placeholders like `{BATCH_ID}` are always expanded. This rule applies only to
+literal values in known YAML contexts (e.g. `batch-id: "..."`,
+`vm-basename: "..."`). Implementation: before processing, scan templates for
+literal values in known fields; when the option was not given, extract and set
+the corresponding variable. During `process_template`, for literal values:
+replace only when the option was given and differs from the template.
 
 ### Application flow
 
@@ -150,11 +155,22 @@ Implement the validation flow above. Function logic:
 
 Replace the current `check_file_exists` block (lines 593-619). Call `validate_required_templates` in the same place.
 
-**Cache**: Use a global associative array `declare -A template_file` (or similar). When `find_template_by_content(role)` finds a match, store `template_file[$role]=$path`. `create_namespaces`, `create_datavolumes`, `create_virtualmachines`, etc. then use `template_file[namespace]` instead of calling `find_template_by_content` again. `validate_required_templates` fills the cache; creation functions read from it.
+**Cache**: Use a global associative array `declare -A template_file` (or
+similar). When `find_template_by_content(role)` finds a match, store
+`template_file[$role]=$path`. `create_namespaces`, `create_datavolumes`,
+`create_virtualmachines`, etc. then use `template_file[namespace]` instead of
+calling `find_template_by_content` again. `validate_required_templates` fills
+the cache; creation functions read from it.
 
 ### 3. Conditional replacement (use template value when option matches or absent)
 
-For custom templates only: (a) **Pre-scan**: before processing, extract literal values from templates for known fields (`batch-id`, `vm-basename`, etc.). When the user did not pass the corresponding option, set the runtime variable from the template (e.g. `BATCH_ID` from `batch-id: "abc123"`). (b) **During processing**: when replacing, skip if the template value matches the option value; replace only when the user passed a different value. Use `awk` or a bash loop for extraction and conditional replacement.
+For custom templates only: (a) **Pre-scan**: before processing, extract literal
+values from templates for known fields (`batch-id`, `vm-basename`, etc.). When
+the user did not pass the corresponding option, set the runtime variable from
+the template (e.g. `BATCH_ID` from `batch-id: "abc123"`). (b) **During
+processing**: when replacing, skip if the template value matches the option
+value; replace only when the user passed a different value. Use `awk` or a bash
+loop for extraction and conditional replacement.
 
 ### 4. Add option to process_option
 
