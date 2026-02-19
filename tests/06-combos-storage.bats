@@ -3,7 +3,13 @@
 # Unit tests for vmspawn
 # Run with: bats tests/
 
+load 'helpers'
+
 VMSPAWN="./vmspawn"
+
+setup_file() {
+    setup_oc_mock
+}
 
 # ===============================================================
 # Category 1: Clone Path x Storage Options (combos 1-9)

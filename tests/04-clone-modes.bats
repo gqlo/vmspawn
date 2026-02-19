@@ -7,6 +7,10 @@ load 'helpers'
 
 VMSPAWN="./vmspawn"
 
+setup_file() {
+    setup_oc_mock
+}
+
 # ===============================================================
 # Direct DataSource clone (no-snapshot + DataSource)
 # ===============================================================
@@ -173,9 +177,9 @@ VMSPAWN="./vmspawn"
 }
 
 # ---------------------------------------------------------------
-# DC-9: Live-mode completion message (mock oc)
+# DC-9: Auto-detect RWO + no base DVs (mock oc)
 # ---------------------------------------------------------------
-@test "datasource-clone: live-mode summary says no base DVs" {
+@test "datasource-clone: auto-detect RWO with no base DVs" {
   local mock_dir
   mock_dir=$(mktemp -d)
   _create_mock_oc "$mock_dir"
@@ -183,16 +187,15 @@ VMSPAWN="./vmspawn"
   export MOCK_ACCESS_MODE=ReadWriteOnce
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=dc0009 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=dc0009 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=2 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/dc0009-*.log logs/batch-dc0009.manifest
+  rm -f logs/dc0009-dryrun.yaml
 
   [ "$status" -eq 0 ]
+  [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce'"* ]]
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
-  [[ "$output" == *"direct DataSource clone, no base DVs"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------

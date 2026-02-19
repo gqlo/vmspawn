@@ -3,7 +3,13 @@
 # Unit tests for vmspawn
 # Run with: bats tests/
 
+load 'helpers'
+
 VMSPAWN="./vmspawn"
+
+setup_file() {
+    setup_oc_mock
+}
 
 # ===============================================================
 # Delete hardening -- batch ID validation

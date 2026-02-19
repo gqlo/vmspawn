@@ -521,10 +521,10 @@ fi
 if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
     if ((doit)) ; then
 	check_prerequisites
+    fi
 
-	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	    detect_access_mode
-	fi
+    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	detect_access_mode
     fi
 
     check_file_exists namespace.yaml

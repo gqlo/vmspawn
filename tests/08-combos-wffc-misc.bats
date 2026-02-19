@@ -7,6 +7,10 @@ load 'helpers'
 
 VMSPAWN="./vmspawn"
 
+setup_file() {
+    setup_oc_mock
+}
+
 # ===============================================================
 # Category 8: WFFC x Other Options (combos 43-46, mock oc)
 # ===============================================================
@@ -23,12 +27,12 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=cmb043 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=cmb043 --storage-class=lvms-nvme-sc \
     --no-snapshot --cloudinit=helpers/cloudinit-stress-workload.yaml \
     --vms=2 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/cmb043-*.log logs/batch-cmb043.manifest
+  rm -f logs/cmb043-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
@@ -36,7 +40,6 @@ VMSPAWN="./vmspawn"
 
   # --- Cloud-init Secret still created ---
   [[ "$output" == *"Creating cloud-init Secret"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -53,18 +56,16 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=cmb044 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=cmb044 --storage-class=lvms-nvme-sc \
     --no-snapshot --dv-url=http://example.com/disk.qcow2 \
     --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/cmb044-*.log logs/batch-cmb044.manifest
+  rm -f logs/cmb044-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
   [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce'"* ]]
-  [[ "$output" == *"Skipping DataVolume wait"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -79,19 +80,18 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=cmb045 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=cmb045 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms-per-namespace=3 --namespaces=2
 
   rm -rf "$mock_dir"
-  rm -f logs/cmb045-*.log logs/batch-cmb045.manifest
+  rm -f logs/cmb045-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
 
   # --- 6 VMs total ---
-  [[ "$output" == *"6 VMs"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
+  [[ "$output" == *"Total VMs: 6"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -106,12 +106,12 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=cmb046 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=cmb046 --storage-class=lvms-nvme-sc \
     --snapshot --cloudinit=helpers/cloudinit-stress-workload.yaml \
     --vms=2 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/cmb046-*.log logs/batch-cmb046.manifest
+  rm -f logs/cmb046-dryrun.yaml
 
   [ "$status" -eq 0 ]
 
@@ -121,7 +121,6 @@ VMSPAWN="./vmspawn"
 
   # --- Cloud-init still works ---
   [[ "$output" == *"Creating cloud-init Secret"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ===============================================================

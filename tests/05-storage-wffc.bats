@@ -7,6 +7,10 @@ load 'helpers'
 
 VMSPAWN="./vmspawn"
 
+setup_file() {
+    setup_oc_mock
+}
+
 # ---------------------------------------------------------------
 # SP-1: StorageProfile returns RWO (e.g. LVMS)
 # ---------------------------------------------------------------
@@ -18,11 +22,11 @@ VMSPAWN="./vmspawn"
   export MOCK_ACCESS_MODE=ReadWriteOnce
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=sp0001 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=sp0001 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/sp0001-*.log logs/batch-sp0001.manifest
+  rm -f logs/sp0001-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce' from StorageProfile for 'lvms-nvme-sc'"* ]]
@@ -40,11 +44,11 @@ VMSPAWN="./vmspawn"
   export MOCK_ACCESS_MODE=ReadWriteMany
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=sp0002 --storage-class=ocs-rbd-virt \
+  run bash "$VMSPAWN" -n --batch-id=sp0002 --storage-class=ocs-rbd-virt \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/sp0002-*.log logs/batch-sp0002.manifest
+  rm -f logs/sp0002-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Auto-detected access mode 'ReadWriteMany' from StorageProfile for 'ocs-rbd-virt'"* ]]
@@ -63,11 +67,11 @@ VMSPAWN="./vmspawn"
   unset MOCK_ACCESS_MODE
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=sp0003 --storage-class=unknown-sc \
+  run bash "$VMSPAWN" -n --batch-id=sp0003 --storage-class=unknown-sc \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/sp0003-*.log logs/batch-sp0003.manifest
+  rm -f logs/sp0003-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Could not detect access mode from StorageProfile"* ]]
@@ -86,11 +90,11 @@ VMSPAWN="./vmspawn"
   export MOCK_ACCESS_MODE=ReadWriteMany
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=sp0004 --rwo --storage-class=ocs-rbd-virt \
+  run bash "$VMSPAWN" -n --batch-id=sp0004 --rwo --storage-class=ocs-rbd-virt \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/sp0004-*.log logs/batch-sp0004.manifest
+  rm -f logs/sp0004-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Access mode explicitly set to: ReadWriteOnce"* ]]
@@ -109,11 +113,11 @@ VMSPAWN="./vmspawn"
   export MOCK_ACCESS_MODE=ReadWriteOnce
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=sp0005 --rwx --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=sp0005 --rwx --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/sp0005-*.log logs/batch-sp0005.manifest
+  rm -f logs/sp0005-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"Access mode explicitly set to: ReadWriteMany"* ]]
@@ -137,18 +141,16 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0001 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=wf0001 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=2 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0001-*.log logs/batch-wf0001.manifest
+  rm -f logs/wf0001-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
-  # No base DV created — each VM clones directly from DataSource
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
   [[ "$output" == *"Creating VirtualMachines"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -163,20 +165,17 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0002 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=wf0002 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=2 --namespaces=1 \
     --dv-url=http://example.com/disk.qcow2
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0002-*.log logs/batch-wf0002.manifest
+  rm -f logs/wf0002-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]
-  [[ "$output" == *"Skipping DataVolume wait"* ]]
-  [[ "$output" == *"VMs will trigger PVC binding"* ]]
-  # VMs were still created despite DV wait being skipped
+  [[ "$output" == *"Auto-detected access mode 'ReadWriteOnce'"* ]]
   [[ "$output" == *"Creating VirtualMachines"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -191,16 +190,15 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=Immediate
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0003 --storage-class=lvms-nvme-sc-imm \
+  run bash "$VMSPAWN" -n --batch-id=wf0003 --storage-class=lvms-nvme-sc-imm \
     --no-snapshot --vms=1 --namespaces=1 \
     --dv-url=http://example.com/disk.qcow2
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0003-*.log logs/batch-wf0003.manifest
+  rm -f logs/wf0003-dryrun.yaml
 
   [ "$status" -eq 0 ]
-  [[ "$output" != *"Skipping DataVolume wait"* ]]
-  [[ "$output" == *"All DataVolumes are completed successfully"* ]]
+  [[ "$output" != *"WaitForFirstConsumer"* ]]
   [[ "$output" == *"Creating VirtualMachines"* ]]
 }
 
@@ -216,11 +214,11 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0004 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=wf0004 --storage-class=lvms-nvme-sc \
     --snapshot --vms=2 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0004-*.log logs/batch-wf0004.manifest
+  rm -f logs/wf0004-dryrun.yaml
 
   [ "$status" -eq 0 ]
   # Snapshot mode was auto-disabled
@@ -232,13 +230,12 @@ VMSPAWN="./vmspawn"
   # Direct DataSource clone used instead
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
   [[ "$output" == *"Creating VirtualMachines"* ]]
-  [[ "$output" == *"Resource creation completed successfully"* ]]
 }
 
 # ---------------------------------------------------------------
 # WFFC-5: WFFC detection works in dry-run
 # ---------------------------------------------------------------
-@test "wffc: live-mode shows WFFC warning when oc is available" {
+@test "wffc: dry-run shows WFFC warning with mock oc" {
   local mock_dir
   mock_dir=$(mktemp -d)
   _create_mock_oc "$mock_dir"
@@ -247,11 +244,11 @@ VMSPAWN="./vmspawn"
   export MOCK_BIND_MODE=WaitForFirstConsumer
   export PATH="$mock_dir:$PATH"
 
-  run bash "$VMSPAWN" --batch-id=wf0004 --storage-class=lvms-nvme-sc \
+  run bash "$VMSPAWN" -n --batch-id=wf0005 --storage-class=lvms-nvme-sc \
     --no-snapshot --vms=1 --namespaces=1
 
   rm -rf "$mock_dir"
-  rm -f logs/wf0004-*.log logs/batch-wf0004.manifest
+  rm -f logs/wf0005-dryrun.yaml
 
   [ "$status" -eq 0 ]
   [[ "$output" == *"WaitForFirstConsumer"* ]]

@@ -1,5 +1,16 @@
 # Shared helpers for vmspawn bats tests
 
+# Set up mock oc for the entire test file. Call from setup_file.
+# Ensures tests never run real "oc" commands against a cluster.
+setup_oc_mock() {
+    if [[ -z "${_VMSPAWN_MOCK_OC_DIR:-}" ]]; then
+	_VMSPAWN_MOCK_OC_DIR=$(mktemp -d)
+	_create_mock_oc "$_VMSPAWN_MOCK_OC_DIR"
+	export PATH="$_VMSPAWN_MOCK_OC_DIR:$PATH"
+	export _VMSPAWN_MOCK_OC_DIR
+    fi
+}
+
 # Create a mock oc script that satisfies all prerequisite checks
 # and returns MOCK_ACCESS_MODE for StorageProfile queries.
 # Usage: _create_mock_oc <directory>

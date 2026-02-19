@@ -3,7 +3,13 @@
 # Unit tests for vmspawn
 # Run with: bats tests/
 
+load 'helpers'
+
 VMSPAWN="./vmspawn"
+
+setup_file() {
+    setup_oc_mock
+}
 
 # ===============================================================
 # Category 10: Container Disk Mode (CDISK-1 through CDISK-9)
