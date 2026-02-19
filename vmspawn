@@ -67,9 +67,20 @@ doit=1
 quiet=0
 
 fatal() {
-    echo "$*"
+    echo "${C_ERR}$*${C_RST}"
     exit 1
 }
+
+if [[ -t 1 ]] ; then
+    C_VAL=$'\033[0;36m'
+    C_ERR=$'\033[0;31m'
+    C_WARN=$'\033[0;33m'
+    C_OK=$'\033[0;32m'
+    C_BOLD=$'\033[1m'
+    C_RST=$'\033[0m'
+else
+    C_VAL= C_ERR= C_WARN= C_OK= C_BOLD= C_RST=
+fi
 
 # | | | represents spaces that creates indentation for te continuation lines
 help() {
@@ -335,7 +346,7 @@ if ((doit)) ; then
 	echo "Created log directory: $LOG_DIR"
     fi
 
-    log_message "Log file created: $LOG_FILE"
+    log_message "Log file created: ${C_VAL}$LOG_FILE${C_RST}"
 else
     # In dry-run mode, save generated YAML to a file for reference
     if (( ! quiet )) ; then
@@ -353,28 +364,37 @@ check_prerequisites() {
     local -i errors=0
 
     if [[ -z "$(type -t oc)" ]] ; then
-	echo "Error: oc command is not installed on system"
-	((errors++))
-    elif ! oc whoami >/dev/null 2>&1 ; then
-	echo "Error: not logged into an OpenShift cluster (run 'oc login' first)"
+	echo "${C_ERR}Error:${C_RST} oc command is not installed on system"
 	((errors++))
     else
+	local rc=0
+	timeout "${OC_CONNECT_TIMEOUT:-30}" oc whoami >/dev/null 2>&1 || rc=$?
+	if ((rc == 124)) ; then
+	    echo "${C_ERR}Error:${C_RST} timed out reaching OpenShift cluster (${C_VAL}${OC_CONNECT_TIMEOUT:-30}s${C_RST}) -- check network connectivity"
+	    ((errors++))
+	elif ((rc != 0)) ; then
+	    echo "${C_ERR}Error:${C_RST} not logged into an OpenShift cluster (run 'oc login' first)"
+	    ((errors++))
+	fi
+    fi
+
+    if ((errors == 0)) ; then
 	if ! oc get ns openshift-cnv >/dev/null 2>&1 ; then
-	    echo "Error: OpenShift Virtualization is not installed (openshift-cnv namespace not found)"
+	    echo "${C_ERR}Error:${C_RST} OpenShift Virtualization is not installed (openshift-cnv namespace not found)"
 	    ((errors++))
 	fi
 
 	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
 	    if ((USE_SNAPSHOT)) ; then
 		if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
-		    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
-		    echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		    echo "${C_ERR}Error:${C_RST} OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
+		    echo "  ${C_WARN}Hint:${C_RST} use --no-snapshot to skip VolumeSnapshot-based cloning"
 		    ((errors++))
 		fi
 	    fi
 
 	    if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
-		echo "Error: storage class '$STORAGE_CLASS' not found"
+		echo "${C_ERR}Error:${C_RST} storage class ${C_VAL}'$STORAGE_CLASS'${C_RST} not found"
 		echo "  Available storage classes:"
 		oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
 		((errors++))
@@ -382,17 +402,17 @@ check_prerequisites() {
 
 	    if ((USE_SNAPSHOT)) ; then
 		if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
-		    echo "Error: volume snapshot class '$SNAPSHOT_CLASS' not found"
+		    echo "${C_ERR}Error:${C_RST} volume snapshot class ${C_VAL}'$SNAPSHOT_CLASS'${C_RST} not found"
 		    echo "  Available volume snapshot classes:"
 		    oc get volumesnapshotclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
-		    echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		    echo "  ${C_WARN}Hint:${C_RST} use --no-snapshot to skip VolumeSnapshot-based cloning"
 		    ((errors++))
 		fi
 	    fi
 
 	    if [[ -n "$DATASOURCE" ]] ; then
 		if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
-		    echo "Error: DataSource '$DATASOURCE' not found in namespace '$DATASOURCE_NS'"
+		    echo "${C_ERR}Error:${C_RST} DataSource ${C_VAL}'$DATASOURCE'${C_RST} not found in namespace ${C_VAL}'$DATASOURCE_NS'${C_RST}"
 		    echo "  Available DataSources:"
 		    oc get datasource -n "$DATASOURCE_NS" --no-headers 2>/dev/null | awk '{print "    " $1}' || true
 		    ((errors++))
@@ -402,19 +422,19 @@ check_prerequisites() {
     fi
 
     if ((errors > 0)) ; then
-	fatal "Prerequisite check failed with $errors error(s)"
+	fatal "Prerequisite check failed with ${C_VAL}$errors${C_RST} error(s)"
     fi
 
     if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
-	log_message "Prerequisites OK: oc CLI, OpenShift Virtualization (container disk mode)"
+	log_message "${C_OK}Prerequisites OK:${C_RST} oc CLI, OpenShift Virtualization (container disk mode)"
     else
 	local snap_msg=""
 	if ((USE_SNAPSHOT)) ; then
-	    snap_msg=", snapshot class '$SNAPSHOT_CLASS'"
+	    snap_msg=", snapshot class ${C_VAL}'$SNAPSHOT_CLASS'${C_RST}"
 	else
 	    snap_msg=" (no-snapshot mode)"
 	fi
-	log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'${snap_msg}"
+	log_message "${C_OK}Prerequisites OK:${C_RST} oc CLI, OpenShift Virtualization, storage class ${C_VAL}'$STORAGE_CLASS'${C_RST}${snap_msg}"
     fi
 }
 
@@ -427,7 +447,7 @@ check_prerequisites() {
 # Skipped when the user explicitly sets --access-mode/--rwo/--rwx.
 detect_access_mode() {
     if ((ACCESS_MODE_SET)) ; then
-	log_message "Access mode explicitly set to: $ACCESS_MODE"
+	log_message "Access mode explicitly set to: ${C_VAL}$ACCESS_MODE${C_RST}"
 	return
     fi
 
@@ -447,9 +467,9 @@ detect_access_mode() {
 
     if [[ -n "$detected" ]] ; then
 	ACCESS_MODE="$detected"
-	log_message "Auto-detected access mode '$ACCESS_MODE' from StorageProfile for '$STORAGE_CLASS'"
+	log_message "Auto-detected access mode ${C_VAL}'$ACCESS_MODE'${C_RST} from StorageProfile for ${C_VAL}'$STORAGE_CLASS'${C_RST}"
     else
-	log_message "Warning: Could not detect access mode from StorageProfile for '$STORAGE_CLASS'; using default: $ACCESS_MODE"
+	log_message "${C_WARN}Warning:${C_RST} Could not detect access mode from StorageProfile for ${C_VAL}'$STORAGE_CLASS'${C_RST}; using default: ${C_VAL}$ACCESS_MODE${C_RST}"
     fi
 
     # Detect WaitForFirstConsumer storage classes.  With WFFC the base
@@ -461,10 +481,10 @@ detect_access_mode() {
     bind_mode=$(oc get storageclass "$STORAGE_CLASS" -o jsonpath='{.volumeBindingMode}' 2>/dev/null) || true
     if [[ "$bind_mode" == "WaitForFirstConsumer" ]] ; then
 	WAIT_FOR_FIRST_CONSUMER=1
-	log_message "Storage class '$STORAGE_CLASS' uses WaitForFirstConsumer binding."
+	log_message "Storage class ${C_VAL}'$STORAGE_CLASS'${C_RST} uses WaitForFirstConsumer binding."
 	if ((USE_SNAPSHOT)) ; then
 	    USE_SNAPSHOT=0
-	    log_message "  Warning: Disabling snapshot mode -- snapshots require a bound base PVC,"
+	    log_message "  ${C_WARN}Warning:${C_RST} Disabling snapshot mode -- snapshots require a bound base PVC,"
 	    log_message "  but WFFC storage won't bind until a consumer Pod is scheduled."
 	    log_message "  Falling back to direct DataSource clone (no base PVC needed)."
 	else
@@ -647,7 +667,7 @@ indent_token() {
 ################################################################
 # Function to create namespaces
 create_namespaces() {
-    log_message "Creating namespaces..."
+    log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
     local ns_file
     ns_file=$(find_file_on_path "namespace.yaml") || fatal "Can't find namespace.yaml on CREATE_VM_PATH"
@@ -663,9 +683,9 @@ create_namespaces() {
 
         # Check if namespace already exists
 	if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
-            log_message "Namespace $namespace already exists, skipping creation"
+            log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
         else
-            log_message "Creating namespace: $namespace"
+            log_message "Creating namespace: ${C_VAL}$namespace${C_RST}"
             process_template "$ns_file" | do_oc
         fi
     done
@@ -677,7 +697,7 @@ check_datavolume_status() {
     local namespace=$1
     local datavolume_name="${VM_BASENAME}-base"
 
-    log_message "Checking DataVolume status in namespace: $namespace"
+    log_message "Checking DataVolume status in namespace: ${C_VAL}$namespace${C_RST}"
 
     # Wait for DataVolume to be completed
     while :; do
@@ -686,18 +706,18 @@ check_datavolume_status() {
 
         case $status in
             "Succeeded")
-                log_message "DataVolume $datavolume_name in namespace $namespace is completed"
+                log_message "DataVolume ${C_VAL}$datavolume_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} is completed"
                 return 0
                 ;;
             "Failed")
-                fatal "Error: DataVolume $datavolume_name in namespace $namespace failed"
+                fatal "DataVolume ${C_VAL}$datavolume_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} failed"
                 ;;
             "Pending"|"PendingPopulation"|"Running"|"ImportScheduled"|"ImportInProgress"|"CloneScheduled"|"CloneInProgress"|"SnapshotForSmartCloneInProgress"|"SmartClonePVCInProgress")
-                log_message "DataVolume $datavolume_name in namespace $namespace is still $status, waiting..."
+                log_message "DataVolume ${C_VAL}$datavolume_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} is still ${C_WARN}$status${C_RST}, waiting..."
                 sleep 10
                 ;;
             *)
-                log_message "DataVolume $datavolume_name in namespace $namespace has unknown status: $status"
+                log_message "DataVolume ${C_VAL}$datavolume_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} has unknown status: ${C_WARN}$status${C_RST}"
                 sleep 10
                 ;;
         esac
@@ -706,18 +726,18 @@ check_datavolume_status() {
 
 # Function to wait for all DataVolumes to complete
 wait_for_all_datavolumes() {
-    log_message "Waiting for all DataVolumes to complete..."
+    log_message "${C_BOLD}Waiting for all DataVolumes to complete...${C_RST}"
 
     local -i ns
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
         if ! check_datavolume_status "$namespace"; then
-            fatal "Error: Failed to create DataVolume in namespace $namespace"
+            fatal "Failed to create DataVolume in namespace ${C_VAL}$namespace${C_RST}"
         fi
     done
 
-    log_message "All DataVolumes are completed successfully!"
+    log_message "${C_OK}All DataVolumes are completed successfully!${C_RST}"
 }
 
 create_datavolumes() {
@@ -728,7 +748,7 @@ create_datavolumes() {
 	return
     fi
 
-    log_message "Creating DataVolumes..."
+    log_message "${C_BOLD}Creating DataVolumes...${C_RST}"
     local -i ns
     local dv_file
     if [[ -n "$DATASOURCE" ]] ; then
@@ -739,12 +759,12 @@ create_datavolumes() {
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
-        log_message "Creating DataVolume for namespace: $namespace"
+        log_message "Creating DataVolume for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$dv_file" | do_oc
     done
     if ((doit)) ; then
 	if ((WAIT_FOR_FIRST_CONSUMER)) ; then
-	    log_message "Skipping DataVolume wait (WaitForFirstConsumer); VMs will trigger PVC binding."
+	    log_message "Skipping DataVolume wait (${C_VAL}WaitForFirstConsumer${C_RST}); VMs will trigger PVC binding."
 	else
 	    wait_for_all_datavolumes
 	fi
@@ -757,7 +777,7 @@ check_volumesnapshot_status() {
     local namespace=$1
     local snapshot_name="${VM_BASENAME}-${namespace}"
 
-    log_message "Checking VolumeSnapshot status in namespace: $namespace"
+    log_message "Checking VolumeSnapshot status in namespace: ${C_VAL}$namespace${C_RST}"
 
     # Wait for VolumeSnapshot to be ready
     while :; do
@@ -766,11 +786,11 @@ check_volumesnapshot_status() {
 
 	case "$status" in
 	    "true")
-		log_message "VolumeSnapshot $snapshot_name in namespace $namespace is ready"
+		log_message "VolumeSnapshot ${C_VAL}$snapshot_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} is ready"
 		return 0
 		;;
 	    *)
-		log_message "VolumeSnapshot $snapshot_name in namespace $namespace is not ready yet, waiting..."
+		log_message "VolumeSnapshot ${C_VAL}$snapshot_name${C_RST} in namespace ${C_VAL}$namespace${C_RST} is not ready yet, waiting..."
 		sleep 10
 		;;
 	esac
@@ -779,28 +799,28 @@ check_volumesnapshot_status() {
 
 # Function to wait for all VolumeSnapshots to be ready
 wait_for_all_volumesnapshots() {
-    log_message "Waiting for all VolumeSnapshots to be ready..."
+    log_message "${C_BOLD}Waiting for all VolumeSnapshots to be ready...${C_RST}"
 
     local -i ns
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
         if ! check_volumesnapshot_status "$namespace"; then
-            fatal "Error: Failed to create VolumeSnapshot in namespace $namespace"
+            fatal "Failed to create VolumeSnapshot in namespace ${C_VAL}$namespace${C_RST}"
         fi
     done
 
-    log_message "All VolumeSnapshots are ready successfully!"
+    log_message "${C_OK}All VolumeSnapshots are ready successfully!${C_RST}"
 }
 
 create_volumesnapshots() {
-    log_message "Creating VolumeSnapshots..."
+    log_message "${C_BOLD}Creating VolumeSnapshots...${C_RST}"
     local -i ns
     local vs_file
     vs_file=$(find_file_on_path "volumesnap.yaml") || fatal "Can't find volumesnap.yaml on CREATE_VM_PATH"
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
-        log_message "Creating VolumeSnapshot for namespace: $namespace"
+        log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$vs_file" | do_oc
     done
     if ((doit)) ; then wait_for_all_datavolumes; fi
@@ -809,7 +829,7 @@ create_volumesnapshots() {
 ################################################################
 # VMs
 wait_for_all_vms() {
-    log_message "Waiting for all VMs to be ready"
+    log_message "${C_BOLD}Waiting for all VMs to be ready${C_RST}"
     local -i total_vms="${#expected_vms[@]}"
     local -i ready_vms=0
 
@@ -825,17 +845,17 @@ wait_for_all_vms() {
 	    fi
 	done <<< "$(oc get vm -A --no-headers | awk '{if ($5 == "True" && $4 == "Running") {printf "%s/%s\n", $1, $2}}')"
 	if (("${#expected_vms[@]}" == 0)) ; then
-	    log_message "All VMs are ready"
+	    log_message "${C_OK}All VMs are ready${C_RST}"
 	    return
 	else
-	    log_message "${ready_vms}/${total_vms} ready"
+	    log_message "${C_VAL}${ready_vms}${C_RST}/${C_VAL}${total_vms}${C_RST} ready"
 	    sleep 60
 	fi
     done
 }
 
 create_virtualmachines() {
-    log_message "Creating VirtualMachines..."
+    log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
     VM_ID=1
     local vm_file
     if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
@@ -855,7 +875,7 @@ create_virtualmachines() {
 	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
 	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
 	fi
-	log_message "No --cloudinit specified; applying default cloud-init (root password: password)"
+	log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST})"
     fi
     local requeststr=
     local -A requests=()
@@ -899,7 +919,7 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
 
 	# Create cloud-init Secret in this namespace if needed
 	if [[ -n "$cloudinit_secret_file" ]] ; then
-	    log_message "Creating cloud-init Secret in namespace: $namespace"
+	    log_message "Creating cloud-init Secret in namespace: ${C_VAL}$namespace${C_RST}"
 	    process_template "$cloudinit_secret_file" |
 		sed "s|{CLOUDINIT_B64}|$cloudinit_b64|g" |
 		do_oc ||
@@ -916,7 +936,7 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
         for ((vm=1; vm<=vms_in_this_namespace; vm++)); do
 	    local vm_name="${namespace}/${VM_BASENAME}-${BATCH_ID}-${VM_ID}"
 	    if [[ -z "${existing_vms[$vm_name]:-}" ]] ; then
-		log_message "Creating VirtualMachine $VM_ID for namespace: $namespace"
+		log_message "Creating VirtualMachine ${C_VAL}$VM_ID${C_RST} for namespace: ${C_VAL}$namespace${C_RST}"
 		process_template "$vm_file" |
 		    indent_token RESOURCES "$requeststr" |
 		    indent_token CLOUDINIT_DISK "$cloudinit_disk" |
@@ -985,7 +1005,7 @@ verify_cloudinit() {
     fi
 
     local -i sample=${#vm_pending[@]}
-    log_message "Verifying cloud-init on $sample of $total VM(s) (polling up to 5 minutes)..."
+    log_message "Verifying cloud-init on ${C_VAL}$sample${C_RST} of ${C_VAL}$total${C_RST} VM(s) (polling up to 5 minutes)..."
 
     local -i ok_count=0
     local -i fail_count=0
@@ -1005,33 +1025,33 @@ verify_cloudinit() {
 		root@"$vm_name" --command "cloud-init status" 2>/dev/null) || ci_status=""
 
 	    if [[ "$ci_status" == *"done"* ]]; then
-		log_message "  $vm_name: cloud-init OK"
+		log_message "  ${C_VAL}$vm_name${C_RST}: cloud-init ${C_OK}OK${C_RST}"
 		unset "vm_pending[$vm_key]"
 		((ok_count++))
 	    elif [[ "$ci_status" == *"error"* ]]; then
-		log_message "  WARNING: $vm_name: cloud-init FAILED"
+		log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}$vm_name${C_RST}: cloud-init ${C_ERR}FAILED${C_RST}"
 		unset "vm_pending[$vm_key]"
 		((fail_count++))
 	    fi
 	done
 
 	if ((${#vm_pending[@]} > 0)); then
-	    log_message "  $((ok_count + fail_count))/${sample} checked, ${#vm_pending[@]} still running..."
+	    log_message "  ${C_VAL}$((ok_count + fail_count))${C_RST}/${C_VAL}${sample}${C_RST} checked, ${C_VAL}${#vm_pending[@]}${C_RST} still running..."
 	fi
     done
 
     # Remaining VMs timed out
     for vm_key in "${!vm_pending[@]}"; do
 	vm_name="${vm_key##*/}"
-	log_message "  WARNING: $vm_name: cloud-init verification timed out"
+	log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}$vm_name${C_RST}: cloud-init verification timed out"
 	((fail_count++))
     done
 
     if ((fail_count > 0)); then
-	log_message "Cloud-init: $ok_count OK, $fail_count FAILED or timed out (sampled $sample of $total)"
+	log_message "Cloud-init: ${C_VAL}$ok_count${C_RST} OK, ${C_ERR}$fail_count${C_RST} FAILED or timed out (sampled ${C_VAL}$sample${C_RST} of ${C_VAL}$total${C_RST})"
 	log_message "  Inspect: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
     else
-	log_message "Cloud-init: $sample of $total VM(s) sampled -- all OK"
+	log_message "${C_OK}Cloud-init: $sample of $total VM(s) sampled -- all OK${C_RST}"
     fi
 }
 
@@ -1089,15 +1109,15 @@ delete_batch() {
     fi
 
     # Delete namespaces (cascades VMs, DVs, snapshots, PVCs)
-    log_message "Deleting namespaces for batch '$batch'..."
+    log_message "Deleting namespaces for batch ${C_VAL}'$batch'${C_RST}..."
     oc delete ns -l batch-id="$batch"
-    log_message "All resources for batch '$batch' deleted"
+    log_message "${C_OK}All resources for batch ${C_VAL}'$batch'${C_RST} deleted${C_RST}"
 
     # Clean up manifest file
     local manifest="${LOG_DIR}/batch-${batch}.manifest"
     if [[ -f "$manifest" ]] ; then
         rm -f "$manifest"
-        log_message "Removed manifest: $manifest"
+        log_message "Removed manifest: ${C_VAL}$manifest${C_RST}"
     fi
 }
 
@@ -1154,7 +1174,7 @@ delete_all_batches() {
 	delete_batch "$batch" skip-confirm
     done <<< "$all_batches"
 
-    log_message "All vmspawn batches deleted."
+    log_message "${C_OK}All vmspawn batches deleted.${C_RST}"
 }
 
 ################################################################
@@ -1166,7 +1186,7 @@ ensure_profiler_binary() {
     # 1. Check if cluster-profiler is on PATH
     if command -v cluster-profiler &>/dev/null ; then
 	PROFILER_BIN=$(command -v cluster-profiler)
-	log_message "Using cluster-profiler from PATH: $PROFILER_BIN"
+	log_message "Using cluster-profiler from PATH: ${C_VAL}$PROFILER_BIN${C_RST}"
 	return 0
     fi
 
@@ -1175,7 +1195,7 @@ ensure_profiler_binary() {
     local cached_bin="$cache_dir/cluster-profiler"
     if [[ -x "$cached_bin" ]] ; then
 	PROFILER_BIN="$cached_bin"
-	log_message "Using cached cluster-profiler: $PROFILER_BIN"
+	log_message "Using cached cluster-profiler: ${C_VAL}$PROFILER_BIN${C_RST}"
 	return 0
     fi
 
@@ -1195,7 +1215,7 @@ ensure_profiler_binary() {
 
     chmod +x "$cached_bin"
     PROFILER_BIN="$cached_bin"
-    log_message "cluster-profiler binary downloaded to: $PROFILER_BIN"
+    log_message "cluster-profiler binary downloaded to: ${C_VAL}$PROFILER_BIN${C_RST}"
 }
 
 ensure_profiler_feature_gate() {
@@ -1211,7 +1231,7 @@ ensure_profiler_feature_gate() {
 	    2>/dev/null) || true
 
 	if echo "$annotation" | grep -q "ClusterProfiler" ; then
-	    log_message "ClusterProfiler feature gate is already enabled (OCP/CNV)"
+	log_message "${C_OK}ClusterProfiler feature gate is already enabled (OCP/CNV)${C_RST}"
 	    return 0
 	fi
 
@@ -1226,7 +1246,7 @@ ensure_profiler_feature_gate() {
 	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
 	fi
 
-	log_message "Enabling ClusterProfiler feature gate via HCO annotation..."
+	log_message "${C_BOLD}Enabling ClusterProfiler feature gate via HCO annotation...${C_RST}"
 	if [[ -z "$annotation" || "$annotation" == "null" ]] ; then
 	    # No existing jsonpatch annotation -- simple case
 	    oc annotate --overwrite -n openshift-cnv hco kubevirt-hyperconverged \
@@ -1243,7 +1263,7 @@ ensure_profiler_feature_gate() {
 		"kubevirt.kubevirt.io/jsonpatch=${merged}" ||
 		fatal "Failed to enable ClusterProfiler feature gate"
 	fi
-	log_message "ClusterProfiler feature gate enabled. Waiting for rollout..."
+	log_message "${C_OK}ClusterProfiler feature gate enabled.${C_RST} Waiting for rollout..."
 	sleep 5
     else
 	# Upstream KubeVirt: check feature gates directly on KubeVirt CR
@@ -1253,7 +1273,7 @@ ensure_profiler_feature_gate() {
 	    2>/dev/null) || true
 
 	if echo "$feature_gates" | grep -q "ClusterProfiler" ; then
-	    log_message "ClusterProfiler feature gate is already enabled (upstream KubeVirt)"
+	    log_message "${C_OK}ClusterProfiler feature gate is already enabled (upstream KubeVirt)${C_RST}"
 	    return 0
 	fi
 
@@ -1268,20 +1288,20 @@ ensure_profiler_feature_gate() {
 	    fatal "Profiling requires the ClusterProfiler feature gate. Aborting."
 	fi
 
-	log_message "Enabling ClusterProfiler feature gate on KubeVirt CR..."
+	log_message "${C_BOLD}Enabling ClusterProfiler feature gate on KubeVirt CR...${C_RST}"
 	oc patch kubevirt kubevirt -n kubevirt --type=json \
 	    -p '[{"op": "add", "path": "/spec/configuration/developerConfiguration/featureGates/-", "value": "ClusterProfiler"}]' ||
 	    fatal "Failed to enable ClusterProfiler feature gate"
-	log_message "ClusterProfiler feature gate enabled. Waiting for rollout..."
+	log_message "${C_OK}ClusterProfiler feature gate enabled.${C_RST} Waiting for rollout..."
 	sleep 5
     fi
 }
 
 profiler_start() {
-    log_message "Starting KubeVirt control-plane profiling..."
+    log_message "${C_BOLD}Starting KubeVirt control-plane profiling...${C_RST}"
     "$PROFILER_BIN" --cmd start ||
 	fatal "Failed to start cluster profiling"
-    log_message "Profiling started successfully"
+    log_message "${C_OK}Profiling started successfully${C_RST}"
 }
 
 profiler_prompt_and_stop() {
@@ -1294,13 +1314,13 @@ profiler_prompt_and_stop() {
     read -r -p "Press Enter to stop profiling and dump results (or Ctrl+C to abort)..."
     echo ""
 
-    log_message "Stopping KubeVirt control-plane profiling..."
+    log_message "${C_BOLD}Stopping KubeVirt control-plane profiling...${C_RST}"
     "$PROFILER_BIN" --cmd stop ||
 	fatal "Failed to stop cluster profiling"
-    log_message "Profiling stopped"
+    log_message "${C_OK}Profiling stopped${C_RST}"
 
     local output_dir="${LOG_DIR}/profile-${BATCH_ID}"
-    log_message "Dumping profiling results to $output_dir..."
+    log_message "Dumping profiling results to ${C_VAL}$output_dir${C_RST}..."
 
     if [[ "$PROFILE_TARGET" == "all" ]] ; then
 	"$PROFILER_BIN" --cmd dump --output-dir "$output_dir" ||
@@ -1313,7 +1333,7 @@ profiler_prompt_and_stop() {
 	    fatal "Failed to dump profiling results for $PROFILE_TARGET"
     fi
 
-    log_message "Profiling results saved to: $output_dir"
+    log_message "${C_OK}Profiling results saved to:${C_RST} ${C_VAL}$output_dir${C_RST}"
     echo ""
     echo "Profiling results: $output_dir"
     echo "Analyze with: go tool pprof $output_dir/<pod>/<profile>.pprof"
@@ -1323,32 +1343,32 @@ profiler_prompt_and_stop() {
 ################################################################
 # Main execution
 main() {
-    log_message "Starting resource creation process..."
-    log_message "Batch ID:      $BATCH_ID"
-    log_message "Configuration: $NUM_VMS VMs across $NUM_NAMESPACES namespaces"
+    log_message "${C_BOLD}Starting resource creation process...${C_RST}"
+    log_message "Batch ID:      ${C_VAL}$BATCH_ID${C_RST}"
+    log_message "Configuration: ${C_VAL}$NUM_VMS${C_RST} VMs across ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces"
 
     if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
-	log_message "ContainerDisk: $CONTAINERDISK_IMAGE"
+	log_message "ContainerDisk: ${C_VAL}$CONTAINERDISK_IMAGE${C_RST}"
     elif [[ -n "$DATASOURCE" ]] ; then
-	log_message "DataSource:    $DATASOURCE (from $DATASOURCE_NS)"
+	log_message "DataSource:    ${C_VAL}$DATASOURCE${C_RST} (from ${C_VAL}$DATASOURCE_NS${C_RST})"
     else
-	log_message "DV URL:        $DV_URL"
-	log_message "Storage size:  $STORAGE_SIZE"
+	log_message "DV URL:        ${C_VAL}$DV_URL${C_RST}"
+	log_message "Storage size:  ${C_VAL}$STORAGE_SIZE${C_RST}"
     fi
     if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	log_message "Storage class: $STORAGE_CLASS"
+	log_message "Storage class: ${C_VAL}$STORAGE_CLASS${C_RST}"
 	if ((USE_SNAPSHOT)) ; then
-	    log_message "Snapshot mode: enabled (class: $SNAPSHOT_CLASS)"
+	    log_message "Snapshot mode: enabled (class: ${C_VAL}$SNAPSHOT_CLASS${C_RST})"
 	elif [[ -n "$DATASOURCE" ]] ; then
 	    log_message "Snapshot mode: disabled (direct DataSource clone)"
 	else
 	    log_message "Snapshot mode: disabled (direct PVC clone)"
 	fi
     fi
-    log_message "VM CPU cores:  $VM_CPU_CORES"
-    log_message "VM memory:     $VM_MEMORY"
-    log_message "Cloud-init:    ${CLOUDINIT_FILE:-none}"
-    log_message "Run strategy:  $RUN_STRATEGY"
+    log_message "VM CPU cores:  ${C_VAL}$VM_CPU_CORES${C_RST}"
+    log_message "VM memory:     ${C_VAL}$VM_MEMORY${C_RST}"
+    log_message "Cloud-init:    ${C_VAL}${CLOUDINIT_FILE:-none}${C_RST}"
+    log_message "Run strategy:  ${C_VAL}$RUN_STRATEGY${C_RST}"
 
     create_namespaces
     if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
@@ -1356,7 +1376,7 @@ main() {
 	if ((USE_SNAPSHOT)) ; then
 	    create_volumesnapshots
 	else
-	    log_message "Skipping VolumeSnapshots (--no-snapshot mode)"
+	    log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
 	fi
     fi
     create_virtualmachines
@@ -1367,15 +1387,15 @@ main() {
     # fi
 
     if ((doit)) ; then
-	log_message "Resource creation completed successfully!"
+	log_message "${C_OK}Resource creation completed successfully!${C_RST}"
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
-	    log_message "Created $NUM_NAMESPACES namespaces and $NUM_VMS total VirtualMachines (container disk)"
+	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (container disk)"
 	elif ((USE_SNAPSHOT)) ; then
-	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, $NUM_NAMESPACES VolumeSnapshots, and $NUM_VMS total VirtualMachines"
+	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces, ${C_VAL}$NUM_NAMESPACES${C_RST} DataVolumes, ${C_VAL}$NUM_NAMESPACES${C_RST} VolumeSnapshots, and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines"
 	elif [[ -n "$DATASOURCE" ]] ; then
-	    log_message "Created $NUM_NAMESPACES namespaces and $NUM_VMS total VirtualMachines (direct DataSource clone, no base DVs)"
+	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (direct DataSource clone, no base DVs)"
 	else
-	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, and $NUM_VMS total VirtualMachines (no snapshots)"
+	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces, ${C_VAL}$NUM_NAMESPACES${C_RST} DataVolumes, and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (no snapshots)"
 	fi
 
 	# Write batch manifest file
@@ -1398,7 +1418,7 @@ main() {
 	namespaces: $ns_list
 	vms: $vm_list
 	MANIFEST
-	log_message "Batch manifest written to: $manifest_file"
+	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
 
 	cat <<-EOF
 
@@ -1456,5 +1476,5 @@ fi
 # Print dry-run YAML file location
 if [[ -n "${DRYRUN_FILE:-}" && -f "${DRYRUN_FILE:-}" ]] ; then
     echo ""
-    echo "Dry-run YAML saved to: $DRYRUN_FILE"
+    echo "Dry-run YAML saved to: ${C_VAL}$DRYRUN_FILE${C_RST}"
 fi

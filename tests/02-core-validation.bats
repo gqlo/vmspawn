@@ -386,3 +386,22 @@ setup_file() {
   [ "$status" -eq 0 ]
 }
 
+# ---------------------------------------------------------------
+# ERR-28: oc whoami timeout produces network connectivity error
+# ---------------------------------------------------------------
+@test "ERR: oc whoami timeout reports network connectivity error" {
+  local tmpdir
+  tmpdir=$(mktemp -d)
+  cat > "$tmpdir/oc" << 'SLOWMOCK'
+#!/bin/bash
+sleep 999
+SLOWMOCK
+  chmod +x "$tmpdir/oc"
+  run env PATH="$tmpdir:$PATH" OC_CONNECT_TIMEOUT=1 \
+    bash "$VMSPAWN" --batch-id=err031 --vms=1 --namespaces=1
+  rm -rf "$tmpdir"
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"timed out reaching OpenShift cluster"* ]]
+  [[ "$output" == *"check network connectivity"* ]]
+}
+
