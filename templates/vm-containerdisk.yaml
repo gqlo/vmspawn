@@ -1,0 +1,51 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+  namespace: {vm-ns}
+  labels:
+    batch-id: "{BATCH_ID}"
+    vm-basename: "{VM_BASENAME}"
+spec:
+  runStrategy: {RUN_STRATEGY}
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: {VM_BASENAME}
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
+    spec:
+      domain:
+        cpu:
+          cores: {VM_CPU_CORES}
+        memory:
+          guest: {VM_MEMORY}
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: vda
+          {CLOUDINIT_DISK}
+          interfaces:
+          - masquerade: {}
+            model: virtio
+            name: default
+          networkInterfaceMultiqueue: true
+          rng: {}
+        features:
+          smm:
+            enabled: true
+        firmware:
+          bootloader:
+            efi:
+              secureBoot: false
+        {RESOURCES}
+      evictionStrategy: LiveMigrate
+      networks:
+      - name: default
+        pod: {}
+      volumes:
+      - containerDisk:
+          image: {CONTAINERDISK_IMAGE}
+        name: vda
+      {CLOUDINIT_VOLUME}

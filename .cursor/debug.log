@@ -1,0 +1,4 @@
+{"timestamp":1771461050000,"location":"pre-commit:loop","message":"file done","hypothesisId":"H-H","data":{"file":"tests/01-quickstart.bats"}}
+{"timestamp":1771461050000,"location":"pre-commit:loop","message":"file start","hypothesisId":"H-H","data":{"file":"tests/02-core-validation.bats"}}
+{"timestamp":1771461322000,"location":"pre-commit:loop","message":"file done","hypothesisId":"H-H","data":{"file":"tests/02-core-validation.bats"}}
+{"timestamp":1771461322000,"location":"pre-commit:loop","message":"file start","hypothesisId":"H-H","data":{"file":"tests/03-yaml-no-snapshot.bats"}}

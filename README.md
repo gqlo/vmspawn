@@ -4,12 +4,13 @@ Scale up hundreds of VMs across multiple namespaces with a single command on
 OpenShift Virtualization -- no YAML to write. It auto-detects
 storage access modes, clone strategy, and snapshot support from the cluster, so
 it works out of the box with OCS/Ceph, LVMS, NFS, or any block-capable storage
-class. Each run gets a unique batch ID for easy inspection and cleanup.
+class. No storage class at all? Use `--containerdisk` to boot VMs directly from
+a container image with no PVC required. Each run gets a unique batch ID for easy inspection and cleanup.
 Cloud-init injection lets you push custom workloads (e.g. stress-ng) at boot.
 Integrated cluster profiling (`--profile`) captures Go runtime-level
 performance data -- CPU, heap, mutex, and other pprof profiles -- from
 the KubeVirt control plane during batch runs.
-Backed by 185 unit tests, live cluster validation, and CI on every push
+Backed by 193 unit tests, live cluster validation, and CI on every push
 (as of Feb 2026).
 
 ---
@@ -34,6 +35,7 @@ Backed by 185 unit tests, live cluster validation, and CI on every push
 - A storage class that supports block volumes (`ReadWriteMany` or `ReadWriteOnce` -- auto-detected)
 - **With snapshots (default for OCS):** OpenShift Data Foundation with Ceph RBD storage class and a matching VolumeSnapshotClass
 - **Without snapshots:** any compatible storage class -- pass `--storage-class=CLASS` and snapshots are auto-disabled
+- **Without any storage class:** use `--containerdisk` -- only `oc` and OpenShift Virtualization are required; no PVC or storage configuration needed
 
 ## Quick start
 
@@ -51,6 +53,10 @@ Backed by 185 unit tests, live cluster validation, and CI on every push
 # Import a custom QCOW2 instead of using a DataSource (default OCS storage)
 # No cloud-init auto-injected in URL mode; VM basename: "vm", base DV: "vm-base"
 ./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
+
+# No storage class available? Boot Fedora VMs directly from a container image
+# No PVC or storage configuration needed; cloud-init auto-injected (root password: password)
+./vmspawn --containerdisk --vms=5 --namespaces=1
 
 # Create VMs with a cloud-init workload injected at boot (default OCS storage)
 # Custom cloud-init replaces the default auto-injected one
@@ -95,9 +101,10 @@ Unless overridden, vmspawn uses these built-in defaults:
 | DataSource | `rhel9` | From `openshift-virtualization-os-images` namespace |
 | Snapshot mode | **enabled** | Auto-disabled when custom `--storage-class` is used without `--snapshot-class` |
 | Snapshot class | `ocs-storagecluster-rbdplugin-snapclass` | Used when snapshot mode is enabled |
+| Container disk | off | Enable with `--containerdisk`; default image `quay.io/containerdisks/fedora:latest` |
 | Run strategy | `Always` | VMs start immediately |
-| Cloud-init | Auto-injected for DataSource VMs | Sets root password to `password`; not injected for `--dv-url` |
-| VM basename | Derived from DataSource name | e.g. `rhel9`, `fedora`, `centos-stream9`; generic `vm` for `--dv-url` |
+| Cloud-init | Auto-injected for DataSource and container disk VMs | Sets root password to `password`; not injected for `--dv-url` |
+| VM basename | Derived from DataSource or image name | e.g. `rhel9`, `fedora`; `fedora` for default containerdisk; generic `vm` for `--dv-url` |
 
 ## How it works
 
@@ -106,19 +113,20 @@ Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). T
 The tool performs these steps in order:
 
 1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
-2. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL
-3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning
-4. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, or base PVC depending on mode
+2. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
+3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode
+4. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, base PVC, or container image depending on mode
 
 ### Clone modes
 
-vmspawn has three clone paths, auto-selected based on your options:
+vmspawn has four disk modes, auto-selected based on your options:
 
 | Mode | Flow | When used |
 |---|---|---|
 | **Snapshot** | DataSource → base DV → VolumeSnapshot → VM clones | Default for OCS storage |
 | **Direct DataSource** | DataSource → each VM clones directly | `--storage-class` without `--snapshot-class`, or `--no-snapshot` |
 | **URL import** | URL → base DV → each VM clones from base PVC | `--dv-url` with `--no-snapshot` |
+| **Container disk** | Container image → each VM boots directly | `--containerdisk`; no storage class or PVC required |
 
 The direct DataSource path skips the intermediate base DV entirely, which avoids deadlocks with WaitForFirstConsumer storage classes (e.g. LVMS, local storage).
 
@@ -219,15 +227,16 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
     -h                          Show help
     -n                          Dry-run (show YAML without applying)
+    -q                          Quiet mode (show only log messages, no YAML)
 
     --cores=N                   CPU cores visible to the guest VM (default: 1)
     --memory=N                  Memory visible to the guest VM (default: 1Gi)
-    --request-cpu=N             Kubernetes CPU request for scheduling (default: cores/10)
-    --request-memory=N          Kubernetes memory request for scheduling (default: memory + overhead)
+    --request-cpu=N             Kubernetes CPU request for scheduling (default: same as --cores)
+    --request-memory=N          Kubernetes memory request for scheduling (default: same as --memory)
 
     --vms=N                     Total number of VMs (default: 1)
     --namespaces=N              Number of namespaces (default: 1)
-    --vms-per-namespace=N       VMs per namespace (overrides --vms)
+    --vms-per-namespace=N       VMs per namespace (overrides --vms; takes precedence)
 
     --storage-class=class       Storage class name (auto-disables snapshots
                                 unless --snapshot-class is also provided)
@@ -238,6 +247,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
 
     --datasource=NAME           Clone from OCP DataSource (default: rhel9)
     --dv-url=URL                Import disk from URL (overrides --datasource)
+    --containerdisk[=IMAGE]     Boot VMs from a container image -- no storage class needed
+                                (default: quay.io/containerdisks/fedora:latest)
     --snapshot-class=class      Snapshot class name (implies --snapshot)
     --snapshot                  Use VolumeSnapshots for cloning (default for OCS)
     --no-snapshot               Clone VMs directly (no snapshot needed)
@@ -247,6 +258,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --run-strategy=strategy     Run strategy (default: Always)
     --wait                      Wait for all VMs to reach Running state
     --nowait                    Don't wait (default)
+    --create-existing-vm        Re-apply all VMs even if they already exist
+                                (use with --batch-id to update an existing batch)
     --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
 
     --delete=BATCH_ID           Delete all resources for the given batch
@@ -257,9 +270,8 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
                                 Optional: virt-api, virt-controller, virt-handler, virt-operator
 
     --batch-id=ID               Set batch ID (auto-generated if omitted)
-    --basename=name             VM base name (default: rhel9)
-    --pvc-base-name=name        Base PVC name (default: rhel9-base)
-    -q                          Quiet (show only log messages)
+    --basename=name             VM base name (default: derived from DataSource or image name)
+    --pvc-base-name=name        Base PVC name (default: derived from --basename)
 ```
 
 Note: KubeVirt sets **no resource limits** by default -- only requests. The guest VM
@@ -270,17 +282,20 @@ to use idle node capacity. Auto-limits only apply if the namespace has a Resourc
 
 Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
 
-### Default cloud-init (DataSource mode)
+### Default cloud-init (DataSource and container disk modes)
 
-When using a DataSource (the default), a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
+When using a DataSource (the default) or `--containerdisk`, a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
 
 - **Root password**: `password`
 - **PasswordAuthentication**: enabled in sshd
 - **PermitRootLogin**: enabled in sshd
 
 ```bash
-# VMs are reachable via: ssh root@<vm-ip>  (password: password)
+# DataSource VMs reachable via: ssh root@<vm-ip>  (password: password)
 ./vmspawn --vms=10 --namespaces=2
+
+# Container disk VMs work the same way -- no storage class required
+./vmspawn --containerdisk --vms=5 --namespaces=1
 ```
 
 To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`), no cloud-init is injected unless explicitly requested.
@@ -349,7 +364,7 @@ The hook runs only the checks relevant to the files you are committing:
 | Staged files | Check |
 |---|---|
 | `vmspawn`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
-| `helpers/*.yaml`, `templates/*.yaml` | `yamllint` on changed files |
+| `helpers/*.yaml` | `yamllint` on changed files |
 | `*.md` | `markdownlint-cli2` on changed files |
 
 If any check fails, the commit is aborted. Fix the issues and commit again. In emergencies, use `git commit --no-verify` to skip the hook.
@@ -376,10 +391,11 @@ templates/
   dv.yaml            # DataVolume template (import from URL)
   dv-datasource.yaml # DataVolume template (clone from DataSource)
   volumesnap.yaml    # VolumeSnapshot template
-  vm-snap.yaml       # VirtualMachine template (clone from snapshot)
-  vm-datasource.yaml # VirtualMachine template (clone from DataSource, no-snapshot mode)
-  vm-clone.yaml      # VirtualMachine template (clone from PVC, URL import mode)
-  cloudinit-secret.yaml  # cloud-init userdata Secret template
+  vm-snap.yaml          # VirtualMachine template (clone from snapshot)
+  vm-datasource.yaml    # VirtualMachine template (clone from DataSource, no-snapshot mode)
+  vm-clone.yaml         # VirtualMachine template (clone from PVC, URL import mode)
+  vm-containerdisk.yaml # VirtualMachine template (container disk, no storage class needed)
+  cloudinit-secret.yaml # cloud-init userdata Secret template
 tests/
   vmspawn.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
