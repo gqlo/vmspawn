@@ -109,4 +109,57 @@ ERR-6 and ERR-7 in `tests/vmspawn.bats` now verify that the error message includ
 
 ---
 
+## BUG-003: Input validation runs too late — bad arguments cause log file creation and cluster hangs
+
+| Field | Value |
+|---|---|
+| **Date found** | 2026-02-18 |
+| **Severity** | Medium |
+| **Status** | Fixed |
+| **File** | `vmspawn`, lines ~282–494 |
+| **Found by** | Manual testing (`./vmspawn --vms=-1` on a live cluster) |
+
+### Problem
+
+Pure argument validation (numeric checks, range checks, positional arg count) ran ~200 lines after log file creation and cluster interaction. Invalid inputs like `--vms=-1` triggered log file creation and `oc` network calls that could hang indefinitely — the validation that would reject them was never reached.
+
+### Steps to reproduce
+
+```bash
+./vmspawn --vms=-1
+```
+
+### Before (buggy)
+
+```
+2026-02-18 08:28:14 Log file created: logs/f73977-rhel9-2026-02-18T08:28:14.log
+^C    # hangs on oc calls, validation never reached
+```
+
+Execution order was:
+
+1. Log file creation (line ~282)
+2. `check_prerequisites()` — multiple `oc` network calls (line ~465)
+3. `detect_access_mode()` — more `oc` calls (line ~472)
+4. Input validation (line ~494) — too late
+
+### After (fixed)
+
+```
+Error: Number of VMs must be a positive integer
+Try './vmspawn --help' for more information.
+```
+
+Exits instantly with code 1, no log file created, no cluster contact.
+
+### Fix
+
+Moved the argument validation block (positional arg count, numeric parsing, `NUM_VMS`/`NUM_NAMESPACES` assignment, and range checks) to right after option parsing — before log file creation and any cluster interaction.
+
+### Tests
+
+Existing tests (ERR-1 through ERR-5, OPT-12) continue to pass. No new tests needed — the validation logic is unchanged, only its position in the script moved earlier.
+
+---
+
 <!-- Add new bugs above this line using the next sequential BUG-NNN number -->

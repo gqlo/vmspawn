@@ -46,5 +46,23 @@ Use `@test "PREFIX: descriptive title"` where PREFIX is a category code:
 
 ## File Organization
 
-- Test groups are separated by comment banners: `# ===...===`
-- Each test has a header comment block with its test ID and the command being tested
+The test suite is split across numbered files so `bats tests/ --jobs N` parallelises across files:
+
+| File | Contents |
+|------|----------|
+| `tests/01-quickstart.bats` | QS -- Quick Start (README examples) |
+| `tests/02-core-validation.bats` | Core functionality + Validation / error handling |
+| `tests/03-yaml-no-snapshot.bats` | YAML structure validation + no-snapshot mode |
+| `tests/04-clone-modes.bats` | Direct DataSource clone + Auto-detection + Access mode |
+| `tests/05-storage-wffc.bats` | StorageProfile auto-detection + WaitForFirstConsumer + Missing option coverage |
+| `tests/06-combos-storage.bats` | Combo categories 1-4 (storage, cloud-init, resources, lifecycle) |
+| `tests/07-combos-scale-naming.bats` | Combo categories 5-7 (scale, naming, precedence) |
+| `tests/08-combos-wffc-misc.bats` | Combo categories 8-9 (WFFC, quiet/dry-run) |
+| `tests/09-delete-profile.bats` | Delete hardening + --delete-all + --yes + --profile |
+| `tests/10-containerdisk.bats` | Container Disk mode (cdisk) |
+
+Shared helpers (e.g. `_create_mock_oc`) live in `tests/helpers.bash` and are loaded
+with `load 'helpers'` at the top of any file that needs them.
+
+Within each file, test groups are separated by comment banners: `# ===...===`
+and each test has a header comment block with its test ID and the command being tested.

@@ -7,6 +7,13 @@
 
 set -eu
 
+# Close inherited file descriptors above stderr.
+# Prevents subshell deadlocks when invoked from environments (e.g. git hooks,
+# CI runners) that leave extra fds open for lock files or IPC.
+for _fd in 3 4 5 6 7 8 9; do
+    eval "exec $_fd>&-" 2>/dev/null || true
+done
+
 # Configuration variables - modify these as needed
 DATASOURCE="rhel9"
 DATASOURCE_NS="openshift-virtualization-os-images"
@@ -43,7 +50,8 @@ NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
 RUN_STRATEGY=Always
 WAIT=0
-RECREATE_EXISTING_VMS=1
+CONTAINERDISK_IMAGE=
+RECREATE_EXISTING_VMS=0
 DELETE_BATCH=
 DELETE_ALL=0
 CONFIRM_DELETE=0
@@ -98,14 +106,19 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY)
-        --create-existing-vm    Attempt to re-create existing VMs
-        --no-create-existing-vm Do not attempt to re-create existing VMs (default)
+        --create-existing-vm    Re-apply all VMs even if they already exist
+                                | | | Use with --batch-id to update an existing
+                                | | | batch (e.g. to resize CPU or memory)
         --wait                  Wait for VMs to start
         --nowait                Do not wait for VMs to start (default)
         --start                 Start the VMs
                                 (equivalent to --run-strategy=Always)
         --stop                  Do not start the VMs
                                 (equivalent to --run-strategy=Halted)
+        --containerdisk[=IMAGE] Use a container disk image instead of PVC-backed
+                                | | | storage -- no storage class required.
+                                | | | Default image:
+                                | | | quay.io/containerdisks/fedora:latest
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. helpers/cloudinit-stress-workload.yaml)
         --profile[=COMPONENT]   Profile KubeVirt control plane during
@@ -167,8 +180,9 @@ process_option() {
 	wait)	   WAIT=1 ;;
 	nowait)	   WAIT=0 ;;
 	cloudinit) CLOUDINIT_FILE=$value ;;
+	containerdisk) CONTAINERDISK_IMAGE=${value:-quay.io/containerdisks/fedora:latest}
+		   DATASOURCE=; DV_URL= ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
-	nocreate*) RECREATE_EXISTING_VMS=0 ;;
 	start)     RUN_STRATEGY=Always ;;
 	stop)      RUN_STRATEGY=Halted ;;
 	profile)   PROFILE_TARGET=${value:-all} ;;
@@ -206,6 +220,9 @@ done
 # hasn't explicitly set --basename.
 if [[ -n "$DATASOURCE" ]] && (( ! BASENAME_SET )) ; then
     VM_BASENAME="$DATASOURCE"
+elif [[ -n "$CONTAINERDISK_IMAGE" ]] && (( ! BASENAME_SET )) ; then
+    _cdimg=${CONTAINERDISK_IMAGE##*/}
+    VM_BASENAME="${_cdimg%%:*}"
 fi
 
 # Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
@@ -216,6 +233,11 @@ fi
 # a non-existent PVC.
 if (( ! PVC_BASE_NAME_SET )) ; then
     BASE_PVC_NAME="${VM_BASENAME}-base"
+fi
+
+# --containerdisk is mutually exclusive with --datasource and --dv-url
+if [[ -n "$CONTAINERDISK_IMAGE" ]] && { [[ -n "$DATASOURCE" ]] || [[ -n "$DV_URL" ]] ; } ; then
+    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
 fi
 
 # Auto-disable snapshots when a custom storage class is used without
@@ -342,37 +364,39 @@ check_prerequisites() {
 	    ((errors++))
 	fi
 
-	if ((USE_SNAPSHOT)) ; then
-	    if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
-		echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
-		echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    if ((USE_SNAPSHOT)) ; then
+		if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
+		    echo "Error: OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
+		    echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		    ((errors++))
+		fi
+	    fi
+
+	    if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
+		echo "Error: storage class '$STORAGE_CLASS' not found"
+		echo "  Available storage classes:"
+		oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
 		((errors++))
 	    fi
-	fi
 
-	if ! oc get storageclass "$STORAGE_CLASS" >/dev/null 2>&1 ; then
-	    echo "Error: storage class '$STORAGE_CLASS' not found"
-	    echo "  Available storage classes:"
-	    oc get storageclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
-	    ((errors++))
-	fi
-
-	if ((USE_SNAPSHOT)) ; then
-	    if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
-		echo "Error: volume snapshot class '$SNAPSHOT_CLASS' not found"
-		echo "  Available volume snapshot classes:"
-		oc get volumesnapshotclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
-		echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
-		((errors++))
+	    if ((USE_SNAPSHOT)) ; then
+		if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
+		    echo "Error: volume snapshot class '$SNAPSHOT_CLASS' not found"
+		    echo "  Available volume snapshot classes:"
+		    oc get volumesnapshotclass --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+		    echo "  Hint: use --no-snapshot to skip VolumeSnapshot-based cloning"
+		    ((errors++))
+		fi
 	    fi
-	fi
 
-	if [[ -n "$DATASOURCE" ]] ; then
-	    if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
-		echo "Error: DataSource '$DATASOURCE' not found in namespace '$DATASOURCE_NS'"
-		echo "  Available DataSources:"
-		oc get datasource -n "$DATASOURCE_NS" --no-headers 2>/dev/null | awk '{print "    " $1}' || true
-		((errors++))
+	    if [[ -n "$DATASOURCE" ]] ; then
+		if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
+		    echo "Error: DataSource '$DATASOURCE' not found in namespace '$DATASOURCE_NS'"
+		    echo "  Available DataSources:"
+		    oc get datasource -n "$DATASOURCE_NS" --no-headers 2>/dev/null | awk '{print "    " $1}' || true
+		    ((errors++))
+		fi
 	    fi
 	fi
     fi
@@ -381,13 +405,17 @@ check_prerequisites() {
 	fatal "Prerequisite check failed with $errors error(s)"
     fi
 
-    local snap_msg=""
-    if ((USE_SNAPSHOT)) ; then
-	snap_msg=", snapshot class '$SNAPSHOT_CLASS'"
+    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
+	log_message "Prerequisites OK: oc CLI, OpenShift Virtualization (container disk mode)"
     else
-	snap_msg=" (no-snapshot mode)"
+	local snap_msg=""
+	if ((USE_SNAPSHOT)) ; then
+	    snap_msg=", snapshot class '$SNAPSHOT_CLASS'"
+	else
+	    snap_msg=" (no-snapshot mode)"
+	fi
+	log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'${snap_msg}"
     fi
-    log_message "Prerequisites OK: oc CLI, OpenShift Virtualization, storage class '$STORAGE_CLASS'${snap_msg}"
 }
 
 # Auto-detect the PVC access mode from the CDI StorageProfile.
@@ -495,15 +523,14 @@ if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
 	check_prerequisites
     fi
 
-    # Auto-detect access mode from StorageProfile even in dry-run,
-    # so the YAML preview shows the correct value.  Silently skipped
-    # when oc is not available or not logged in.
-    if oc whoami >/dev/null 2>&1 ; then
+    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
 	detect_access_mode
     fi
 
     check_file_exists namespace.yaml
-    if ((USE_SNAPSHOT)) ; then
+    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
+	check_file_exists vm-containerdisk.yaml
+    elif ((USE_SNAPSHOT)) ; then
 	check_file_exists volumesnap.yaml
 	check_file_exists vm-snap.yaml
     elif [[ -n "$DATASOURCE" ]] ; then
@@ -513,17 +540,19 @@ if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
     else
 	check_file_exists vm-clone.yaml
     fi
-    if [[ -n "$DATASOURCE" ]] ; then
-	# Base DV is only needed in snapshot mode (to create snapshots from).
-	# In no-snapshot mode each VM's DV clones directly from the DataSource.
-	if ((USE_SNAPSHOT)) ; then
-	    check_file_exists dv-datasource.yaml
+    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	if [[ -n "$DATASOURCE" ]] ; then
+	    # Base DV is only needed in snapshot mode (to create snapshots from).
+	    # In no-snapshot mode each VM's DV clones directly from the DataSource.
+	    if ((USE_SNAPSHOT)) ; then
+		check_file_exists dv-datasource.yaml
+	    fi
+	else
+	    if [[ -z "$DV_URL" ]] ; then
+		fatal "Either --datasource, --dv-url, or --containerdisk must be set"
+	    fi
+	    check_file_exists dv.yaml
 	fi
-    else
-	if [[ -z "$DV_URL" ]] ; then
-	    fatal "Either --datasource or --dv-url must be set"
-	fi
-	check_file_exists dv.yaml
     fi
 
     # Validate cloud-init file if specified
@@ -542,11 +571,11 @@ Creating resources for:
   Namespaces: $NUM_NAMESPACES
   VMs per namespace: $VMS_PER_NAMESPACE
   Extra VMs in first $REMAINDER_VMS namespaces: $((REMAINDER_VMS > 0 ? 1 : 0))
-  Disk source: ${DATASOURCE:+DataSource $DATASOURCE ($DATASOURCE_NS)}${DV_URL:+URL $DV_URL}${DV_URL:+
+  Disk source: ${DATASOURCE:+DataSource $DATASOURCE ($DATASOURCE_NS)}${DV_URL:+URL $DV_URL}${CONTAINERDISK_IMAGE:+ContainerDisk $CONTAINERDISK_IMAGE}${DV_URL:+
   Storage Size: $STORAGE_SIZE}
-  Storage Class: $STORAGE_CLASS
-  Access Mode: $ACCESS_MODE
-  Snapshot mode: $(if ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; elif [[ -n "$DATASOURCE" ]]; then echo "disabled (direct DataSource clone)"; else echo "disabled (direct PVC clone)"; fi)
+  Storage Class: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$STORAGE_CLASS"; fi)
+  Access Mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$ACCESS_MODE"; fi)
+  Snapshot mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; elif ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; elif [[ -n "$DATASOURCE" ]]; then echo "disabled (direct DataSource clone)"; else echo "disabled (direct PVC clone)"; fi)
   VM Basename: $VM_BASENAME
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
@@ -589,6 +618,7 @@ function process_template() {
         -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g" \
         -e "s/{VM_MEMORY}/$VM_MEMORY/g" \
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g" \
+        -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g" \
         "$file"
 }
 
@@ -808,7 +838,9 @@ create_virtualmachines() {
     log_message "Creating VirtualMachines..."
     VM_ID=1
     local vm_file
-    if ((USE_SNAPSHOT)) ; then
+    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
+	vm_file=$(find_file_on_path "vm-containerdisk.yaml") || fatal "Can't find vm-containerdisk.yaml on CREATE_VM_PATH"
+    elif ((USE_SNAPSHOT)) ; then
 	vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
     elif [[ -n "$DATASOURCE" ]] ; then
 	vm_file=$(find_file_on_path "vm-datasource.yaml") || fatal "Can't find vm-datasource.yaml on CREATE_VM_PATH"
@@ -816,8 +848,9 @@ create_virtualmachines() {
 	vm_file=$(find_file_on_path "vm-clone.yaml") || fatal "Can't find vm-clone.yaml on CREATE_VM_PATH"
     fi
 
-    # Auto-apply default cloud-init when using DataSource without explicit --cloudinit
-    if [[ -n "$DATASOURCE" && -z "$CLOUDINIT_FILE" ]] ; then
+    # Auto-apply default cloud-init when using DataSource or container disk
+    # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
+    if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
 	CLOUDINIT_FILE="$(dirname "$0")/helpers/cloudinit-default.yaml"
 	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
 	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
@@ -1294,19 +1327,23 @@ main() {
     log_message "Batch ID:      $BATCH_ID"
     log_message "Configuration: $NUM_VMS VMs across $NUM_NAMESPACES namespaces"
 
-    if [[ -n "$DATASOURCE" ]] ; then
+    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
+	log_message "ContainerDisk: $CONTAINERDISK_IMAGE"
+    elif [[ -n "$DATASOURCE" ]] ; then
 	log_message "DataSource:    $DATASOURCE (from $DATASOURCE_NS)"
     else
 	log_message "DV URL:        $DV_URL"
 	log_message "Storage size:  $STORAGE_SIZE"
     fi
-    log_message "Storage class: $STORAGE_CLASS"
-    if ((USE_SNAPSHOT)) ; then
-	log_message "Snapshot mode: enabled (class: $SNAPSHOT_CLASS)"
-    elif [[ -n "$DATASOURCE" ]] ; then
-	log_message "Snapshot mode: disabled (direct DataSource clone)"
-    else
-	log_message "Snapshot mode: disabled (direct PVC clone)"
+    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	log_message "Storage class: $STORAGE_CLASS"
+	if ((USE_SNAPSHOT)) ; then
+	    log_message "Snapshot mode: enabled (class: $SNAPSHOT_CLASS)"
+	elif [[ -n "$DATASOURCE" ]] ; then
+	    log_message "Snapshot mode: disabled (direct DataSource clone)"
+	else
+	    log_message "Snapshot mode: disabled (direct PVC clone)"
+	fi
     fi
     log_message "VM CPU cores:  $VM_CPU_CORES"
     log_message "VM memory:     $VM_MEMORY"
@@ -1314,11 +1351,13 @@ main() {
     log_message "Run strategy:  $RUN_STRATEGY"
 
     create_namespaces
-    create_datavolumes
-    if ((USE_SNAPSHOT)) ; then
-	create_volumesnapshots
-    else
-	log_message "Skipping VolumeSnapshots (--no-snapshot mode)"
+    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	create_datavolumes
+	if ((USE_SNAPSHOT)) ; then
+	    create_volumesnapshots
+	else
+	    log_message "Skipping VolumeSnapshots (--no-snapshot mode)"
+	fi
     fi
     create_virtualmachines
 
@@ -1329,7 +1368,9 @@ main() {
 
     if ((doit)) ; then
 	log_message "Resource creation completed successfully!"
-	if ((USE_SNAPSHOT)) ; then
+	if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
+	    log_message "Created $NUM_NAMESPACES namespaces and $NUM_VMS total VirtualMachines (container disk)"
+	elif ((USE_SNAPSHOT)) ; then
 	    log_message "Created $NUM_NAMESPACES namespaces, $NUM_NAMESPACES DataVolumes, $NUM_NAMESPACES VolumeSnapshots, and $NUM_VMS total VirtualMachines"
 	elif [[ -n "$DATASOURCE" ]] ; then
 	    log_message "Created $NUM_NAMESPACES namespaces and $NUM_VMS total VirtualMachines (direct DataSource clone, no base DVs)"
@@ -1365,8 +1406,10 @@ main() {
 
 	To check the created resources:
 	  oc get ns -l batch-id=$BATCH_ID
-	  oc get datavolumes -A -l batch-id=$BATCH_ID
 	EOF
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    echo "  oc get datavolumes -A -l batch-id=$BATCH_ID"
+	fi
 	if ((USE_SNAPSHOT)) ; then
 	    echo "  oc get volumesnapshots -A -l batch-id=$BATCH_ID"
 	fi
