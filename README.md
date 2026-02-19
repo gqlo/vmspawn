@@ -20,6 +20,7 @@ Backed by 193 unit tests, live cluster validation, and CI on every push
 - [How it works](#how-it-works)
 - [Managing batches](#managing-batches)
 - [Options](#options)
+- [Tab completion](#clone-and-setup)
 - [Cloud-init](#cloud-init)
 - [Cluster profiling](#cluster-profiling)
 - [Development](#development)
@@ -39,50 +40,62 @@ Backed by 193 unit tests, live cluster validation, and CI on every push
 
 ## Quick start
 
+### Clone and setup
+
+```bash
+git clone https://github.com/gqlo/vmspawn.git
+cd vmspawn
+echo "export PATH=\"$(pwd):\$PATH\"" >> ~/.bashrc
+echo "source $(pwd)/tab-completion/vmspawn.bash" >> ~/.bashrc
+source ~/.bashrc
+```
+
+The first `echo` adds the vmspawn directory to your `PATH` so you can run `vmspawn` from anywhere. The second appends the tab completion script. Bash tab completion for options is available (e.g. `vmspawn --de` + Tab completes to `--delete` or `--delete-all`). Start a new shell or run `source ~/.bashrc` to activate.
+
 ### Examples
 
 ```bash
 # Create 10 RHEL9 VMs (4 cores, 8Gi memory) using default OCS storage class
 # Defaults: datasource=rhel9, snapshot mode=on, access mode=auto-detect, cloud-init=auto
-./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
+vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
 # Use a different DataSource (e.g. Fedora) with default OCS storage
 # VM basename auto-derived: "fedora", base DV: "fedora-base", secret: "fedora-cloudinit"
-./vmspawn --datasource=fedora --vms=5 --namespaces=1
+vmspawn --datasource=fedora --vms=5 --namespaces=1
 
 # Import a custom QCOW2 instead of using a DataSource (default OCS storage)
 # No cloud-init auto-injected in URL mode; VM basename: "vm", base DV: "vm-base"
-./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
+vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
 # No storage class available? Boot Fedora VMs directly from a container image
 # No PVC or storage configuration needed; cloud-init auto-injected (root password: password)
-./vmspawn --containerdisk --vms=5 --namespaces=1
+vmspawn --containerdisk --vms=5 --namespaces=1
 
 # Create VMs with a cloud-init workload injected at boot (default OCS storage)
 # Custom cloud-init replaces the default auto-injected one
-./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
 # Use a different DataSource with default OCS storage (root password: password)
 # VM basename auto-derived: "centos-stream9"
-./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
 
 # Use a non-OCS storage class (snapshots auto-disabled because no --snapshot-class)
-./vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
+vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
 
 # Use a custom storage class with snapshots (provide both classes to keep snapshots on)
-./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 
 # Explicitly disable snapshots on default OCS storage (VMs clone directly from DataSource)
-./vmspawn --no-snapshot --vms=10 --namespaces=2
+vmspawn --no-snapshot --vms=10 --namespaces=2
 
 # Dry-run to preview generated YAML without applying
-./vmspawn -n --vms=10 --namespaces=2
+vmspawn -n --vms=10 --namespaces=2
 
 # Delete all resources for a batch (prompts for confirmation)
-./vmspawn --delete=a3f7b2
+vmspawn --delete=a3f7b2
 
 # Delete ALL vmspawn batches on the cluster
-./vmspawn --delete-all
+vmspawn --delete-all
 ```
 
 ### Defaults
@@ -197,19 +210,19 @@ Use `--delete` to remove all resources for a specific batch, or `--delete-all` t
 
 ```bash
 # Preview what would be deleted
-./vmspawn -n --delete=a3f7b2
+vmspawn -n --delete=a3f7b2
 
 # Delete all resources for a batch (prompts for confirmation)
-./vmspawn --delete=a3f7b2
+vmspawn --delete=a3f7b2
 
 # Skip the confirmation prompt (for scripting)
-./vmspawn --delete=a3f7b2 --yes
+vmspawn --delete=a3f7b2 --yes
 
 # Discover and delete ALL vmspawn batches on the cluster
-./vmspawn --delete-all
+vmspawn --delete-all
 
 # Delete all batches without prompting
-./vmspawn --delete-all -y
+vmspawn --delete-all -y
 ```
 
 This deletes the batch's namespaces, which cascades and removes all VMs, DataVolumes, VolumeSnapshots, and PVCs inside them. The batch manifest file is also cleaned up.
@@ -292,10 +305,10 @@ When using a DataSource (the default) or `--containerdisk`, a built-in cloud-ini
 
 ```bash
 # DataSource VMs reachable via: ssh root@<vm-ip>  (password: password)
-./vmspawn --vms=10 --namespaces=2
+vmspawn --vms=10 --namespaces=2
 
 # Container disk VMs work the same way -- no storage class required
-./vmspawn --containerdisk --vms=5 --namespaces=1
+vmspawn --containerdisk --vms=5 --namespaces=1
 ```
 
 To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`), no cloud-init is injected unless explicitly requested.
@@ -305,7 +318,7 @@ To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`
 Use `--cloudinit=FILE` to inject any cloud-init user-data file:
 
 ```bash
-./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
 The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
@@ -324,10 +337,10 @@ profiles are captured as instantaneous snapshots at dump time.
 
 ```bash
 # Profile all control-plane components during a 20-VM batch creation
-./vmspawn --profile --vms=20 --namespaces=4
+vmspawn --profile --vms=20 --namespaces=4
 
 # Profile only virt-controller during a 50-VM stress workload run
-./vmspawn --profile=virt-controller --cloudinit=helpers/cloudinit-stress-workload.yaml \
+vmspawn --profile=virt-controller --cloudinit=helpers/cloudinit-stress-workload.yaml \
   --vms=50 --namespaces=10
 ```
 
@@ -373,6 +386,8 @@ If any check fails, the commit is aborted. Fix the issues and commit again. In e
 
 ```
 vmspawn              # main script
+tab-completion/
+  vmspawn.bash       # Bash tab completion (source to enable)
 docs/
   logging.md         # logging, manifests, and logs/ directory structure
   stress-workload.md # stress-ng workload simulator documentation

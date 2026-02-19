@@ -60,6 +60,7 @@ The test suite is split across numbered files so `bats tests/ --jobs N` parallel
 | `tests/08-combos-wffc-misc.bats` | Combo categories 8-9 (WFFC, quiet/dry-run) |
 | `tests/09-delete-profile.bats` | Delete hardening + --delete-all + --yes + --profile |
 | `tests/10-containerdisk.bats` | Container Disk mode (cdisk) |
+| `tests/11-completion.bats` | Tab completion smoke test |
 
 Shared helpers (e.g. `_create_mock_oc`) live in `tests/helpers.bash` and are loaded
 with `load 'helpers'` at the top of any file that needs them.
