@@ -180,39 +180,37 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# ERR-10: missing namespace.yaml template
+# ERR-10: missing namespace template
 # ---------------------------------------------------------------
-@test "ERR: missing namespace.yaml template fails" {
+@test "ERR: missing namespace template fails" {
   local tmpdir
   tmpdir=$(mktemp -d)
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err017 --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No namespace template found"* ]]
   rm -rf "$tmpdir"
 }
 
 # ---------------------------------------------------------------
-# ERR-11: missing dv-datasource.yaml in snapshot+datasource mode
+# ERR-11: missing dv template in snapshot+datasource mode
 # ---------------------------------------------------------------
-@test "ERR: missing dv-datasource.yaml template fails" {
+@test "ERR: missing dv template fails in snapshot+datasource mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  # Provide namespace.yaml and volumesnap.yaml and vm-snap.yaml so it
-  # gets past those checks and fails on dv-datasource.yaml
   cp templates/namespace.yaml "$tmpdir/"
   cp templates/volumesnap.yaml "$tmpdir/"
   cp templates/vm-snap.yaml "$tmpdir/"
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err018 \
     --vms=1 --namespaces=1 --snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No dv template found"* ]]
   rm -rf "$tmpdir"
 }
 
 # ---------------------------------------------------------------
-# ERR-12: missing dv.yaml in URL mode
+# ERR-12: missing dv template in URL mode
 # ---------------------------------------------------------------
-@test "ERR: missing dv.yaml template fails in URL mode" {
+@test "ERR: missing dv template fails in URL mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cp templates/namespace.yaml "$tmpdir/"
@@ -220,43 +218,44 @@ setup_file() {
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err019 \
     --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No dv template found"* ]]
   rm -rf "$tmpdir"
 }
 
 # ---------------------------------------------------------------
-# ERR-13: missing vm-snap.yaml in snapshot mode
+# ERR-13: missing vm template in snapshot mode
 # ---------------------------------------------------------------
-@test "ERR: missing vm-snap.yaml template fails in snapshot mode" {
+@test "ERR: missing vm template fails in snapshot mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cp templates/namespace.yaml "$tmpdir/"
   cp templates/volumesnap.yaml "$tmpdir/"
+  cp templates/dv-datasource.yaml "$tmpdir/"
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err020 \
     --vms=1 --namespaces=1 --snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No vm template found"* ]]
   rm -rf "$tmpdir"
 }
 
 # ---------------------------------------------------------------
-# ERR-14: missing vm-datasource.yaml in no-snapshot datasource mode
+# ERR-14: missing vm template in no-snapshot datasource mode
 # ---------------------------------------------------------------
-@test "ERR: missing vm-datasource.yaml template fails" {
+@test "ERR: missing vm template fails in no-snapshot datasource mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cp templates/namespace.yaml "$tmpdir/"
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err021 \
     --vms=1 --namespaces=1 --no-snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No vm template found"* ]]
   rm -rf "$tmpdir"
 }
 
 # ---------------------------------------------------------------
-# ERR-15: missing vm-clone.yaml in URL no-snapshot mode
+# ERR-15: missing vm template in URL no-snapshot mode
 # ---------------------------------------------------------------
-@test "ERR: missing vm-clone.yaml template fails in URL mode" {
+@test "ERR: missing vm template fails in URL no-snapshot mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cp templates/namespace.yaml "$tmpdir/"
@@ -264,7 +263,7 @@ setup_file() {
   run env CREATE_VM_PATH="$tmpdir" bash "$VMSPAWN" -n --batch-id=err022 \
     --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"not found on"* ]]
+  [[ "$output" == *"No vm template found"* ]]
   rm -rf "$tmpdir"
 }
 

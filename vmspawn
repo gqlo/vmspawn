@@ -35,7 +35,9 @@ PVC_BASE_NAME_SET=0
 VM_CPU_CORES="1"
 VM_MEMORY="1Gi"
 # Default to using the templates/ directory relative to this script.
-CREATE_VM_PATH=${CREATE_VM_PATH:-$(dirname "$0")/templates}
+BUILTIN_TEMPLATES_DIR="$(dirname "$0")/templates"
+CREATE_VM_PATH=${CREATE_VM_PATH:-$BUILTIN_TEMPLATES_DIR}
+CUSTOM_TEMPLATES_SET=0
 VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
@@ -45,6 +47,7 @@ if [[ -z "$(type -t xxd)" ]] ; then
     exit 1
 fi
 BATCH_ID=$(head -c 3 /dev/urandom | xxd -p)
+BATCH_ID_SET=0
 NUM_VMS=1
 NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
@@ -56,12 +59,19 @@ DELETE_BATCH=
 DELETE_ALL=0
 CONFIRM_DELETE=0
 PROFILE_TARGET=
-yamlpath=()
 declare -A expected_vms=()
-# If CREATE_VM_PATH is explicitly provided, search for
-# YAML files on that path.
-# Split the CREATE_VM_PATH into an array using : as the delimiter
-IFS=: read -r -a yamlpath <<< "$CREATE_VM_PATH"
+# Content-based detection patterns for template roles.
+# Extend this table to add new template roles.
+declare -A ROLE_PATTERN=(
+    [namespace]='^kind:[[:space:]]*Namespace'
+    [dv]='^kind:[[:space:]]*DataVolume'
+    [volumesnapshot]='^kind:[[:space:]]*VolumeSnapshot'
+    [vm]='^kind:[[:space:]]*VirtualMachine'
+    [cloudinit-secret]='^kind:[[:space:]]*Secret'
+)
+# Validated template paths, keyed by role.  Filled by
+# validate_required_templates; read by creation functions.
+declare -A TEMPLATE_CACHE=()
 
 doit=1
 quiet=0
@@ -132,6 +142,11 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | quay.io/containerdisks/fedora:latest
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. helpers/cloudinit-stress-workload.yaml)
+        --custom-templates=PATH Use YAML templates from PATH (file or
+                                | | | directory; colon-separated for
+                                | | | multiple paths). Falls back to
+                                | | | built-in templates/ for any
+                                | | | missing roles (partial custom OK)
         --profile[=COMPONENT]   Profile KubeVirt control plane during
                                 | | | VM creation (CPU, memory, goroutine, etc.)
                                 | | | COMPONENT: virt-api, virt-controller,
@@ -163,7 +178,7 @@ process_option() {
     option=${option//-/}
     # Convert the option to lowercase for case-insensitive matching
     case "${option,,}" in
-	batchid)   BATCH_ID=$value ;;
+	batchid)   BATCH_ID=$value; BATCH_ID_SET=1 ;;
 	delete)    [[ -n "$value" ]] || fatal "--delete requires a batch ID (e.g. --delete=abc123)"
 		   DELETE_BATCH=$value ;;
 	deleteall) DELETE_ALL=1 ;;
@@ -197,6 +212,7 @@ process_option() {
 	start)     RUN_STRATEGY=Always ;;
 	stop)      RUN_STRATEGY=Halted ;;
 	profile)   PROFILE_TARGET=${value:-all} ;;
+	customtemplate*) CREATE_VM_PATH=$value; CUSTOM_TEMPLATES_SET=1 ;;
 	*) 	   fatal "Error: unrecognized option '--${optstr%%=*}'. Run '$0 -h' to see all options." ;;
     esac
 }
@@ -537,21 +553,185 @@ detect_access_mode() {
     fi
 }
 
-# Check if template files exist
-find_file_on_path() {
+# Check if a file matches all given grep patterns.
+_template_matches() {
     local file=$1
-    local ydir
-    for ydir in "${yamlpath[@]}" ; do
-	if [[ -f "${ydir:-.}/$file" ]] ; then
-	    echo "${ydir:-.}/$file"
-	    return 0
+    shift
+    local pattern
+    for pattern in "$@"; do
+	[[ -n "$pattern" ]] || continue
+	grep -qE "$pattern" "$file" 2>/dev/null || return 1
+    done
+    return 0
+}
+
+# Find a template file by content-based detection.
+# Usage: find_template_by_content ROLE [EXTRA_PATTERN ...]
+# Searches CREATE_VM_PATH entries (files checked directly, directories
+# scanned for .yaml/.yml), then falls back to built-in templates/ when
+# CUSTOM_TEMPLATES_SET.  Returns the path to the first matching file.
+# Exits with fatal error if no match is found.
+find_template_by_content() {
+    local role=$1
+    shift
+    local base_pattern="${ROLE_PATTERN[$role]:-}"
+    [[ -n "$base_pattern" ]] || fatal "Unknown template role: $role"
+
+    local -a all_patterns=("$base_pattern" "$@")
+    local -i has_extra=$(( $# > 0 ))
+
+    # Build search path list
+    local -a search_paths=()
+    IFS=: read -r -a search_paths <<< "$CREATE_VM_PATH"
+    if (( CUSTOM_TEMPLATES_SET )); then
+	local p resolved_builtin
+	resolved_builtin=$(cd "$BUILTIN_TEMPLATES_DIR" 2>/dev/null && pwd) || resolved_builtin=""
+	local -i found_builtin=0
+	for p in "${search_paths[@]}"; do
+	    local resolved
+	    if [[ -d "$p" ]]; then
+		resolved=$(cd "$p" 2>/dev/null && pwd) || resolved=""
+	    else
+		resolved="$p"
+	    fi
+	    if [[ -n "$resolved_builtin" && "$resolved" == "$resolved_builtin" ]]; then
+		found_builtin=1
+		break
+	    fi
+	done
+	(( found_builtin )) || search_paths+=("$BUILTIN_TEMPLATES_DIR")
+    fi
+
+    local entry file
+
+    # Pass 1: match base pattern + all extra patterns across all paths
+    for entry in "${search_paths[@]}"; do
+	if [[ -f "$entry" ]]; then
+	    if _template_matches "$entry" "${all_patterns[@]}"; then
+		echo "$entry"
+		return 0
+	    fi
+	elif [[ -d "$entry" ]]; then
+	    for file in "$entry"/*.yaml "$entry"/*.yml; do
+		[[ -f "$file" ]] || continue
+		if _template_matches "$file" "${all_patterns[@]}"; then
+		    echo "$file"
+		    return 0
+		fi
+	    done
 	fi
     done
+
+    # Pass 2: when custom templates are set and extra patterns were used,
+    # retry on custom paths with base pattern only.  Custom templates may
+    # not contain the sub-type markers that built-in templates have.
+    if (( CUSTOM_TEMPLATES_SET && has_extra )); then
+	local -a custom_paths=()
+	IFS=: read -r -a custom_paths <<< "$CREATE_VM_PATH"
+	for entry in "${custom_paths[@]}"; do
+	    if [[ -f "$entry" ]]; then
+		if _template_matches "$entry" "$base_pattern"; then
+		    echo "$entry"
+		    return 0
+		fi
+	    elif [[ -d "$entry" ]]; then
+		for file in "$entry"/*.yaml "$entry"/*.yml; do
+		    [[ -f "$file" ]] || continue
+		    if _template_matches "$file" "$base_pattern"; then
+			echo "$file"
+			return 0
+		    fi
+		done
+	    fi
+	done
+    fi
+
+    local searched
+    searched=$(IFS=', '; echo "${search_paths[*]}")
+    # Write to stderr so the message survives $() capture in callers.
+    echo "${C_ERR}No $role template found; searched: $searched${C_RST}" >&2
     return 1
 }
 
-check_file_exists() {
-    find_file_on_path "${1:-}" >/dev/null || fatal "${1:-} not found on $CREATE_VM_PATH"
+# Extract a literal (non-placeholder) value from a YAML template field.
+# Returns 1 when the field is absent or contains a {PLACEHOLDER}.
+_extract_template_field() {
+    local file=$1
+    local field=$2
+    local value
+    value=$(grep -m1 "[[:space:]]${field}:" "$file" 2>/dev/null |
+	sed "s/.*${field}:[[:space:]]*//" |
+	sed 's/^"//;s/"$//;s/[[:space:]]*$//') || return 1
+    [[ -n "$value" && "$value" != "{"*"}" ]] || return 1
+    echo "$value"
+}
+
+# When custom templates contain literal values for known fields and
+# the user did not pass the corresponding option, adopt the template's
+# value so the rest of vmspawn uses it consistently.
+_apply_template_literals() {
+    (( ${#TEMPLATE_CACHE[@]} > 0 )) || return 0
+    local file value
+
+    if (( ! BATCH_ID_SET )); then
+	for file in "${TEMPLATE_CACHE[@]}"; do
+	    value=$(_extract_template_field "$file" "batch-id") || continue
+	    BATCH_ID="$value"
+	    break
+	done
+    fi
+
+    if (( ! BASENAME_SET )); then
+	for file in "${TEMPLATE_CACHE[@]}"; do
+	    value=$(_extract_template_field "$file" "vm-basename") || continue
+	    VM_BASENAME="$value"
+	    if (( ! PVC_BASE_NAME_SET )); then
+		BASE_PVC_NAME="${VM_BASENAME}-base"
+	    fi
+	    break
+	done
+    fi
+}
+
+# Validate that all templates required for the current clone mode
+# are discoverable, and cache their paths for creation functions.
+validate_required_templates() {
+    TEMPLATE_CACHE[namespace]=$(find_template_by_content namespace)
+
+    if [[ -n "$CONTAINERDISK_IMAGE" ]]; then
+	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "containerDisk:")
+    elif ((USE_SNAPSHOT)); then
+	TEMPLATE_CACHE[volumesnapshot]=$(find_template_by_content volumesnapshot)
+	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "snapshot:")
+    elif [[ -n "$DATASOURCE" ]]; then
+	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "sourceRef:")
+    else
+	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "pvc:")
+    fi
+
+    if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
+	if [[ -n "$DATASOURCE" ]]; then
+	    if ((USE_SNAPSHOT)); then
+		TEMPLATE_CACHE[dv]=$(find_template_by_content dv "sourceRef:")
+	    fi
+	else
+	    if [[ -z "$DV_URL" ]]; then
+		fatal "Either --datasource, --dv-url, or --containerdisk must be set"
+	    fi
+	    TEMPLATE_CACHE[dv]=$(find_template_by_content dv "http:")
+	fi
+    fi
+
+    if [[ -n "$CLOUDINIT_FILE" ]]; then
+	TEMPLATE_CACHE[cloudinit-secret]=$(find_template_by_content cloudinit-secret "userdata:")
+	if [[ ! -f "$CLOUDINIT_FILE" ]]; then
+	    fatal "Cloud-init file not found: $CLOUDINIT_FILE"
+	fi
+    fi
+
+    if (( CUSTOM_TEMPLATES_SET )); then
+	_apply_template_literals
+    fi
 }
 
 # Validate batch ID format for --delete (Kubernetes label value rules:
@@ -590,38 +770,7 @@ if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
 	detect_access_mode
     fi
 
-    check_file_exists namespace.yaml
-    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
-	check_file_exists vm-containerdisk.yaml
-    elif ((USE_SNAPSHOT)) ; then
-	check_file_exists volumesnap.yaml
-	check_file_exists vm-snap.yaml
-    elif [[ -n "$DATASOURCE" ]] ; then
-	# No-snapshot + DataSource: each VM clones directly from the
-	# DataSource, so no intermediate base DV or vm-clone template needed.
-	check_file_exists vm-datasource.yaml
-    else
-	check_file_exists vm-clone.yaml
-    fi
-    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	if [[ -n "$DATASOURCE" ]] ; then
-	    # Base DV is only needed in snapshot mode (to create snapshots from).
-	    # In no-snapshot mode each VM's DV clones directly from the DataSource.
-	    if ((USE_SNAPSHOT)) ; then
-		check_file_exists dv-datasource.yaml
-	    fi
-	else
-	    if [[ -z "$DV_URL" ]] ; then
-		fatal "Either --datasource, --dv-url, or --containerdisk must be set"
-	    fi
-	    check_file_exists dv.yaml
-	fi
-    fi
-
-    # Validate cloud-init file if specified
-    if [[ -n "$CLOUDINIT_FILE" && ! -f "$CLOUDINIT_FILE" ]] ; then
-	fatal "Cloud-init file not found: $CLOUDINIT_FILE"
-    fi
+    validate_required_templates
 
     # Calculate VMs per namespace
     VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
@@ -666,23 +815,40 @@ do_oc() {
 # Replace templated variables in YAML files with their values.
 function process_template() {
     local file=$1
-    sed -e "s/{vm-ns}/$namespace/g" \
-        -e "s/{vm-id}/${VM_ID:-}/g" \
-        -e "s/{VM_BASENAME}/$VM_BASENAME/g" \
-        -e "s/{BATCH_ID}/$BATCH_ID/g" \
-        -e "s|{DV_URL}|$DV_URL|g" \
-        -e "s/{DATASOURCE}/${DATASOURCE:-}/g" \
-        -e "s/{DATASOURCE_NS}/${DATASOURCE_NS:-}/g" \
-        -e "s/{BASE_PVC_NAME}/$BASE_PVC_NAME/g" \
-        -e "s/{STORAGE_SIZE}/$STORAGE_SIZE/g" \
-        -e "s/{STORAGE_CLASS}/$STORAGE_CLASS/g" \
-        -e "s/{ACCESS_MODE}/$ACCESS_MODE/g" \
-        -e "s/{SNAPSHOT_CLASS}/$SNAPSHOT_CLASS/g" \
-        -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g" \
-        -e "s/{VM_MEMORY}/$VM_MEMORY/g" \
-        -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g" \
-        -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g" \
-        "$file"
+    local -a sed_args=(
+        -e "s/{vm-ns}/$namespace/g"
+        -e "s/{vm-id}/${VM_ID:-}/g"
+        -e "s/{VM_BASENAME}/$VM_BASENAME/g"
+        -e "s/{BATCH_ID}/$BATCH_ID/g"
+        -e "s|{DV_URL}|$DV_URL|g"
+        -e "s/{DATASOURCE}/${DATASOURCE:-}/g"
+        -e "s/{DATASOURCE_NS}/${DATASOURCE_NS:-}/g"
+        -e "s/{BASE_PVC_NAME}/$BASE_PVC_NAME/g"
+        -e "s/{STORAGE_SIZE}/$STORAGE_SIZE/g"
+        -e "s/{STORAGE_CLASS}/$STORAGE_CLASS/g"
+        -e "s/{ACCESS_MODE}/$ACCESS_MODE/g"
+        -e "s/{SNAPSHOT_CLASS}/$SNAPSHOT_CLASS/g"
+        -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g"
+        -e "s/{VM_MEMORY}/$VM_MEMORY/g"
+        -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
+        -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
+    )
+
+    # For custom templates with literal label values: replace only when
+    # the user's option differs from the template's literal.
+    if (( CUSTOM_TEMPLATES_SET )); then
+	local tpl_val
+	tpl_val=$(_extract_template_field "$file" "batch-id") || true
+	if [[ -n "${tpl_val:-}" && "$tpl_val" != "$BATCH_ID" ]]; then
+	    sed_args+=(-e "s/batch-id: \"${tpl_val}\"/batch-id: \"${BATCH_ID}\"/g")
+	fi
+	tpl_val=$(_extract_template_field "$file" "vm-basename") || true
+	if [[ -n "${tpl_val:-}" && "$tpl_val" != "$VM_BASENAME" ]]; then
+	    sed_args+=(-e "s/vm-basename: \"${tpl_val}\"/vm-basename: \"${VM_BASENAME}\"/g")
+	fi
+    fi
+
+    sed "${sed_args[@]}" "$file"
 }
 
 # Indent replacement text based on indentation of
@@ -712,8 +878,7 @@ indent_token() {
 create_namespaces() {
     log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
-    local ns_file
-    ns_file=$(find_file_on_path "namespace.yaml") || fatal "Can't find namespace.yaml on CREATE_VM_PATH"
+    local ns_file="${TEMPLATE_CACHE[namespace]}"
     local -A existing_namespaces=()
     if ((doit)) ; then
 	local namespace
@@ -793,12 +958,7 @@ create_datavolumes() {
 
     log_message "${C_BOLD}Creating DataVolumes...${C_RST}"
     local -i ns
-    local dv_file
-    if [[ -n "$DATASOURCE" ]] ; then
-	dv_file=$(find_file_on_path "dv-datasource.yaml") || fatal "Can't find dv-datasource.yaml on CREATE_VM_PATH"
-    else
-	dv_file=$(find_file_on_path "dv.yaml") || fatal "Can't find dv.yaml on CREATE_VM_PATH"
-    fi
+    local dv_file="${TEMPLATE_CACHE[dv]}"
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
@@ -859,8 +1019,7 @@ wait_for_all_volumesnapshots() {
 create_volumesnapshots() {
     log_message "${C_BOLD}Creating VolumeSnapshots...${C_RST}"
     local -i ns
-    local vs_file
-    vs_file=$(find_file_on_path "volumesnap.yaml") || fatal "Can't find volumesnap.yaml on CREATE_VM_PATH"
+    local vs_file="${TEMPLATE_CACHE[volumesnapshot]}"
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
@@ -900,16 +1059,7 @@ wait_for_all_vms() {
 create_virtualmachines() {
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
     VM_ID=1
-    local vm_file
-    if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
-	vm_file=$(find_file_on_path "vm-containerdisk.yaml") || fatal "Can't find vm-containerdisk.yaml on CREATE_VM_PATH"
-    elif ((USE_SNAPSHOT)) ; then
-	vm_file=$(find_file_on_path "vm-snap.yaml") || fatal "Can't find vm-snap.yaml on CREATE_VM_PATH"
-    elif [[ -n "$DATASOURCE" ]] ; then
-	vm_file=$(find_file_on_path "vm-datasource.yaml") || fatal "Can't find vm-datasource.yaml on CREATE_VM_PATH"
-    else
-	vm_file=$(find_file_on_path "vm-clone.yaml") || fatal "Can't find vm-clone.yaml on CREATE_VM_PATH"
-    fi
+    local vm_file="${TEMPLATE_CACHE[vm]}"
 
     # Auto-apply default cloud-init when using DataSource or container disk
     # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
@@ -940,8 +1090,11 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
     local cloudinit_secret_file=""
     if [[ -n "$CLOUDINIT_FILE" ]] ; then
 	cloudinit_b64=$(base64 -w0 "$CLOUDINIT_FILE")
-	cloudinit_secret_file=$(find_file_on_path "cloudinit-secret.yaml") ||
-	    fatal "Can't find cloudinit-secret.yaml on CREATE_VM_PATH"
+	cloudinit_secret_file="${TEMPLATE_CACHE[cloudinit-secret]:-}"
+	if [[ -z "$cloudinit_secret_file" ]]; then
+	    cloudinit_secret_file=$(find_template_by_content cloudinit-secret "userdata:")
+	    TEMPLATE_CACHE[cloudinit-secret]="$cloudinit_secret_file"
+	fi
 	cloudinit_disk="- disk:
     bus: virtio
   name: cloudinit"

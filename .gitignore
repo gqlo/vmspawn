@@ -1,3 +1,4 @@
 logs/
 rh-internal-doc/
 .cursor/debug.log
+monitoring/csv-data/
