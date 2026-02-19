@@ -1,0 +1,31 @@
+# prom-queries.yaml - Named PromQL queries for use with prom-query -f
+#
+# Usage:
+#   monitoring/prom-query -f monitoring/prom-queries.yaml -l
+#   monitoring/prom-query -f monitoring/prom-queries.yaml memory-per-worker
+
+# Global time range applied to all queries (individual queries can override)
+defaults:
+  start: "2026-02-19 19:07:37"
+  end: "2026-02-19 19:21:25"
+  step: 15s
+
+memory-per-worker:
+  description: "Memory utilization percentage per worker node"
+  query: |
+    (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100
+    * on(instance) group_left()
+    label_replace(kube_node_role{role="worker"}, "instance", "$1", "node", "(.+)")
+
+memory-avg-workers:
+  description: "Average memory utilization across all worker nodes"
+  query: |
+    avg(
+      (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes)
+      * on(instance) group_left()
+      label_replace(
+        kube_node_role{role="worker"},
+        "instance", "$1",
+        "node", "(.+)"
+      )
+    ) * 100

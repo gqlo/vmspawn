@@ -274,6 +274,9 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
     --create-existing-vm        Re-apply all VMs even if they already exist
                                 (use with --batch-id to update an existing batch)
     --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
+    --custom-templates=PATH     Use YAML templates from PATH (file or directory;
+                                colon-separated for multiple paths).
+                                Falls back to built-in templates/ for any missing roles
 
     --delete=BATCH_ID           Delete all resources for the given batch
     --delete-all                Delete ALL vmspawn batches on the cluster
@@ -322,6 +325,25 @@ vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces
 ```
 
 The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
+
+## Custom templates
+
+Use `--custom-templates=PATH` to point vmspawn at your own YAML template files or directories. Templates are discovered by **content** (`kind:` field), not by filename, so you can name files however you like.
+
+```bash
+# Use a custom VM template (built-in templates used for Namespace, DV, etc.)
+vmspawn --custom-templates=/path/to/my-vm.yaml --vms=5
+
+# Use a whole directory of custom templates
+vmspawn --custom-templates=/path/to/my-templates/ --vms=10
+
+# Mix files and directories (colon-separated)
+vmspawn --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=10
+```
+
+Partial custom is supported: provide only the templates you want to override and vmspawn falls back to the built-in `templates/` directory for any missing roles. For example, providing just a VirtualMachine template file is enough -- Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret templates are sourced from the built-in set.
+
+When a custom template uses literal values instead of `{PLACEHOLDER}` syntax (e.g. `batch-id: "abc123"`), vmspawn adopts those values unless the corresponding CLI option is explicitly passed.
 
 ## Cluster profiling
 
