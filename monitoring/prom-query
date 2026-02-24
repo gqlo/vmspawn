@@ -1,0 +1,396 @@
+#!/bin/bash
+
+# prom-query - Run PromQL queries against in-cluster Prometheus
+#
+# Usage: prom-query QUERIES.yaml              (run all queries, save CSVs)
+#        prom-query QUERIES.yaml QUERY_NAME   (run one query, save CSV)
+#        prom-query QUERIES.yaml -l           (list available queries)
+#        prom-query [-s START -e END -S STEP] 'PROMQL'  (inline, stdout)
+#
+# Examples:
+#   prom-query monitoring/prom-queries.yaml
+#   prom-query monitoring/prom-queries.yaml memory-per-worker
+#   prom-query -s 1h -e now -S 5m 'node_memory_MemTotal_bytes'
+
+set -eu
+
+NAMESPACE="openshift-monitoring"
+POD=""
+CONTAINER="prometheus"
+LIST_MODE=false
+RANGE_START=""
+RANGE_END=""
+RANGE_STEP=""
+CSV_DIR=""
+
+fatal() {
+	echo "Error: $*" >&2
+	exit 1
+}
+
+usage() {
+	cat <<EOF
+Usage: $(basename "$0") QUERIES.yaml                      Run all queries, save to csv-data/
+       $(basename "$0") QUERIES.yaml QUERY_NAME           Run one query, save to csv-data/
+       $(basename "$0") QUERIES.yaml -l                   List available queries
+       $(basename "$0") [-s START] [-e END] [-S STEP] 'PROMQL'   Inline query to stdout
+
+Options:
+    -l             List available query names, then exit
+    -s START       Range start: relative (1h, 30m, 2d) or "YYYY-MM-DD HH:MM:SS"
+    -e END         Range end: "now", relative, or absolute (default: now)
+    -S STEP        Range step interval (15s, 1m, 5m)
+    -n NAMESPACE   Prometheus namespace (default: openshift-monitoring)
+    -p POD         Prometheus pod name (default: auto-detect)
+    -c CONTAINER   Container name (default: prometheus)
+    -h             Show help
+
+YAML file format:
+    defaults:
+      start: "2026-02-19 19:00:00"
+      end:   "2026-02-19 20:00:00"
+      step:  15s
+
+    memory-per-worker:
+      description: "Memory utilization per worker"
+      query: |
+        (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) * 100
+
+CSV output is saved to csv-data/ next to the YAML file, one file per query name.
+
+Examples:
+    $(basename "$0") monitoring/prom-queries.yaml
+    $(basename "$0") monitoring/prom-queries.yaml memory-per-worker
+    $(basename "$0") monitoring/prom-queries.yaml -l
+    $(basename "$0") -s 1h -e now -S 5m 'up{job="kubelet"}'
+EOF
+	exit "${1:-0}"
+}
+
+# ---------------------------------------------------------------------------
+# YAML helpers (require python3 + PyYAML)
+# ---------------------------------------------------------------------------
+
+require_python_yaml() {
+	if [[ -z "$(type -t python3)" ]]; then
+		fatal "python3 is required (not found in PATH)"
+	fi
+	python3 -c 'import yaml' 2>/dev/null \
+		|| fatal "PyYAML is required (pip install pyyaml)"
+}
+
+list_queries() {
+	local file="$1"
+	require_python_yaml
+	python3 -c '
+import yaml, sys
+
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+
+if not isinstance(data, dict) or not data:
+    print("(no queries found in file)", file=sys.stderr)
+    sys.exit(1)
+
+defaults = data.get("defaults", {}) if isinstance(data.get("defaults"), dict) else {}
+has_global_range = bool(defaults.get("start") or defaults.get("step"))
+
+for name, entry in data.items():
+    if name == "defaults":
+        continue
+    if not isinstance(entry, dict):
+        print(f"  {name}")
+        continue
+    desc = entry.get("description", "")
+    is_range = bool(entry.get("start") or entry.get("step")) or has_global_range
+    tag = " [range]" if is_range else ""
+    if desc:
+        print(f"  {name:30s} {desc}{tag}")
+    else:
+        print(f"  {name}{tag}")
+' "$file"
+}
+
+# Returns all query names from the YAML (one per line, excluding "defaults")
+get_query_names() {
+	local file="$1"
+	require_python_yaml
+	python3 -c '
+import yaml, sys
+
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+
+for name in data:
+    if name != "defaults":
+        print(name)
+' "$file"
+}
+
+# Outputs: start, end, step (one per line), then the query (may be multi-line)
+lookup_query() {
+	local file="$1"
+	local name="$2"
+	require_python_yaml
+	python3 -c '
+import yaml, sys
+
+with open(sys.argv[1]) as f:
+    data = yaml.safe_load(f)
+
+defaults = data.get("defaults", {}) if isinstance(data.get("defaults"), dict) else {}
+
+name = sys.argv[2]
+entry = data.get(name)
+if entry is None:
+    available = [k for k in data if k != "defaults"]
+    print(f"Error: query \"{name}\" not found in {sys.argv[1]}", file=sys.stderr)
+    print("Available queries:", ", ".join(available), file=sys.stderr)
+    sys.exit(1)
+
+if isinstance(entry, dict):
+    q = entry.get("query")
+    if not q:
+        print(f"Error: query \"{name}\" has no \"query\" field", file=sys.stderr)
+        sys.exit(1)
+    print(entry.get("start", defaults.get("start", "")))
+    print(entry.get("end", defaults.get("end", "")))
+    print(entry.get("step", defaults.get("step", "")))
+    print(q.strip())
+else:
+    print(defaults.get("start", ""))
+    print(defaults.get("end", ""))
+    print(defaults.get("step", ""))
+    print(str(entry).strip())
+' "$file" "$name"
+}
+
+# Resolve a time spec to a Unix timestamp.
+resolve_timestamp() {
+	local val="$1"
+	if [[ -z "$val" ]]; then
+		echo ""
+		return
+	fi
+	case "$val" in
+		now)
+			date +%s ;;
+		*[smhd])
+			local amount="${val%[smhd]}"
+			local unit="${val: -1}"
+			local -A mult=([s]=1 [m]=60 [h]=3600 [d]=86400)
+			echo $(( $(date +%s) - amount * ${mult[$unit]} )) ;;
+		*)
+			date -u -d "$val" +%s 2>/dev/null \
+				|| fatal "invalid time spec \"$val\" (use \"YYYY-MM-DD HH:MM:SS\", 30s, 5m, 1h, 2d, \"now\", or unix ts)" ;;
+	esac
+}
+
+# ---------------------------------------------------------------------------
+# Run a single query and output CSV to stdout
+#
+# NOTE: We use "oc exec" (not "oc rsh") to run curl inside the Prometheus pod.
+# oc rsh allocates a pseudo-terminal (PTY) whose line discipline corrupts
+# large responses (injected newlines at column boundaries, doubled chars).
+# oc exec streams raw bytes without a PTY, keeping the JSON intact.
+# ---------------------------------------------------------------------------
+
+run_query() {
+	local query="$1"
+	local range_start="$2"
+	local range_end="$3"
+	local range_step="$4"
+
+	local is_range=false
+	if [[ -n "$range_start" ]] || [[ -n "$range_step" ]]; then
+		is_range=true
+		if [[ -z "$range_start" ]]; then
+			fatal "range query requires start"
+		fi
+		if [[ -z "$range_step" ]]; then
+			fatal "range query requires step"
+		fi
+		[[ -z "$range_end" ]] && range_end="now"
+	fi
+
+	local raw_json
+	if [[ "$is_range" == true ]]; then
+		local ts_start ts_end
+		ts_start=$(resolve_timestamp "$range_start") || exit 1
+		ts_end=$(resolve_timestamp "$range_end") || exit 1
+		echo "  Range [$(date -u -d @"$ts_start" '+%H:%M:%S') -> $(date -u -d @"$ts_end" '+%H:%M:%S') step $range_step]" >&2
+
+		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
+			curl -sf \
+			--data-urlencode "query=$query" \
+			--data-urlencode "start=$ts_start" \
+			--data-urlencode "end=$ts_end" \
+			--data-urlencode "step=$range_step" \
+			http://localhost:9090/api/v1/query_range 2>/dev/null) \
+			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+	else
+		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
+			curl -sf --data-urlencode "query=$query" \
+			http://localhost:9090/api/v1/query 2>/dev/null) \
+			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+	fi
+
+	echo "$raw_json" | python3 -c '
+import json, sys, datetime
+from collections import OrderedDict
+
+def ts_fmt(epoch):
+    return datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc) \
+                   .strftime("%Y-%m-%d %H:%M:%S")
+
+def get_instance(metric):
+    return metric.get("instance", "unknown")
+
+data = json.load(sys.stdin)
+if data.get("status") != "success":
+    print("Query failed:", data.get("error", "unknown error"), file=sys.stderr)
+    sys.exit(1)
+
+result_type = data.get("data", {}).get("resultType", "")
+results = data.get("data", {}).get("result", [])
+if not results:
+    print("(no results)")
+    sys.exit(0)
+
+if result_type == "matrix":
+    instances = [get_instance(r.get("metric", {})) for r in results]
+    all_timestamps = OrderedDict()
+    for r, inst in zip(results, instances):
+        for ts_epoch, value in r["values"]:
+            ts = ts_fmt(ts_epoch)
+            if ts not in all_timestamps:
+                all_timestamps[ts] = {}
+            all_timestamps[ts][inst] = value
+
+    print("timestamp," + ",".join(instances))
+    for ts, values in all_timestamps.items():
+        row = [values.get(inst, "") for inst in instances]
+        print(ts + "," + ",".join(row))
+else:
+    instances = [get_instance(r.get("metric", {})) for r in results]
+    print("timestamp," + ",".join(instances))
+    ts_epoch, _ = results[0]["value"]
+    ts = ts_fmt(ts_epoch)
+    row = [r["value"][1] for r in results]
+    print(ts + "," + ",".join(row))
+'
+}
+
+# ---------------------------------------------------------------------------
+# Option parsing
+# ---------------------------------------------------------------------------
+
+while getopts ":n:p:c:ls:e:S:h" opt; do
+	case "$opt" in
+		n) NAMESPACE="$OPTARG" ;;
+		p) POD="$OPTARG" ;;
+		c) CONTAINER="$OPTARG" ;;
+		l) LIST_MODE=true ;;
+		s) RANGE_START="$OPTARG" ;;
+		e) RANGE_END="$OPTARG" ;;
+		S) RANGE_STEP="$OPTARG" ;;
+		h) usage 0 ;;
+		:) fatal "option -$OPTARG requires an argument" ;;
+		*) fatal "unknown option: -$OPTARG" ;;
+	esac
+done
+shift $((OPTIND - 1))
+
+if [[ $# -lt 1 ]]; then
+	fatal "missing argument (see -h for usage)"
+fi
+
+# ---------------------------------------------------------------------------
+# Detect mode: YAML file vs inline PromQL
+# ---------------------------------------------------------------------------
+
+QUERY_FILE=""
+if [[ -f "$1" ]] && [[ "$1" == *.yaml || "$1" == *.yml ]]; then
+	QUERY_FILE="$1"
+	shift
+	CSV_DIR="$(dirname "$QUERY_FILE")/csv-data"
+fi
+
+# ---------------------------------------------------------------------------
+# Handle -l (list mode)
+# ---------------------------------------------------------------------------
+
+if [[ "$LIST_MODE" == true ]]; then
+	if [[ -z "$QUERY_FILE" ]]; then
+		fatal "-l requires a YAML file"
+	fi
+	list_queries "$QUERY_FILE"
+	exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Pre-flight checks
+# ---------------------------------------------------------------------------
+
+if [[ -z "$(type -t oc)" ]]; then
+	fatal "oc command is not installed"
+fi
+
+if [[ -z "$POD" ]]; then
+	POD=$(oc get pods -n "$NAMESPACE" \
+		-l app.kubernetes.io/name=prometheus \
+		-o jsonpath='{.items[0].metadata.name}' 2>/dev/null) || true
+	if [[ -z "$POD" ]]; then
+		POD="prometheus-k8s-0"
+		echo "Warning: could not auto-detect pod, falling back to $POD" >&2
+	fi
+fi
+
+# ---------------------------------------------------------------------------
+# YAML file mode: run queries and save CSVs
+# ---------------------------------------------------------------------------
+
+if [[ -n "$QUERY_FILE" ]]; then
+	mkdir -p "$CSV_DIR"
+
+	# Build list of queries to run (specific name or all)
+	if [[ $# -ge 1 ]]; then
+		query_names=("$1")
+	else
+		mapfile -t query_names < <(get_query_names "$QUERY_FILE")
+	fi
+
+	echo "Using pod $POD in $NAMESPACE" >&2
+	echo "Saving CSVs to $CSV_DIR/" >&2
+	echo "" >&2
+
+	for qname in "${query_names[@]}"; do
+		echo "[$qname]" >&2
+		local_output=$(lookup_query "$QUERY_FILE" "$qname") || exit 1
+		{
+			read -r yaml_start
+			read -r yaml_end
+			read -r yaml_step
+			query_text=$(cat)
+		} <<< "$local_output"
+
+		# CLI flags override YAML values
+		[[ -n "$RANGE_START" ]] && yaml_start="$RANGE_START"
+		[[ -n "$RANGE_END" ]] && yaml_end="$RANGE_END"
+		[[ -n "$RANGE_STEP" ]] && yaml_step="$RANGE_STEP"
+
+		outfile="$CSV_DIR/${qname}.csv"
+		run_query "$query_text" "$yaml_start" "$yaml_end" "$yaml_step" > "$outfile"
+		echo "  -> $outfile" >&2
+		echo "" >&2
+	done
+
+	echo "Done." >&2
+	exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Inline PromQL mode: output to stdout
+# ---------------------------------------------------------------------------
+
+run_query "$1" "$RANGE_START" "$RANGE_END" "$RANGE_STEP"

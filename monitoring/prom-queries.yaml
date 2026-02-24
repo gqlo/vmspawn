@@ -1,0 +1,63 @@
+# prom-queries.yaml - Named PromQL queries for use with prom-query -f
+#
+# Usage:
+#   monitoring/prom-query -f monitoring/prom-queries.yaml -l
+#   monitoring/prom-query -f monitoring/prom-queries.yaml memory-per-worker
+
+# Global time range applied to all queries (individual queries can override)
+defaults:
+  start: "2026-02-24 19:10:37"
+  end: "2026-02-24 19:20:25"
+  step: 5s
+
+memory-per-worker:
+  description: "Memory utilization (allocatable-based) per worker node, 0-1"
+  query: |
+    (
+      (
+        1 - avg_over_time(node_memory_MemAvailable_bytes[1m])
+            / on(instance) label_replace(kube_node_status_allocatable{resource="memory"}, "instance", "$1", "node", "(.+)")
+      )
+      and on(instance)
+      label_replace(kube_node_status_allocatable{resource="memory"}, "instance", "$1", "node", "(.+)") > 0
+    )
+    * on(instance) group_left()
+    label_replace(kube_node_role{role="worker"}, "instance", "$1", "node", "(.+)")
+
+memory-avg-workers:
+  description: "Average memory utilization across all worker nodes"
+  query: |
+    avg(
+      (
+        1 - avg_over_time(node_memory_MemAvailable_bytes[1m])
+        / on(instance) label_replace(kube_node_status_allocatable{resource="memory"}, "instance", "$1", "node", "(.+)")
+      )
+      and on(instance)
+      label_replace(kube_node_status_allocatable{resource="memory"}, "instance", "$1", "node", "(.+)") > 0
+      and on(instance)
+      label_replace(kube_node_role{role="worker"}, "instance", "$1", "node", "(.+)")
+    )
+
+cpu-avg-workers:
+  description: "Average CPU utilization (1 - idle) across worker nodes"
+  query: |
+    avg(
+      1 - rate(node_cpu_seconds_total{mode='idle'}[1m])
+      * on(instance) group_left()
+      (
+        label_replace(
+          kube_node_role{role="worker"},
+          'instance', '$1',
+          'node', '(.+)'
+        )
+      )
+    )
+
+cpu-per-worker:
+  description: "CPU utilization (1 - idle) per worker node, avg by instance"
+  query: |
+    avg by (instance) (
+      1 - rate(node_cpu_seconds_total{mode='idle'}[1m])
+      * on(instance) group_left()
+      label_replace(kube_node_role{role="worker"}, "instance", "$1", "node", "(.+)")
+    )

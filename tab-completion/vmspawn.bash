@@ -16,7 +16,8 @@ _vmspawn() {
 		--run-strategy=
 		--create-existing-vm --wait --nowait --start --stop
 		--containerdisk --containerdisk=
-		--cloudinit= --profile --profile=
+		--cloudinit= --custom-templates=
+		--profile --profile=
 		--delete= --delete-all --yes
 	)
 
