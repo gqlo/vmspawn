@@ -200,6 +200,7 @@ run_query() {
 	local range_start="$2"
 	local range_end="$3"
 	local range_step="$4"
+	local value_header="${5:-value}"
 
 	local is_range=false
 	if [[ -n "$range_start" ]] || [[ -n "$range_step" ]]; then
@@ -221,22 +222,36 @@ run_query() {
 		echo "  Range [$(date -u -d @"$ts_start" '+%H:%M:%S') -> $(date -u -d @"$ts_end" '+%H:%M:%S') step $range_step]" >&2
 
 		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
-			curl -sf \
+			curl -s -w '\n%{http_code}' \
 			--data-urlencode "query=$query" \
 			--data-urlencode "start=$ts_start" \
 			--data-urlencode "end=$ts_end" \
 			--data-urlencode "step=$range_step" \
-			http://localhost:9090/api/v1/query_range 2>/dev/null) \
-			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+			http://localhost:9090/api/v1/query_range 2>/dev/null) || true
+		local code
+		code=$(echo "$raw_json" | tail -n1)
+		raw_json=$(echo "$raw_json" | sed '$d')
+		if [[ "$code" != "200" ]]; then
+			echo "Prometheus returned HTTP $code" >&2
+			echo "$raw_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error', d.get('message', 'unknown')))" 2>/dev/null || echo "$raw_json" | head -c 500 >&2
+			fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+		fi
 	else
 		raw_json=$(oc exec -c "$CONTAINER" -n "$NAMESPACE" "$POD" -- \
-			curl -sf --data-urlencode "query=$query" \
-			http://localhost:9090/api/v1/query 2>/dev/null) \
-			|| fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+			curl -s -w '\n%{http_code}' --data-urlencode "query=$query" \
+			http://localhost:9090/api/v1/query 2>/dev/null) || true
+		code=$(echo "$raw_json" | tail -n1)
+		raw_json=$(echo "$raw_json" | sed '$d')
+		if [[ "$code" != "200" ]]; then
+			echo "Prometheus returned HTTP $code" >&2
+			echo "$raw_json" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('error', d.get('message', 'unknown')))" 2>/dev/null || echo "$raw_json" | head -c 500 >&2
+			fatal "oc exec / curl failed — check pod name, namespace, and query syntax"
+		fi
 	fi
 
+	export QUERY_VALUE_HEADER="$value_header"
 	echo "$raw_json" | python3 -c '
-import json, sys, datetime
+import json, sys, datetime, os
 from collections import OrderedDict
 
 def ts_fmt(epoch):
@@ -246,6 +261,8 @@ def ts_fmt(epoch):
 def get_instance(metric):
     return metric.get("instance", "unknown")
 
+value_header = os.environ.get("QUERY_VALUE_HEADER", "value")
+
 data = json.load(sys.stdin)
 if data.get("status") != "success":
     print("Query failed:", data.get("error", "unknown error"), file=sys.stderr)
@@ -254,11 +271,13 @@ if data.get("status") != "success":
 result_type = data.get("data", {}).get("resultType", "")
 results = data.get("data", {}).get("result", [])
 if not results:
-    print("(no results)")
+    print("timestamp," + value_header)
     sys.exit(0)
 
 if result_type == "matrix":
     instances = [get_instance(r.get("metric", {})) for r in results]
+    if len(results) == 1 and not results[0].get("metric", {}):
+        instances = [value_header]
     all_timestamps = OrderedDict()
     for r, inst in zip(results, instances):
         for ts_epoch, value in r["values"]:
@@ -273,6 +292,8 @@ if result_type == "matrix":
         print(ts + "," + ",".join(row))
 else:
     instances = [get_instance(r.get("metric", {})) for r in results]
+    if len(results) == 1 and not results[0].get("metric", {}):
+        instances = [value_header]
     print("timestamp," + ",".join(instances))
     ts_epoch, _ = results[0]["value"]
     ts = ts_fmt(ts_epoch)
@@ -380,7 +401,7 @@ if [[ -n "$QUERY_FILE" ]]; then
 		[[ -n "$RANGE_STEP" ]] && yaml_step="$RANGE_STEP"
 
 		outfile="$CSV_DIR/${qname}.csv"
-		run_query "$query_text" "$yaml_start" "$yaml_end" "$yaml_step" > "$outfile"
+		run_query "$query_text" "$yaml_start" "$yaml_end" "$yaml_step" "$qname" > "$outfile"
 		echo "  -> $outfile" >&2
 		echo "" >&2
 	done
