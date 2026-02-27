@@ -61,3 +61,31 @@ cpu-per-worker:
       * on(instance) group_left()
       label_replace(kube_node_role{role="worker"}, "instance", "$1", "node", "(.+)")
     )
+
+cpu-pressure-per-worker:
+  description: "CPU pressure (waiting seconds rate) per worker node"
+  query: |
+    avg by (instance) (rate(node_pressure_cpu_waiting_seconds_total[1m]))
+    and on(instance) label_replace(kube_node_role{role="worker"}, 'instance', "$1", 'node', '(.+)')
+
+cpu-pressure-avg-workers:
+  description: "Average CPU pressure across all worker nodes"
+  query: |
+    avg(
+      avg by (instance) (rate(node_pressure_cpu_waiting_seconds_total[1m]))
+      and on(instance) label_replace(kube_node_role{role="worker"}, 'instance', "$1", 'node', '(.+)')
+    )
+
+memory-pressure-per-worker:
+  description: "Memory pressure (waiting seconds rate) per worker node"
+  query: |
+    avg by (instance) (rate(node_pressure_memory_waiting_seconds_total[1m]))
+    and on(instance) label_replace(kube_node_role{role="worker"}, 'instance', "$1", 'node', '(.+)')
+
+memory-pressure-avg-workers:
+  description: "Average memory pressure across all worker nodes"
+  query: |
+    avg(
+      avg by (instance) (rate(node_pressure_memory_waiting_seconds_total[1m]))
+      and on(instance) label_replace(kube_node_role{role="worker"}, 'instance', "$1", 'node', '(.+)')
+    )
