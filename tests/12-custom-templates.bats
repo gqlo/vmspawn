@@ -5,7 +5,7 @@
 
 load 'helpers'
 
-VMSPAWN="./vmspawn"
+VMSPAWN="./vstorm"
 
 setup_file() {
     setup_oc_mock

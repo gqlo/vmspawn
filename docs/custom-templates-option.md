@@ -2,13 +2,13 @@
 
 ## Goal
 
-Add `--custom-templates=PATH` so users can point vmspawn at their own YAML template file or directory from the command line. This overrides the default `templates/` directory (and the `CREATE_VM_PATH` env var when set).
+Add `--custom-templates=PATH` so users can point vstorm at their own YAML template file or directory from the command line. This overrides the default `templates/` directory (and the `CREATE_VM_PATH` env var when set).
 
 ## How Custom Templates Are Processed
 
 ### Path resolution
 
-When `--custom-templates=PATH` is set, vmspawn stores it in `CREATE_VM_PATH`.
+When `--custom-templates=PATH` is set, vstorm stores it in `CREATE_VM_PATH`.
 Each entry in the colon-separated list can be a **file** (`.yaml` / `.yml`) or a **directory**.
 Multiple entries are supported: `--custom-templates="/path/a:/path/b"`.
 Files and directories can be mixed: `--custom-templates="/home/me/my-vm.yaml:/home/me/templates/"`.
@@ -16,7 +16,7 @@ No global `yamlpath` variable — `find_template_by_content` builds its search l
 
 ### Template lookup (content-based)
 
-vmspawn discovers templates by **reading file content**, not by filename.
+vstorm discovers templates by **reading file content**, not by filename.
 `find_template_by_content(role)` is the single lookup and validation function: it builds the search path from `CREATE_VM_PATH` (split by `:`), appends built-in `templates/` when `CUSTOM_TEMPLATES_SET`, and categorizes by `kind` and structure.
 For each path entry: if it is a **file**, check that file directly against the role's detection rules; if it is a **directory**, scan its `.yaml` / `.yml` files.
 Returns the first match or exits with error. Users can name files however they want (e.g. `my-ns.yaml`, `fedora-vm.yaml`).
@@ -64,14 +64,14 @@ if CLOUDINIT_FILE:
 
 **Step 3 — Validate each role**: For each role in `roles`, call `find_template_by_content(role)`. The function searches paths, applies content detection, and returns the file path. If no file matches, it calls `fatal` with a message. Optionally cache the result (role → file path) so later `create_*` functions reuse it without re-scanning.
 
-**Step 4 — Error message format**: `fatal "No <role> template found; required for <mode>. Searched: <paths>"`. Example: `"No VolumeSnapshot template found; required for snapshot mode. Searched: /custom/dir, /path/to/vmspawn/templates"`.
+**Step 4 — Error message format**: `fatal "No <role> template found; required for <mode>. Searched: <paths>"`. Example: `"No VolumeSnapshot template found; required for snapshot mode. Searched: /custom/dir, /path/to/vstorm/templates"`.
 
 **Step 5 — Cloud-init file check**: If `CLOUDINIT_FILE` is set, verify the file exists (current check at 621-624). This is separate from template validation.
 
-**Partial custom templates**: When `--custom-templates` is set, vmspawn searches the custom path(s) first (files checked directly, directories scanned for `.yaml`/`.yml`), then falls back to the built-in `templates/` directory.
-So a user can provide only a VM template file and vmspawn will use built-in templates for Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret.
+**Partial custom templates**: When `--custom-templates` is set, vstorm searches the custom path(s) first (files checked directly, directories scanned for `.yaml`/`.yml`), then falls back to the built-in `templates/` directory.
+So a user can provide only a VM template file and vstorm will use built-in templates for Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret.
 The search order is: custom path(s) first, then `$(dirname "$0")/templates`.
-If no file matches a required role after searching all paths, vmspawn exits with an error.
+If no file matches a required role after searching all paths, vstorm exits with an error.
 
 ### Template processing
 
@@ -89,7 +89,7 @@ VM templates also use `indent_token()` for `{CLOUDINIT_DISK}`, `{CLOUDINIT_VOLUM
 
 When using custom templates, the template may have **literal values** instead of placeholders (e.g. `batch-id: "abc123"`). In that case:
 
-- **Option not given** — Use the template's value. Extract it and set the runtime variable (e.g. `BATCH_ID=abc123`). The template keeps its literal; the rest of vmspawn uses this value.
+- **Option not given** — Use the template's value. Extract it and set the runtime variable (e.g. `BATCH_ID=abc123`). The template keeps its literal; the rest of vstorm uses this value.
 - **Option matches template** — Use the template's value (no replacement needed). If the user passed `--batch-id=abc123` and the template has `abc123`, skip replacement.
 - **Option differs** — Use the option value. If the user passed `--batch-id=xyz` and the template has `abc123`, replace with `xyz`.
 
@@ -103,7 +103,7 @@ replace only when the option was given and differs from the template.
 ### Application flow
 
 1. **Validation** — Before creation, `validate_required_templates()` determines required roles from the clone mode and calls `find_template_by_content` for each.
-2. **Per-namespace** — For each namespace, vmspawn processes the Namespace template, applies it via `oc apply -f -`.
+2. **Per-namespace** — For each namespace, vstorm processes the Namespace template, applies it via `oc apply -f -`.
 3. **Base disk** — In snapshot/URL modes, processes the DataVolume template (URL or DataSource), applies.
 4. **Snapshot** — In snapshot mode, processes the VolumeSnapshot template, applies.
 5. **VMs** — For each VM, processes the appropriate VM template (with `indent_token` for cloud-init/resources), applies.
@@ -174,7 +174,7 @@ loop for extraction and conditional replacement.
 
 ### 4. Add option to process_option
 
-Initialize `CUSTOM_TEMPLATES_SET=0` with the other config variables (around line 65). In vmspawn `process_option()` (around line 199), add:
+Initialize `CUSTOM_TEMPLATES_SET=0` with the other config variables (around line 65). In vstorm `process_option()` (around line 199), add:
 
 ```bash
 customtemplates) CREATE_VM_PATH=$value; CUSTOM_TEMPLATES_SET=1 ;;
@@ -195,7 +195,7 @@ In `help()` (around lines 93-141), add a line:
 
 ### 6. Update tab completion
 
-In tab-completion/vmspawn.bash, add `--custom-templates=` to the opts array.
+In tab-completion/vstorm.bash, add `--custom-templates=` to the opts array.
 
 ### 7. Update README
 
@@ -203,13 +203,13 @@ In README.md Options section, add a note about `--custom-templates` for custom t
 
 ## Files to Change
 
-- vmspawn: refactor — remove `yamlpath` and `find_file_on_path`; add `find_template_by_content()` (handles both file and directory path entries) and `validate_required_templates()` (mode-to-role mapping, validation); replace all lookups with `find_template_by_content`; add conditional replacement; process_option case with `CUSTOM_TEMPLATES_SET`; help text
-- tab-completion/vmspawn.bash: add `--custom-templates=` to opts
+- vstorm: refactor — remove `yamlpath` and `find_file_on_path`; add `find_template_by_content()` (handles both file and directory path entries) and `validate_required_templates()` (mode-to-role mapping, validation); replace all lookups with `find_template_by_content`; add conditional replacement; process_option case with `CUSTOM_TEMPLATES_SET`; help text
+- tab-completion/vstorm.bash: add `--custom-templates=` to opts
 - README.md: document the option (accepts files or directories) and that filenames are optional (content-based discovery)
 
 ## Testing
 
-- Bats test: `vmspawn -n --custom-templates=/path/to/templates --batch-id=... --vms=1` uses the custom dir (reuse existing CREATE_VM_PATH test pattern from tests/02-core-validation.bats)
+- Bats test: `vstorm -n --custom-templates=/path/to/templates --batch-id=... --vms=1` uses the custom dir (reuse existing CREATE_VM_PATH test pattern from tests/02-core-validation.bats)
 - Bats test: `--custom-templates=/path/to/my-vm.yaml` with a single file path finds the template by content
 - Bats test: `--custom-templates=/path/to/my-vm.yaml:/path/to/templates/` with mixed file and directory paths works correctly
 - Bats test: custom-named templates (e.g. `my-ns.yaml`, `fedora-vm.yaml`) work when content matches the expected kind/structure

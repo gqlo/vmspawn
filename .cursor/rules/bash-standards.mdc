@@ -1,6 +1,6 @@
 ---
-description: Bash coding conventions for the vmspawn script and helper scripts
-globs: vmspawn,helpers/*
+description: Bash coding conventions for the vstorm script and helper scripts
+globs: vstorm,helpers/*
 alwaysApply: false
 ---
 

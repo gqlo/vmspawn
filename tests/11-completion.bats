@@ -9,18 +9,18 @@
 # COMP-1: completion script exists
 # ---------------------------------------------------------------
 @test "COMP: tab-completion script exists" {
-	[[ -f tab-completion/vmspawn.bash ]]
-	[[ -r tab-completion/vmspawn.bash ]]
+	[[ -f tab-completion/vstorm.bash ]]
+	[[ -r tab-completion/vstorm.bash ]]
 }
 
 # ---------------------------------------------------------------
-# COMP-2: completion script registers vmspawn completion
+# COMP-2: completion script registers vstorm completion
 # ---------------------------------------------------------------
-@test "COMP: completion script registers vmspawn completion" {
-	run bash -c "source tab-completion/vmspawn.bash && complete -p vmspawn"
+@test "COMP: completion script registers vstorm completion" {
+	run bash -c "source tab-completion/vstorm.bash && complete -p vstorm"
 	[ "$status" -eq 0 ]
-	[[ "$output" == *"_vmspawn"* ]]
-	[[ "$output" == *"vmspawn"* ]]
+	[[ "$output" == *"_vstorm"* ]]
+	[[ "$output" == *"vstorm"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -28,10 +28,10 @@
 # ---------------------------------------------------------------
 @test "COMP: --de completes to --delete and --delete-all" {
 	run bash -c '
-		source tab-completion/vmspawn.bash
-		COMP_WORDS=(vmspawn --de)
+		source tab-completion/vstorm.bash
+		COMP_WORDS=(vstorm --de)
 		COMP_CWORD=1
-		_vmspawn
+		_vstorm
 		echo "${COMPREPLY[@]}"
 	'
 	[ "$status" -eq 0 ]
@@ -45,7 +45,7 @@
 @test "COMP: setup echo commands produce valid bashrc lines" {
 	tmp=$(mktemp)
 	echo "export PATH=\"$(pwd):\$PATH\"" >> "$tmp"
-	echo "source $(pwd)/tab-completion/vmspawn.bash" >> "$tmp"
+	echo "source $(pwd)/tab-completion/vstorm.bash" >> "$tmp"
 	run bash -c "source $tmp 2>&1"
 	rm -f "$tmp"
 	[ "$status" -eq 0 ]

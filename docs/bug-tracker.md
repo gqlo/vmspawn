@@ -11,7 +11,7 @@ Bugs discovered by automated analysis and testing. Each entry includes the date 
 | **Date found** | 2026-02-12 |
 | **Severity** | Medium |
 | **Status** | Fixed |
-| **File** | `vmspawn`, line 395 |
+| **File** | `vstorm`, line 395 |
 | **Found by** | Agent -- discovered while adding ERR-10 through ERR-15 test cases |
 
 ### Description
@@ -23,7 +23,7 @@ The `check_file_exists()` function referenced an undefined variable `$file` inst
 When a required template file was missing from `CREATE_VM_PATH`, the script exited with:
 
 ```
-./vmspawn: line 395: file: unbound variable
+./vstorm: line 395: file: unbound variable
 ```
 
 instead of the intended:
@@ -54,7 +54,7 @@ Affected all 7 callers of `check_file_exists()` -- any missing template (`namesp
 
 ### Tests added
 
-ERR-10 through ERR-15 in `tests/vmspawn.bats` -- each verifies a missing template produces a clear error message.
+ERR-10 through ERR-15 in `tests/vstorm.bats` -- each verifies a missing template produces a clear error message.
 
 ### Notes
 
@@ -69,7 +69,7 @@ A linter like `shellcheck` would have flagged `$file` as an undefined variable (
 | **Date found** | 2026-02-12 |
 | **Severity** | Low |
 | **Status** | Fixed |
-| **File** | `vmspawn`, lines 158 and 169 |
+| **File** | `vstorm`, lines 158 and 169 |
 | **Found by** | Agent -- discovered during error-handling review |
 
 ### Problem
@@ -79,8 +79,8 @@ When a user passed an unrecognized option (e.g. `--foobar` or `-Z`), the script 
 ### Before
 
 ```
-$ ./vmspawn --foobar
-Usage: ./vmspawn [options] [number_of_vms ...
+$ ./vstorm --foobar
+Usage: ./vstorm [options] [number_of_vms ...
     options:
         -n                      Show what commands would be run
         ...
@@ -90,11 +90,11 @@ Usage: ./vmspawn [options] [number_of_vms ...
 ### After
 
 ```
-$ ./vmspawn --foobar
-Error: unrecognized option '--foobar'. Run './vmspawn -h' to see all options.
+$ ./vstorm --foobar
+Error: unrecognized option '--foobar'. Run './vstorm -h' to see all options.
 
-$ ./vmspawn -Z
-Error: unrecognized option '-Z'. Run './vmspawn -h' to see all options.
+$ ./vstorm -Z
+Error: unrecognized option '-Z'. Run './vstorm -h' to see all options.
 ```
 
 ### Fix
@@ -105,7 +105,7 @@ Error: unrecognized option '-Z'. Run './vmspawn -h' to see all options.
 
 ### Tests updated
 
-ERR-6 and ERR-7 in `tests/vmspawn.bats` now verify that the error message includes the unrecognized option name and a hint to run `-h`.
+ERR-6 and ERR-7 in `tests/vstorm.bats` now verify that the error message includes the unrecognized option name and a hint to run `-h`.
 
 ---
 
@@ -116,8 +116,8 @@ ERR-6 and ERR-7 in `tests/vmspawn.bats` now verify that the error message includ
 | **Date found** | 2026-02-18 |
 | **Severity** | Medium |
 | **Status** | Fixed |
-| **File** | `vmspawn`, lines ~282–494 |
-| **Found by** | Manual testing (`./vmspawn --vms=-1` on a live cluster) |
+| **File** | `vstorm`, lines ~282–494 |
+| **Found by** | Manual testing (`./vstorm --vms=-1` on a live cluster) |
 
 ### Problem
 
@@ -126,7 +126,7 @@ Pure argument validation (numeric checks, range checks, positional arg count) ra
 ### Steps to reproduce
 
 ```bash
-./vmspawn --vms=-1
+./vstorm --vms=-1
 ```
 
 ### Before (buggy)
@@ -147,7 +147,7 @@ Execution order was:
 
 ```
 Error: Number of VMs must be a positive integer
-Try './vmspawn --help' for more information.
+Try './vstorm --help' for more information.
 ```
 
 Exits instantly with code 1, no log file created, no cluster contact.

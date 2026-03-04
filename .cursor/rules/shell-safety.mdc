@@ -1,6 +1,6 @@
 ---
 description: Shell scripting safety rules for robust Bash code
-globs: vmspawn,helpers/*
+globs: vstorm,helpers/*
 alwaysApply: false
 ---
 

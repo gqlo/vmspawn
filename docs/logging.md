@@ -1,6 +1,6 @@
 # Logging and Batch Manifests
 
-vmspawn produces two types of output files in the `logs/` directory: **log files** for detailed operation history and **manifest files** for batch inventory.
+vstorm produces two types of output files in the `logs/` directory: **log files** for detailed operation history and **manifest files** for batch inventory.
 
 ## Log files
 
@@ -119,7 +119,7 @@ This file contains all the Kubernetes resources that would be created, separated
 
 ```bash
 # Preview what would be created
-./vmspawn -n --batch-id=a3f7b2 --vms=10 --namespaces=2
+./vstorm -n --batch-id=a3f7b2 --vms=10 --namespaces=2
 
 # Apply the saved YAML later
 oc apply -f logs/a3f7b2-dryrun.yaml

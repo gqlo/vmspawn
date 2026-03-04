@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# Pre-commit hook for vmspawn
+# Pre-commit hook for vstorm
 #
 # Install with:
 #   git config core.hooksPath hooks
@@ -19,7 +19,7 @@ md_files=()
 
 while IFS= read -r f ; do
     case "$f" in
-        vmspawn|templates/*|helpers/*|tests/*.bats|tests/helpers.bash)
+        vstorm|templates/*|helpers/*|tests/*.bats|tests/helpers.bash)
             run_tests=1 ;;
         helpers/*.yaml)
             yaml_files+=("$f") ;;

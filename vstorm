@@ -1,9 +1,9 @@
 #!/bin/bash
 
-# vmspawn - Batch VM creation tool for OpenShift CNV
+# vstorm - Batch VM creation tool for OpenShift Virtualization
 # Creates DataVolume, VolumeSnapshot, and VirtualMachine resources
 # with unique batch IDs to avoid naming conflicts across runs.
-# Usage: vmspawn <options> [<total-VMs> [<namespaces>]]
+# Usage: vstorm <options> [<total-VMs> [<namespaces>]]
 
 set -eu
 
@@ -152,7 +152,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | COMPONENT: virt-api, virt-controller,
                                 | | | virt-handler, virt-operator (default: all)
         --delete=BATCH_ID       Delete all resources for the given batch
-        --delete-all            Delete ALL vmspawn batches on the cluster
+        --delete-all            Delete ALL vstorm batches on the cluster
         -y / --yes              Skip confirmation prompt for delete operations
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
@@ -668,7 +668,7 @@ _extract_template_field() {
 
 # When custom templates contain literal values for known fields and
 # the user did not pass the corresponding option, adopt the template's
-# value so the rest of vmspawn uses it consistently.
+# value so the rest of vstorm uses it consistently.
 _apply_template_literals() {
     (( ${#TEMPLATE_CACHE[@]} > 0 )) || return 0
     local file value
@@ -1285,13 +1285,13 @@ delete_batch() {
         return 0
     fi
 
-    # Safety: verify all matching namespaces look like vmspawn-created ones.
+    # Safety: verify all matching namespaces look like vstorm-created ones.
     # This prevents accidental deletion of operator/system namespaces that
     # may have been manually tagged with a batch-id label.
     local ns_name
     while read -r ns_name ; do
 	if [[ -n "$ns_name" && ! "$ns_name" =~ ^vm-[a-zA-Z0-9._-]+-ns-[0-9]+$ ]] ; then
-	    fatal "Refusing to delete namespace '$ns_name': does not match vmspawn naming pattern (vm-{batch}-ns-{N})"
+	    fatal "Refusing to delete namespace '$ns_name': does not match vstorm naming pattern (vm-{batch}-ns-{N})"
 	fi
     done <<< "$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1}')"
 
@@ -1318,19 +1318,19 @@ delete_batch() {
 }
 
 ################################################################
-# Delete ALL vmspawn batches on the cluster
+# Delete ALL vstorm batches on the cluster
 delete_all_batches() {
-    # Discover all vmspawn-created namespaces by the batch-id label,
+    # Discover all vstorm-created namespaces by the batch-id label,
     # then extract unique batch IDs from the namespace names.
     local all_batches
 
     if ((! doit)) ; then
 	cat <<-EOF
-	(dry-run) Would discover and delete all vmspawn batches.
+	(dry-run) Would discover and delete all vstorm batches.
 	  oc get ns -l batch-id --no-headers
 
 	This finds all namespaces with a batch-id label matching
-	the vmspawn naming pattern (vm-{batch}-ns-{N}) and deletes them.
+	the vstorm naming pattern (vm-{batch}-ns-{N}) and deletes them.
 	EOF
 	return 0
     fi
@@ -1341,11 +1341,11 @@ delete_all_batches() {
 	sort -u) || true
 
     if [[ -z "$all_batches" ]] ; then
-	echo "No vmspawn batches found on the cluster."
+	echo "No vstorm batches found on the cluster."
 	return 0
     fi
 
-    echo "Found vmspawn batches:"
+    echo "Found vstorm batches:"
     local batch
     while read -r batch ; do
 	local ns_count
@@ -1370,13 +1370,13 @@ delete_all_batches() {
 	delete_batch "$batch" skip-confirm
     done <<< "$all_batches"
 
-    log_message "${C_OK}All vmspawn batches deleted.${C_RST}"
+    log_message "${C_OK}All vstorm batches deleted.${C_RST}"
 }
 
 ################################################################
 # Cluster profiler functions
 PROFILER_BIN=
-PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vmspawn/releases/latest/download/cluster-profiler-linux-amd64"
+PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vstorm/releases/latest/download/cluster-profiler-linux-amd64"
 
 ensure_profiler_binary() {
     # 1. Check if cluster-profiler is on PATH
@@ -1387,7 +1387,7 @@ ensure_profiler_binary() {
     fi
 
     # 2. Check cached binary
-    local cache_dir="$HOME/.vmspawn/bin"
+    local cache_dir="$HOME/.vstorm/bin"
     local cached_bin="$cache_dir/cluster-profiler"
     if [[ -x "$cached_bin" ]] ; then
 	PROFILER_BIN="$cached_bin"
@@ -1415,19 +1415,19 @@ ensure_profiler_binary() {
 }
 
 ensure_profiler_feature_gate() {
-    # Detect OCP/CNV vs upstream KubeVirt
+    # Detect OCP/Virtualization vs upstream KubeVirt
     local hco_exists
     hco_exists=$(oc get hco kubevirt-hyperconverged -n openshift-cnv -o name 2>/dev/null) || true
 
     if [[ -n "$hco_exists" ]] ; then
-	# OCP/CNV: check via jsonpatch annotation on HCO CR
+	# OCP/Virtualization: check via jsonpatch annotation on HCO CR
 	local annotation
 	annotation=$(oc get hco kubevirt-hyperconverged -n openshift-cnv \
 	    -o jsonpath='{.metadata.annotations.kubevirt\.kubevirt\.io/jsonpatch}' \
 	    2>/dev/null) || true
 
 	if echo "$annotation" | grep -q "ClusterProfiler" ; then
-	log_message "${C_OK}ClusterProfiler feature gate is already enabled (OCP/CNV)${C_RST}"
+	log_message "${C_OK}ClusterProfiler feature gate is already enabled (OCP/Virtualization)${C_RST}"
 	    return 0
 	fi
 
@@ -1523,7 +1523,7 @@ profiler_prompt_and_stop() {
 	    fatal "Failed to dump profiling results"
     else
 	# region agent log
-	echo "{\"id\":\"log_dump_cmd\",\"timestamp\":$(date +%s%3N),\"location\":\"vmspawn:1266\",\"message\":\"profiler dump command\",\"data\":{\"target\":\"$PROFILE_TARGET\",\"cmd\":\"$PROFILER_BIN --cmd dump --l kubevirt.io=$PROFILE_TARGET --output-dir $output_dir\"},\"hypothesisId\":\"A\"}" >> /home/guoqingli/work/vmspawn/.cursor/debug.log
+	echo "{\"id\":\"log_dump_cmd\",\"timestamp\":$(date +%s%3N),\"location\":\"vstorm:1266\",\"message\":\"profiler dump command\",\"data\":{\"target\":\"$PROFILE_TARGET\",\"cmd\":\"$PROFILER_BIN --cmd dump --l kubevirt.io=$PROFILE_TARGET --output-dir $output_dir\"},\"hypothesisId\":\"A\"}" >> /home/guoqingli/work/vstorm/.cursor/debug.log
 	# endregion
 	"$PROFILER_BIN" --cmd dump --l "kubevirt.io=$PROFILE_TARGET" --output-dir "$output_dir" ||
 	    fatal "Failed to dump profiling results for $PROFILE_TARGET"

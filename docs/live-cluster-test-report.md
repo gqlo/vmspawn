@@ -49,7 +49,7 @@
 **Command:**
 
 ```bash
-./vmspawn --cores=4 --memory=8Gi --vms=3 --namespaces=2
+./vstorm --cores=4 --memory=8Gi --vms=3 --namespaces=2
 ```
 
 **Batch ID:** `e2c4ef` (re-run), previously `54a52e`
@@ -78,7 +78,7 @@
 **Command:**
 
 ```bash
-./vmspawn --datasource=fedora --vms=5 --namespaces=1
+./vstorm --datasource=fedora --vms=5 --namespaces=1
 ```
 
 **Batch ID:** `e12d11` (re-run), previously `1ed721`
@@ -102,7 +102,7 @@
 **Command:**
 
 ```bash
-./vmspawn --dv-url=http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow --vms=2 --namespaces=2
+./vstorm --dv-url=http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow --vms=2 --namespaces=2
 ```
 
 **Batch ID:** `f392c3` (re-run), previously `c9c0ac`
@@ -126,7 +126,7 @@
 **Command:**
 
 ```bash
-./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=5 --namespaces=2
+./vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=5 --namespaces=2
 ```
 
 **Batch ID:** `4bdda2` (re-run), previously `c71106`
@@ -152,7 +152,7 @@
 **Command:**
 
 ```bash
-./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+./vstorm --datasource=centos-stream9 --vms=5 --namespaces=1
 ```
 
 **Batch ID:** `ccd3f7` (re-run), previously `84afd3`
@@ -173,7 +173,7 @@
 - **Symptom:** `ssh` returns "no route to host" on port 22 for all 5 VMs, even after 2+ minutes of wait time.
 - **Guest agent:** `guestOSInfo: {}` (empty) -- the `qemu-guest-agent` is not running, confirming the guest did not fully configure itself.
 - **Root cause:** The `centos-stream9` golden image from `openshift-virtualization-os-images` either does not have `cloud-init` pre-installed, or does not have `sshd` enabled by default. Without cloud-init processing, the root password is never set and sshd is never configured for password authentication.
-- **Verdict:** vmspawn created and started all VMs correctly (5/5 Running). The failure is in the **guest image**, not in vmspawn. The centos-stream9 DataSource image requires cloud-init and sshd pre-configured for the default cloud-init to be effective.
+- **Verdict:** vstorm created and started all VMs correctly (5/5 Running). The failure is in the **guest image**, not in vstorm. The centos-stream9 DataSource image requires cloud-init and sshd pre-configured for the default cloud-init to be effective.
 
 ---
 
@@ -182,7 +182,7 @@
 **Command:**
 
 ```bash
-./vmspawn --storage-class=ocs-storagecluster-ceph-rbd --vms=5 --namespaces=2
+./vstorm --storage-class=ocs-storagecluster-ceph-rbd --vms=5 --namespaces=2
 ```
 
 **Batch ID:** `fbf6df` (re-run), previously `6e1dbd`
@@ -210,7 +210,7 @@
 **Command:**
 
 ```bash
-./vmspawn --no-snapshot --vms=1 --namespaces=1
+./vstorm --no-snapshot --vms=1 --namespaces=1
 ```
 
 **Batch ID:** `8d5b6c` (re-run), previously `ec19bf`
@@ -243,7 +243,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --containerdisk --vms=3 --namespaces=1
+./vstorm --containerdisk --vms=3 --namespaces=1
 ```
 
 ### Options verified -- Test 8
@@ -265,7 +265,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --storage-class=ocs-storagecluster-ceph-rbd --snapshot-class=ocs-storagecluster-rbdplugin-snapclass --vms=3 --namespaces=2
+./vstorm --storage-class=ocs-storagecluster-ceph-rbd --snapshot-class=ocs-storagecluster-rbdplugin-snapclass --vms=3 --namespaces=2
 ```
 
 ### Options verified -- Test 9
@@ -288,7 +288,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --vms-per-namespace=5 --namespaces=3 --wait
+./vstorm --vms-per-namespace=5 --namespaces=3 --wait
 ```
 
 ### Options verified -- Test 10
@@ -310,7 +310,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --containerdisk --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=3 --namespaces=2
+./vstorm --containerdisk --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=3 --namespaces=2
 ```
 
 ### Options verified -- Test 11
@@ -333,7 +333,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --stop --vms=3 --namespaces=1
+./vstorm --stop --vms=3 --namespaces=1
 ```
 
 ### Options verified -- Test 12
@@ -355,7 +355,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --cores=2 --memory=4Gi --request-cpu=500m --request-memory=2Gi --vms=3 --namespaces=1
+./vstorm --cores=2 --memory=4Gi --request-cpu=500m --request-memory=2Gi --vms=3 --namespaces=1
 ```
 
 ### Options verified -- Test 13
@@ -378,7 +378,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --basename=perf-vm --storage-size=50Gi --vms=3 --namespaces=1
+./vstorm --basename=perf-vm --storage-size=50Gi --vms=3 --namespaces=1
 ```
 
 ### Options verified -- Test 14
@@ -401,7 +401,7 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --profile --vms=10 --namespaces=2
+./vstorm --profile --vms=10 --namespaces=2
 ```
 
 ### Options verified -- Test 15
@@ -424,17 +424,17 @@ on a live cluster and fill in the "Options verified" tables with results.
 **Command:**
 
 ```bash
-./vmspawn --custom-templates=./templates --vms=3 --namespaces=2
+./vstorm --custom-templates=./templates --vms=3 --namespaces=2
 ```
 
 Alternate commands to test single-file and mixed paths:
 
 ```bash
 # Single custom VM template file (built-in used for Namespace, DV, snapshot, Secret)
-./vmspawn --custom-templates=/path/to/my-vm.yaml --vms=3 --namespaces=1
+./vstorm --custom-templates=/path/to/my-vm.yaml --vms=3 --namespaces=1
 
 # Mixed file and directory (colon-separated)
-./vmspawn --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=3 --namespaces=2
+./vstorm --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=3 --namespaces=2
 ```
 
 ### Options verified -- Test 16
@@ -473,11 +473,11 @@ Alternate commands to test single-file and mixed paths:
 To delete all test resources:
 
 ```bash
-./vmspawn --delete=e2c4ef
-./vmspawn --delete=e12d11
-./vmspawn --delete=f392c3
-./vmspawn --delete=4bdda2
-./vmspawn --delete=ccd3f7
-./vmspawn --delete=fbf6df
-./vmspawn --delete=8d5b6c
+./vstorm --delete=e2c4ef
+./vstorm --delete=e12d11
+./vstorm --delete=f392c3
+./vstorm --delete=4bdda2
+./vstorm --delete=ccd3f7
+./vstorm --delete=fbf6df
+./vstorm --delete=8d5b6c
 ```
