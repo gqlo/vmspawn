@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
 
-# Unit tests for vmspawn
+# Unit tests for vstorm
 # Run with: bats tests/
 
 load 'helpers'
 
-VMSPAWN="./vmspawn"
+VMSPAWN="./vstorm"
 
 setup_file() {
     setup_oc_mock

@@ -1,8 +1,8 @@
-# Bash tab completion for vmspawn
-# Source this file to enable: source tab-completion/vmspawn.bash
-# Or add to .bashrc: source /path/to/vmspawn/tab-completion/vmspawn.bash
+# Bash tab completion for vstorm
+# Source this file to enable: source tab-completion/vstorm.bash
+# Or add to .bashrc: source /path/to/vstorm/tab-completion/vstorm.bash
 
-_vmspawn() {
+_vstorm() {
 	local cur=${COMP_WORDS[COMP_CWORD]}
 	local opts=(
 		-n -q -y -h
@@ -27,4 +27,4 @@ _vmspawn() {
 	fi
 }
 
-complete -F _vmspawn vmspawn
+complete -F _vstorm vstorm

@@ -2,7 +2,7 @@
 
 ## Design
 
-- Define color constants near the top of `vmspawn` (after `fatal()`, around line 73).
+- Define color constants near the top of `vstorm` (after `fatal()`, around line 73).
 - Only enable colors when stdout is a terminal (`[[ -t 1 ]]`), so colors auto-disable in pipes, redirects, and bats tests -- **no test changes needed**.
 - No changes to `log_message()` -- colors flow through `tee` into both stdout and the log file automatically.
 
@@ -17,7 +17,7 @@
 
 ## Changes
 
-### 1. Color constants (~line 73 in `vmspawn`)
+### 1. Color constants (~line 73 in `vstorm`)
 
 ```bash
 if [[ -t 1 ]] ; then

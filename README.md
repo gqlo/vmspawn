@@ -1,17 +1,17 @@
-# vmspawn
+# vstorm
 
-Scale up hundreds of VMs across multiple namespaces with a single command on
+Spin up hundreds of VMs across multiple namespaces with a single command on
 OpenShift Virtualization -- no YAML to write. It auto-detects
 storage access modes, clone strategy, and snapshot support from the cluster, so
 it works out of the box with OCS/Ceph, LVMS, NFS, or any block-capable storage
 class. No storage class at all? Use `--containerdisk` to boot VMs directly from
 a container image with no PVC required. Each run gets a unique batch ID for easy inspection and cleanup.
-Cloud-init injection lets you push custom workloads (e.g. stress-ng) at boot.
+Cloud-init injection runs custom workloads (e.g. stress-ng) at VM boot.
 Integrated cluster profiling (`--profile`) captures Go runtime-level
 performance data -- CPU, heap, mutex, and other pprof profiles -- from
 the KubeVirt control plane during batch runs.
 Backed by 193 unit tests, live cluster validation, and CI on every push
-(as of Feb 2026).
+(as of March 2026).
 
 ---
 
@@ -43,64 +43,64 @@ Backed by 193 unit tests, live cluster validation, and CI on every push
 ### Clone and setup
 
 ```bash
-git clone https://github.com/gqlo/vmspawn.git
-cd vmspawn
+git clone https://github.com/gqlo/vstorm.git
+cd vstorm
 echo "export PATH=\"$(pwd):\$PATH\"" >> ~/.bashrc
-echo "source $(pwd)/tab-completion/vmspawn.bash" >> ~/.bashrc
+echo "source $(pwd)/tab-completion/vstorm.bash" >> ~/.bashrc
 source ~/.bashrc
 ```
 
-The first `echo` adds the vmspawn directory to your `PATH` so you can run `vmspawn` from anywhere. The second appends the tab completion script. Bash tab completion for options is available (e.g. `vmspawn --de` + Tab completes to `--delete` or `--delete-all`). Start a new shell or run `source ~/.bashrc` to activate.
+The first `echo` adds the vstorm directory to your `PATH` so you can run `vstorm` from anywhere. The second appends the tab completion script. Bash tab completion for options is available (e.g. `vstorm --de` + Tab completes to `--delete` or `--delete-all`). Start a new shell or run `source ~/.bashrc` to activate.
 
 ### Examples
 
 ```bash
 # Create 10 RHEL9 VMs (4 cores, 8Gi memory) using default OCS storage class
 # Defaults: datasource=rhel9, snapshot mode=on, access mode=auto-detect, cloud-init=auto
-vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
+vstorm --cores=4 --memory=8Gi --vms=10 --namespaces=2
 
 # Use a different DataSource (e.g. Fedora) with default OCS storage
 # VM basename auto-derived: "fedora", base DV: "fedora-base", secret: "fedora-cloudinit"
-vmspawn --datasource=fedora --vms=5 --namespaces=1
+vstorm --datasource=fedora --vms=5 --namespaces=1
 
 # Import a custom QCOW2 instead of using a DataSource (default OCS storage)
 # No cloud-init auto-injected in URL mode; VM basename: "vm", base DV: "vm-base"
-vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
+vstorm --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
 # No storage class available? Boot Fedora VMs directly from a container image
 # No PVC or storage configuration needed; cloud-init auto-injected (root password: password)
-vmspawn --containerdisk --vms=5 --namespaces=1
+vstorm --containerdisk --vms=5 --namespaces=1
 
 # Create VMs with a cloud-init workload injected at boot (default OCS storage)
 # Custom cloud-init replaces the default auto-injected one
-vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 
 # Use a different DataSource with default OCS storage (root password: password)
 # VM basename auto-derived: "centos-stream9"
-vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+vstorm --datasource=centos-stream9 --vms=5 --namespaces=1
 
 # Use a non-OCS storage class (snapshots auto-disabled because no --snapshot-class)
-vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
+vstorm --storage-class=my-nfs-sc --vms=10 --namespaces=2
 
 # Use a custom storage class with snapshots (provide both classes to keep snapshots on)
-vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+vstorm --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 
 # Explicitly disable snapshots on default OCS storage (VMs clone directly from DataSource)
-vmspawn --no-snapshot --vms=10 --namespaces=2
+vstorm --no-snapshot --vms=10 --namespaces=2
 
 # Dry-run to preview generated YAML without applying
-vmspawn -n --vms=10 --namespaces=2
+vstorm -n --vms=10 --namespaces=2
 
 # Delete all resources for a batch (prompts for confirmation)
-vmspawn --delete=a3f7b2
+vstorm --delete=a3f7b2
 
-# Delete ALL vmspawn batches on the cluster
-vmspawn --delete-all
+# Delete ALL vstorm batches on the cluster
+vstorm --delete-all
 ```
 
 ### Defaults
 
-Unless overridden, vmspawn uses these built-in defaults:
+Unless overridden, vstorm uses these built-in defaults:
 
 | Setting | Default | Notes |
 |---|---|---|
@@ -132,7 +132,7 @@ The tool performs these steps in order:
 
 ### Clone modes
 
-vmspawn has four disk modes, auto-selected based on your options:
+vstorm has four disk modes, auto-selected based on your options:
 
 | Mode | Flow | When used |
 |---|---|---|
@@ -155,7 +155,7 @@ Mode auto-detection:
 
 ### Storage considerations
 
-vmspawn auto-detects most storage settings from the cluster. Here are the common pitfalls:
+vstorm auto-detects most storage settings from the cluster. Here are the common pitfalls:
 
 | Symptom | Cause | Fix |
 |---|---|---|
@@ -206,23 +206,23 @@ A manifest file (`logs/batch-{BATCH_ID}.manifest`) is written after each run wit
 
 ### Deleting batches
 
-Use `--delete` to remove all resources for a specific batch, or `--delete-all` to clean up every vmspawn batch on the cluster:
+Use `--delete` to remove all resources for a specific batch, or `--delete-all` to clean up every vstorm batch on the cluster:
 
 ```bash
 # Preview what would be deleted
-vmspawn -n --delete=a3f7b2
+vstorm -n --delete=a3f7b2
 
 # Delete all resources for a batch (prompts for confirmation)
-vmspawn --delete=a3f7b2
+vstorm --delete=a3f7b2
 
 # Skip the confirmation prompt (for scripting)
-vmspawn --delete=a3f7b2 --yes
+vstorm --delete=a3f7b2 --yes
 
-# Discover and delete ALL vmspawn batches on the cluster
-vmspawn --delete-all
+# Discover and delete ALL vstorm batches on the cluster
+vstorm --delete-all
 
 # Delete all batches without prompting
-vmspawn --delete-all -y
+vstorm --delete-all -y
 ```
 
 This deletes the batch's namespaces, which cascades and removes all VMs, DataVolumes, VolumeSnapshots, and PVCs inside them. The batch manifest file is also cleaned up.
@@ -236,7 +236,7 @@ Safety features:
 ## Options
 
 ```
-Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
+Usage: vstorm [options] [number_of_vms [number_of_namespaces]]
 
     -h                          Show help
     -n                          Dry-run (show YAML without applying)
@@ -279,7 +279,7 @@ Usage: vmspawn [options] [number_of_vms [number_of_namespaces]]
                                 Falls back to built-in templates/ for any missing roles
 
     --delete=BATCH_ID           Delete all resources for the given batch
-    --delete-all                Delete ALL vmspawn batches on the cluster
+    --delete-all                Delete ALL vstorm batches on the cluster
     -y / --yes                  Skip confirmation prompt for delete operations
 
     --profile[=COMPONENT]       Profile KubeVirt control plane (CPU + memory + more)
@@ -308,10 +308,10 @@ When using a DataSource (the default) or `--containerdisk`, a built-in cloud-ini
 
 ```bash
 # DataSource VMs reachable via: ssh root@<vm-ip>  (password: password)
-vmspawn --vms=10 --namespaces=2
+vstorm --vms=10 --namespaces=2
 
 # Container disk VMs work the same way -- no storage class required
-vmspawn --containerdisk --vms=5 --namespaces=1
+vstorm --containerdisk --vms=5 --namespaces=1
 ```
 
 To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`), no cloud-init is injected unless explicitly requested.
@@ -321,33 +321,33 @@ To override, pass your own file with `--cloudinit=FILE`. In URL mode (`--dv-url`
 Use `--cloudinit=FILE` to inject any cloud-init user-data file:
 
 ```bash
-vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
 The `cloudinit-stress-workload.yaml` config installs `stress-ng` and runs a bursty workload simulator as a systemd service. See [docs/stress-workload.md](docs/stress-workload.md) for details.
 
 ## Custom templates
 
-Use `--custom-templates=PATH` to point vmspawn at your own YAML template files or directories. Templates are discovered by **content** (`kind:` field), not by filename, so you can name files however you like.
+Use `--custom-templates=PATH` to point vstorm at your own YAML template files or directories. Templates are discovered by **content** (`kind:` field), not by filename, so you can name files however you like.
 
 ```bash
 # Use a custom VM template (built-in templates used for Namespace, DV, etc.)
-vmspawn --custom-templates=/path/to/my-vm.yaml --vms=5
+vstorm --custom-templates=/path/to/my-vm.yaml --vms=5
 
 # Use a whole directory of custom templates
-vmspawn --custom-templates=/path/to/my-templates/ --vms=10
+vstorm --custom-templates=/path/to/my-templates/ --vms=10
 
 # Mix files and directories (colon-separated)
-vmspawn --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=10
+vstorm --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=10
 ```
 
-Partial custom is supported: provide only the templates you want to override and vmspawn falls back to the built-in `templates/` directory for any missing roles. For example, providing just a VirtualMachine template file is enough -- Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret templates are sourced from the built-in set.
+Partial custom is supported: provide only the templates you want to override and vstorm falls back to the built-in `templates/` directory for any missing roles. For example, providing just a VirtualMachine template file is enough -- Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret templates are sourced from the built-in set.
 
-When a custom template uses literal values instead of `{PLACEHOLDER}` syntax (e.g. `batch-id: "abc123"`), vmspawn adopts those values unless the corresponding CLI option is explicitly passed.
+When a custom template uses literal values instead of `{PLACEHOLDER}` syntax (e.g. `batch-id: "abc123"`), vstorm adopts those values unless the corresponding CLI option is explicitly passed.
 
 ## Cluster profiling
 
-vmspawn can profile the KubeVirt control plane during VM creation using the
+vstorm can profile the KubeVirt control plane during VM creation using the
 upstream
 [cluster-profiler](https://github.com/kubevirt/kubevirt/blob/main/tools/cluster-profiler/cluster-profiler.go)
 tool. The `--profile` flag wraps the normal VM creation flow with profiler
@@ -359,10 +359,10 @@ profiles are captured as instantaneous snapshots at dump time.
 
 ```bash
 # Profile all control-plane components during a 20-VM batch creation
-vmspawn --profile --vms=20 --namespaces=4
+vstorm --profile --vms=20 --namespaces=4
 
 # Profile only virt-controller during a 50-VM stress workload run
-vmspawn --profile=virt-controller --cloudinit=helpers/cloudinit-stress-workload.yaml \
+vstorm --profile=virt-controller --cloudinit=helpers/cloudinit-stress-workload.yaml \
   --vms=50 --namespaces=10
 ```
 
@@ -398,7 +398,7 @@ The hook runs only the checks relevant to the files you are committing:
 
 | Staged files | Check |
 |---|---|
-| `vmspawn`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
+| `vstorm`, `templates/*`, `helpers/*`, `tests/*.bats` | `bats tests/` |
 | `helpers/*.yaml` | `yamllint` on changed files |
 | `*.md` | `markdownlint-cli2` on changed files |
 
@@ -407,9 +407,9 @@ If any check fails, the commit is aborted. Fix the issues and commit again. In e
 ### Project layout
 
 ```
-vmspawn              # main script
+vstorm              # main script
 tab-completion/
-  vmspawn.bash       # Bash tab completion (source to enable)
+  vstorm.bash       # Bash tab completion (source to enable)
 docs/
   logging.md         # logging, manifests, and logs/ directory structure
   stress-workload.md # stress-ng workload simulator documentation
@@ -434,6 +434,6 @@ templates/
   vm-containerdisk.yaml # VirtualMachine template (container disk, no storage class needed)
   cloudinit-secret.yaml # cloud-init userdata Secret template
 tests/
-  vmspawn.bats       # unit tests (run with: bats tests/)
+  vstorm.bats       # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
 ```

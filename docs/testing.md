@@ -1,6 +1,6 @@
 # Testing
 
-vmspawn uses [Bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System) for unit tests and GitHub Actions for CI.
+vstorm uses [Bats](https://github.com/bats-core/bats-core) (Bash Automated Testing System) for unit tests and GitHub Actions for CI.
 
 ## How the tests work
 
@@ -8,7 +8,7 @@ All tests use **dry-run mode** (`-n` or `-q`) unless they need live-mode behavio
 
 Each test:
 
-1. Runs `vmspawn` with a fixed `--batch-id` and specific flags
+1. Runs `vstorm` with a fixed `--batch-id` and specific flags
 2. Captures the full stdout/stderr via Bats `run`
 3. Asserts on the generated YAML: resource kinds, names, namespaces, labels, template fields, and counts
 
@@ -21,7 +21,7 @@ This validates that the correct templates are selected, variables are substitute
 bats tests/
 
 # Run a single test by name
-bats tests/vmspawn.bats --filter "QS: default DataSource"
+bats tests/vstorm.bats --filter "QS: default DataSource"
 ```
 
 Bats is available via most package managers (`apt install bats`, `brew install bats-core`).
@@ -286,7 +286,7 @@ Live-mode tests using a mock `oc` that simulates WFFC storage combined with othe
 
 ## Three clone paths
 
-vmspawn uses three different clone strategies depending on the mode:
+vstorm uses three different clone strategies depending on the mode:
 
 ```text
 1. Snapshot mode (default for OCS storage):

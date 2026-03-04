@@ -1,13 +1,13 @@
-# Shared helpers for vmspawn bats tests
+# Shared helpers for vstorm bats tests
 
 # Set up mock oc for the entire test file. Call from setup_file.
 # Ensures tests never run real "oc" commands against a cluster.
 setup_oc_mock() {
-    if [[ -z "${_VMSPAWN_MOCK_OC_DIR:-}" ]]; then
-	_VMSPAWN_MOCK_OC_DIR=$(mktemp -d)
-	_create_mock_oc "$_VMSPAWN_MOCK_OC_DIR"
-	export PATH="$_VMSPAWN_MOCK_OC_DIR:$PATH"
-	export _VMSPAWN_MOCK_OC_DIR
+    if [[ -z "${_VSTORM_MOCK_OC_DIR:-}" ]]; then
+	_VSTORM_MOCK_OC_DIR=$(mktemp -d)
+	_create_mock_oc "$_VSTORM_MOCK_OC_DIR"
+	export PATH="$_VSTORM_MOCK_OC_DIR:$PATH"
+	export _VSTORM_MOCK_OC_DIR
     fi
 }
 

@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
 
-# Unit tests for vmspawn
+# Unit tests for vstorm
 # Run with: bats tests/
 
 load 'helpers'
 
-VMSPAWN="./vmspawn"
+VMSPAWN="./vstorm"
 
 setup_file() {
     setup_oc_mock
@@ -126,7 +126,7 @@ setup_file() {
   run bash "$VMSPAWN" -n --delete-all
   [ "$status" -eq 0 ]
   [[ "$output" == *"dry-run"* ]]
-  [[ "$output" == *"all vmspawn batches"* ]]
+  [[ "$output" == *"all vstorm batches"* ]]
 }
 
 @test "delete-all: dry-run with --yes accepted" {

@@ -1,6 +1,6 @@
 # Cluster Profiler Integration
 
-vmspawn can profile the KubeVirt control plane during VM creation using the upstream
+vstorm can profile the KubeVirt control plane during VM creation using the upstream
 [cluster-profiler](https://github.com/kubevirt/kubevirt/blob/main/tools/cluster-profiler/cluster-profiler.go) tool.
 This captures Go pprof data -- including CPU, memory (heap/allocs), goroutine, blocking, and mutex profiles --
 from virt-api, virt-controller, virt-handler, and virt-operator pods,
@@ -8,30 +8,30 @@ helping identify performance bottlenecks caused by batch VM operations.
 
 ## Prerequisites
 
-- The `ClusterProfiler` feature gate must be enabled on the KubeVirt CR (vmspawn can enable it automatically with user confirmation)
+- The `ClusterProfiler` feature gate must be enabled on the KubeVirt CR (vstorm can enable it automatically with user confirmation)
 - `curl` or `wget` is required if the `cluster-profiler` binary is not already on your `$PATH` (for automatic download)
 
 ## Usage
 
 ```bash
 # Profile all control-plane components during a 20-VM batch creation
-./vmspawn --profile --vms=20 --namespaces=4
+./vstorm --profile --vms=20 --namespaces=4
 
 # Profile a specific component only
-./vmspawn --profile=virt-controller --vms=20 --namespaces=4
+./vstorm --profile=virt-controller --vms=20 --namespaces=4
 
 # Combine with other options as usual
-./vmspawn --profile --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=50 --namespaces=10
+./vstorm --profile --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=50 --namespaces=10
 
 # Dry-run to see what would happen
-./vmspawn -n --profile --vms=10
+./vstorm -n --profile --vms=10
 ```
 
 The `--profile` flag accepts an optional component name to narrow the dump to a single component. If omitted, all control-plane components are dumped. Valid values for targeted profiling: `virt-api`, `virt-controller`, `virt-handler`, `virt-operator`.
 
 ## How it works
 
-When `--profile` is specified, vmspawn wraps the normal VM creation flow with profiler lifecycle management:
+When `--profile` is specified, vstorm wraps the normal VM creation flow with profiler lifecycle management:
 
 1. **Binary resolution** -- find or download the `cluster-profiler` binary (see [Binary acquisition](#binary-acquisition) below)
 2. **Feature gate check** -- verify `ClusterProfiler` is enabled; if not, prompt to enable it
@@ -42,7 +42,7 @@ When `--profile` is specified, vmspawn wraps the normal VM creation flow with pr
 
 ```mermaid
 flowchart TD
-    Start["vmspawn --profile ..."] --> EnsureBin["Resolve cluster-profiler binary"]
+    Start["vstorm --profile ..."] --> EnsureBin["Resolve cluster-profiler binary"]
     EnsureBin --> EnsureFG["Check ClusterProfiler feature gate"]
     EnsureFG --> ProfileStart["cluster-profiler --cmd start"]
     ProfileStart --> MainFlow["VM creation flow"]
@@ -52,7 +52,7 @@ flowchart TD
     ProfileDump --> Results["Results saved to logs/profile-BATCH_ID/"]
 ```
 
-After VM creation completes, vmspawn displays:
+After VM creation completes, vstorm displays:
 
 ```
 === Cluster profiling is in progress ===
@@ -65,23 +65,23 @@ This lets you keep the profiler running while VMs boot and settle, then stop whe
 
 ## Binary acquisition
 
-vmspawn resolves the `cluster-profiler` binary in this order:
+vstorm resolves the `cluster-profiler` binary in this order:
 
 | Priority | Source | When |
 |---|---|---|
 | 1 | `$PATH` | Binary already installed (e.g., built manually from kubevirt source) |
-| 2 | `~/.vmspawn/bin/cluster-profiler` | Previously cached by vmspawn |
-| 3 | GitHub Release download | First-time use; downloads pre-built binary from vmspawn releases |
+| 2 | `~/.vstorm/bin/cluster-profiler` | Previously cached by vstorm |
+| 3 | GitHub Release download | First-time use; downloads pre-built binary from vstorm releases |
 
 ### Automatic download
 
-On first use, vmspawn downloads a pre-built Linux binary from the
-[vmspawn GitHub Releases](https://github.com/gqlo/vmspawn/releases)
+On first use, vstorm downloads a pre-built Linux binary from the
+[vstorm GitHub Releases](https://github.com/gqlo/vstorm/releases)
 page using `curl` or `wget`, and caches it at
-`~/.vmspawn/bin/cluster-profiler` for future runs.
+`~/.vstorm/bin/cluster-profiler` for future runs.
 
 The pre-built binary is a static Linux/amd64 binary compiled from the
-upstream KubeVirt source. It is attached to vmspawn releases as the
+upstream KubeVirt source. It is attached to vstorm releases as the
 `cluster-profiler-linux-amd64` asset.
 
 ### Manual installation
@@ -97,7 +97,7 @@ sudo mv cluster-profiler /usr/local/bin/
 
 ## Feature gate management
 
-The `ClusterProfiler` feature gate must be active for profiling to work. On OCP/CNV, the feature gate is enabled via a **jsonpatch annotation** on the HyperConverged CR (not a direct patch on the KubeVirt CR, which would be overwritten by the HCO operator).
+The `ClusterProfiler` feature gate must be active for profiling to work. On OCP/Virtualization, the feature gate is enabled via a **jsonpatch annotation** on the HyperConverged CR (not a direct patch on the KubeVirt CR, which would be overwritten by the HCO operator).
 
 ### Enablement command
 
@@ -117,9 +117,9 @@ oc patch hco -n openshift-cnv kubevirt-hyperconverged --type=merge -p \
   '{"metadata":{"annotations":{"kubevirt.kubevirt.io/jsonpatch":"[{\"op\":\"add\",\"path\":\"/spec/configuration\",\"value\":{\"developerConfiguration\":{\"featureGates\":[\"ClusterProfiler\"]},\"apiConfiguration\":{\"restClient\":{\"rateLimiter\":{\"tokenBucketRateLimiter\":{\"burst\":400,\"qps\":200}}}},\"controllerConfiguration\":{\"restClient\":{\"rateLimiter\":{\"tokenBucketRateLimiter\":{\"burst\":400,\"qps\":200}}}},\"handlerConfiguration\":{\"restClient\":{\"rateLimiter\":{\"tokenBucketRateLimiter\":{\"burst\":100,\"qps\":50}}}},\"webhookConfiguration\":{\"restClient\":{\"rateLimiter\":{\"tokenBucketRateLimiter\":{\"burst\":400,\"qps\":200}}}}}}]"}}}'
 ```
 
-### vmspawn behavior
+### vstorm behavior
 
-vmspawn handles this automatically:
+vstorm handles this automatically:
 
 1. **Check** -- read the current `kubevirt.kubevirt.io/jsonpatch` annotation on the HCO CR
 2. **Detect** -- determine if `ClusterProfiler` is already in the feature gates list
@@ -133,7 +133,7 @@ Enable it now? [y/N]
 
 | Environment | Resource | Namespace |
 |---|---|---|
-| OCP with CNV | `HyperConverged/kubevirt-hyperconverged` (via annotation) | `openshift-cnv` |
+| OCP with Virtualization | `HyperConverged/kubevirt-hyperconverged` (via annotation) | `openshift-cnv` |
 | Upstream KubeVirt | `KubeVirt/kubevirt` (direct patch) | `kubevirt` |
 
 ## Output
@@ -213,7 +213,7 @@ go tool pprof -diff_base=logs/profile-a3f7b2/virt-controller-546cb8f97f-bg4fp/he
 
 ## Dry-run behavior
 
-With `-n --profile`, vmspawn prints the profiling steps without executing them:
+With `-n --profile`, vstorm prints the profiling steps without executing them:
 
 ```
 (dry-run) Would ensure cluster-profiler binary is available
@@ -239,7 +239,7 @@ With `-n --profile`, vmspawn prints the profiling steps without executing them:
 
 ## Label selectors
 
-When using `--profile=COMPONENT`, vmspawn passes a label selector to the dump command to limit results to that component's pods. The available selectors are:
+When using `--profile=COMPONENT`, vstorm passes a label selector to the dump command to limit results to that component's pods. The available selectors are:
 
 | Component | Label selector |
 |---|---|

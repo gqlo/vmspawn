@@ -1,5 +1,5 @@
 ---
-description: Bats test patterns and naming conventions for vmspawn tests
+description: Bats test patterns and naming conventions for vstorm tests
 globs: tests/*.bats
 alwaysApply: false
 ---
@@ -42,7 +42,7 @@ Use `@test "PREFIX: descriptive title"` where PREFIX is a category code:
 - Use `[[ "$output" == *"..."* ]]` for substring matching
 - Use `grep -c` to count occurrences: `vm_count=$(echo "$output" | grep -c "pattern")`
 - Mock `oc` by creating a script in a temp dir and prepending it to `PATH`
-- `$VMSPAWN` is defined at the top of the file as `./vmspawn`
+- `$VMSPAWN` is defined at the top of the file as `./vstorm`
 
 ## File Organization
 

@@ -21,7 +21,7 @@
       }
     ]
   },
-  "description": "some useful metrics for Descheduler with CNV",
+  "description": "descheduler dashboard",
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
@@ -2407,7 +2407,7 @@
   },
   "timepicker": {},
   "timezone": "",
-  "title": "descheduler with cnv",
+  "title": "descheduler with Virtualization",
   "uid": "tzZtO3mNk-desched",
   "version": 14,
   "weekStart": ""

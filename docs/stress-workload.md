@@ -33,7 +33,7 @@ This creates unpredictable, bursty resource consumption that is more realistic t
 Inject the workload into VMs at boot using `--cloudinit`:
 
 ```bash
-./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+./vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 ```
 
 This clones VMs from the default `rhel9` DataSource and injects the stress workload at boot. The cloud-init config ([`helpers/cloudinit-stress-workload.yaml`](../helpers/cloudinit-stress-workload.yaml)) will:

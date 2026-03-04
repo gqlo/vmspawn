@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
 
-# Unit tests for vmspawn
+# Unit tests for vstorm
 # Run with: bats tests/
 
 load 'helpers'
 
-VMSPAWN="./vmspawn"
+VMSPAWN="./vstorm"
 
 setup_file() {
     setup_oc_mock
@@ -16,7 +16,7 @@ setup_file() {
 # ===============================================================
 
 # ---------------------------------------------------------------
-# QS-1: ./vmspawn --cores=4 --memory=8Gi --vms=10 --namespaces=2
+# QS-1: ./vstorm --cores=4 --memory=8Gi --vms=10 --namespaces=2
 #   Default DataSource (rhel9), 10 VMs with custom CPU/memory
 # ---------------------------------------------------------------
 @test "QS: default DataSource, 4 cores 8Gi, 10 VMs across 2 namespaces" {
@@ -81,7 +81,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-2: ./vmspawn --datasource=fedora --vms=5 --namespaces=1
+# QS-2: ./vstorm --datasource=fedora --vms=5 --namespaces=1
 #   Different DataSource (fedora)
 # ---------------------------------------------------------------
 @test "QS: fedora DataSource, 5 VMs in 1 namespace" {
@@ -115,7 +115,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-3: ./vmspawn --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
+# QS-3: ./vstorm --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 #   URL import mode
 # ---------------------------------------------------------------
 @test "QS: URL import, 10 VMs across 2 namespaces" {
@@ -157,7 +157,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-4: ./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
+# QS-4: ./vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=10 --namespaces=2
 #   Custom cloud-init workload
 # ---------------------------------------------------------------
 @test "QS: custom cloud-init stress workload, 10 VMs across 2 namespaces" {
@@ -193,7 +193,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-5: ./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1
+# QS-5: ./vstorm --datasource=centos-stream9 --vms=5 --namespaces=1
 #   Different DataSource with default cloud-init auto-applied
 # ---------------------------------------------------------------
 @test "QS: centos-stream9 DataSource with default cloud-init" {
@@ -224,7 +224,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-6: ./vmspawn --storage-class=my-nfs-sc --vms=10 --namespaces=2
+# QS-6: ./vstorm --storage-class=my-nfs-sc --vms=10 --namespaces=2
 #   Non-OCS storage class (snapshots auto-disabled)
 # ---------------------------------------------------------------
 @test "QS: non-OCS storage class auto-disables snapshots, 10 VMs across 2 namespaces" {
@@ -263,7 +263,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-7: ./vmspawn --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
+# QS-7: ./vstorm --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 #   Custom storage + snapshot class pair (snapshots enabled)
 # ---------------------------------------------------------------
 @test "QS: custom storage and snapshot class pair, 10 VMs across 2 namespaces" {
@@ -294,7 +294,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-8: ./vmspawn --no-snapshot --vms=10 --namespaces=2
+# QS-8: ./vstorm --no-snapshot --vms=10 --namespaces=2
 #   Explicit no-snapshot mode
 # ---------------------------------------------------------------
 @test "QS: explicit no-snapshot, 10 VMs across 2 namespaces" {
@@ -327,7 +327,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-9: ./vmspawn -n --vms=10 --namespaces=2
+# QS-9: ./vstorm -n --vms=10 --namespaces=2
 #   Dry-run mode (same as QS-1 but verifying dry-run behavior)
 # ---------------------------------------------------------------
 @test "QS: dry-run does not emit oc apply commands" {
@@ -441,7 +441,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-10: ./vmspawn --delete=a3f7b2
+# QS-10: ./vstorm --delete=a3f7b2
 #   Delete batch
 # ---------------------------------------------------------------
 @test "QS: delete batch dry-run shows correct oc delete command" {

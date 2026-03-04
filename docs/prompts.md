@@ -6,7 +6,7 @@ Reusable prompts for Cursor agent tasks.
 
 ## Live Cluster Test Suite
 
-Run the vmspawn live cluster test suite (7 tests) against the connected
+Run the vstorm live cluster test suite (7 tests) against the connected
 OpenShift cluster and update `docs/live-cluster-test-report.md` with the
 results.
 
@@ -18,13 +18,13 @@ and snapshot classes (`oc get volumesnapshotclass -o name`).
 
 **Tests to run in order:**
 
-1. `./vmspawn --cores=4 --memory=8Gi --vms=3 --namespaces=2`
-2. `./vmspawn --datasource=fedora --vms=5 --namespaces=1`
-3. `./vmspawn --dv-url=http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow --vms=2 --namespaces=2`
-4. `./vmspawn --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=5 --namespaces=2`
-5. `./vmspawn --datasource=centos-stream9 --vms=5 --namespaces=1`
-6. `./vmspawn --storage-class=ocs-storagecluster-ceph-rbd --vms=5 --namespaces=2`
-7. `./vmspawn --no-snapshot --vms=1 --namespaces=1`
+1. `./vstorm --cores=4 --memory=8Gi --vms=3 --namespaces=2`
+2. `./vstorm --datasource=fedora --vms=5 --namespaces=1`
+3. `./vstorm --dv-url=http://d21-h25-000-r650.rdu2.scalelab.redhat.com:8000/rhel9-cloud-init.qcow --vms=2 --namespaces=2`
+4. `./vstorm --cloudinit=helpers/cloudinit-stress-workload.yaml --vms=5 --namespaces=2`
+5. `./vstorm --datasource=centos-stream9 --vms=5 --namespaces=1`
+6. `./vstorm --storage-class=ocs-storagecluster-ceph-rbd --vms=5 --namespaces=2`
+7. `./vstorm --no-snapshot --vms=1 --namespaces=1`
 
 **After each test:**
 
