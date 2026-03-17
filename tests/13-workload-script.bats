@@ -6,6 +6,23 @@ load 'helpers'
 
 YAML="workload/cloudinit-stress-ng-workload.yaml"
 
+# The embedded script installs stress-ng when missing, then prints startup.
+# CI/minimal runners often have no stress-ng and no working package install;
+# prepend a no-op stress-ng so runtime tests see the banner and branch lines.
+setup_file() {
+    _WL_MOCK_STRESS_BIN=$(mktemp -d)
+    cat > "$_WL_MOCK_STRESS_BIN/stress-ng" << 'MOCKEOF'
+#!/bin/bash
+exit 0
+MOCKEOF
+    chmod +x "$_WL_MOCK_STRESS_BIN/stress-ng"
+    export PATH="$_WL_MOCK_STRESS_BIN:$PATH"
+}
+
+teardown_file() {
+    [[ -n "${_WL_MOCK_STRESS_BIN:-}" ]] && rm -rf "$_WL_MOCK_STRESS_BIN"
+}
+
 # Extract the first write_files content block (the script) from the YAML.
 # Output: script with leading 6-space indent stripped, to a temp file; echo path.
 # Caller must not delete the file if they need it; we use it in the same test.
