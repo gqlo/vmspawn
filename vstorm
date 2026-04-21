@@ -1095,7 +1095,7 @@ create_virtualmachines() {
     # Auto-apply default cloud-init when using DataSource or container disk
     # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
     if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
-	CLOUDINIT_FILE="$(dirname "$0")/helpers/cloudinit-default.yaml"
+	CLOUDINIT_FILE="$(dirname "$0")/workload/cloudinit-default.yaml"
 	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
 	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
 	fi

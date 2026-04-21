@@ -17,10 +17,10 @@ Backed by 193 unit tests, live cluster validation, and CI on every push
 
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
-- [Options](#options)
 - [Tab completion](#clone-and-setup)
 - [Cloud-init](#cloud-init)
 - [Cluster profiling](#cluster-profiling)
+- [Options](#options)
 - [How it works](#how-it-works)
 - [Development](#development)
 - **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md)
@@ -78,82 +78,6 @@ vstorm --delete=a3f7b2
 # 8. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
 ```
-
-### Defaults
-
-Unless overridden, vstorm uses these built-in defaults (relevant to the [examples](#examples) above):
-
-| Setting | Default | Notes |
-|---|---|---|
-| CPU cores | `1` | Override with `--cores` (e.g. example 2) |
-| Memory | `1Gi` | Override with `--memory` (e.g. example 2) |
-| Firmware | `efi` | `efi` → OVMF with **`secureBoot: false`**; use `--firmware=bios` for legacy BIOS boot |
-| VMs | `1` | Override with `--vms` |
-| Namespaces | `1` | Override with `--namespaces` |
-| Storage class | `ocs-storagecluster-ceph-rbd-virtualization` | OCS; override with `--storage-class` (example 5) |
-| Storage size | `32Gi` | Per-VM disk size |
-| Disk source | URL import (RHEL9 UEFI QCOW2) | Override with `--dv-url` (example 3) or `--containerdisk` (example 1) |
-| Snapshot mode | **enabled** | Auto-disabled when you use `--storage-class` without `--snapshot-class` (example 5) |
-| Container disk | off | Enable with `--containerdisk` (example 1); image `quay.io/containerdisks/fedora:latest` |
-| Cloud-init | Not auto-injected (URL mode) | Pass `--cloudinit` (example 4); root password `password` |
-
-## Options
-
-```
-Usage: vstorm [options] [number_of_vms [number_of_namespaces]]
-
-    -h                          Show help
-    -n                          Dry-run (show YAML without applying)
-    -q                          Quiet mode (show only log messages, no YAML)
-
-    --cores=N                   CPU cores visible to the guest VM (default: 1)
-    --memory=N                  Memory visible to the guest VM (default: 1Gi)
-    --firmware=MODE             Guest boot firmware: bios or efi (default: efi; efi uses secureBoot: false)
-    --request-cpu=N             Kubernetes CPU request for scheduling (default: same as --cores)
-    --request-memory=N          Kubernetes memory request for scheduling (default: same as --memory)
-
-    --vms=N                     Total number of VMs (default: 1)
-    --namespaces=N              Number of namespaces (default: 1)
-    --vms-per-namespace=N       VMs per namespace (overrides --vms; takes precedence)
-
-    --storage-class=class       Storage class name (auto-disables snapshots
-                                unless --snapshot-class is also provided)
-    --storage-size=N            Disk size (default: 32Gi; must be >= source image)
-    --access-mode=MODE          PVC access mode (auto-detected from StorageProfile if not set).
-                                Must be one of: ReadWriteOnce, ReadWriteMany, ReadOnlyMany.
-                                Example: --access-mode=ReadWriteOnce
-
-    --datasource=NAME           Clone from OCP DataSource (overrides default URL)
-    --dv-url=URL                Import disk from URL (default: RHEL9 UEFI QCOW2)
-    --containerdisk[=IMAGE]     Boot VMs from a container image -- no storage class needed
-                                (default: quay.io/containerdisks/fedora:latest)
-    --snapshot-class=class      Snapshot class name (turns snapshot mode on)
-    --no-snapshot               Clone VMs directly (no VolumeSnapshot); default snapshot on for OCS, off when custom storage class without snapshot-class
-
-    --run-strategy=strategy     Run strategy: Always, Halted, Manual, or RerunOnFailure (default: Always)
-    --wait[=true|false]         Wait for all VMs to reach Running; value: true/false, 1/0, yes/no, on/off (default: false)
-    --create-existing-vm        Re-apply all VMs even if they already exist
-                                (use with --batch-id to update an existing batch)
-    --cloudinit=FILE            Inject cloud-init user-data from FILE into each VM
-    --custom-templates=PATH     Use YAML templates from PATH (file or directory;
-                                colon-separated for multiple paths).
-                                Falls back to built-in templates/ for any missing roles
-
-    --delete=BATCH_ID           Delete all resources for the given batch
-    --delete-all                Delete ALL vstorm batches on the cluster
-    -y / --yes                  Skip confirmation prompt for delete operations
-
-    --profile[=COMPONENT]       Profile KubeVirt control plane (CPU + memory + more)
-                                Optional: virt-api, virt-controller, virt-handler, virt-operator
-
-    --batch-id=ID               Set batch ID (auto-generated if omitted)
-    --basename=name             VM base name (default: derived from DataSource or image name)
-    --pvc-base-name=name        Base PVC name (default: derived from --basename)
-```
-
-Note: KubeVirt sets **no resource limits** by default -- only requests. The guest VM
-cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request
-to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 ## Cloud-init
 
@@ -239,6 +163,14 @@ each containing `cpu.pprof`, `heap.pprof`, `allocs.pprof`, `goroutine.pprof`,
 `block.pprof`, `mutex.pprof`, and `threadcreate.pprof`. See
 [docs/cluster-profiler.md](docs/cluster-profiler.md) for prerequisites,
 feature gate management, and analysis instructions.
+
+## Options
+
+Run `./vstorm -h` from the repo directory to see all options and their defaults (positional arguments `number_of_vms` and `number_of_namespaces` are supported as shortcuts for `--vms` and `--namespaces`).
+
+Note: KubeVirt sets **no resource limits** by default -- only requests. The guest VM
+cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request
+to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 ## How it works
 

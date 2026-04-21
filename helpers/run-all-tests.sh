@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Run the full local test suite without going through git pre-commit:
-#   - yamllint: helpers/*.yaml (same as .github/workflows/test.yaml lint-yaml)
+#   - yamllint: plain YAML under helpers/, workload/, monitoring/yaml/,
+#     monitoring/tests/fixtures/, .github/workflows/ (not templates/ — Go
+#     templates are not valid YAML; same globs as .github/workflows/test.yaml)
 #   - markdownlint-cli2: git-tracked *.md (CI uses **/*.md on checkout; we use
 #     git ls-files so local-only trees like rh-internal-doc/ are skipped)
 #   - Bats: tests/
@@ -29,8 +31,20 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-echo "==> yamllint (helpers/*.yaml)"
-yamllint helpers/*.yaml
+echo "==> yamllint (plain YAML: helpers, workload, monitoring, workflows)"
+shopt -s nullglob
+_yaml_files=(
+  helpers/*.yaml
+  workload/*.yaml
+  monitoring/yaml/*.yaml
+  monitoring/tests/fixtures/*.yaml
+  .github/workflows/*.yaml
+)
+if ((${#_yaml_files[@]} == 0)); then
+  echo "run-all-tests: no YAML files matched yamllint globs" >&2
+  exit 1
+fi
+yamllint "${_yaml_files[@]}"
 
 echo "==> markdownlint-cli2 (git-tracked *.md)"
 if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then

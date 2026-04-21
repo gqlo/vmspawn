@@ -29,7 +29,16 @@ jobs:
         run: pip install yamllint
 
       - name: Lint YAML files
-        run: yamllint helpers/*.yaml
+        run: |
+          set -e
+          shopt -s nullglob
+          _yaml=(helpers/*.yaml workload/*.yaml monitoring/yaml/*.yaml \
+            monitoring/tests/fixtures/*.yaml .github/workflows/*.yaml)
+          if ((${#_yaml[@]} == 0)); then
+            echo "no YAML files matched" >&2
+            exit 1
+          fi
+          yamllint "${_yaml[@]}"
 
   lint-markdown:
     runs-on: ubuntu-latest
