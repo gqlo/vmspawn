@@ -1,17 +1,11 @@
 # Vstorm
 
-Spin up hundreds of VMs across multiple namespaces with a single command on
-OpenShift Virtualization -- no YAML to write. It auto-detects
-storage access modes, clone strategy, and snapshot support from the cluster, so
-it works out of the box with OCS/Ceph, LVMS, NFS, or any block-capable storage
-class. No storage class at all? Use `--containerdisk` to boot VMs directly from
-a container image with no PVC required. Each run gets a unique batch ID for easy inspection and cleanup.
-Cloud-init injection runs custom workloads (e.g. stress-ng) at VM boot.
-Integrated cluster profiling (`--profile`) captures Go runtime-level
-performance data -- CPU, heap, mutex, and other pprof profiles -- from
-the KubeVirt control plane during batch runs.
-Backed by 193 unit tests, live cluster validation, and CI on every push
-(as of March 2026).
+- Scale up hundreds of VMs across multiple namespaces with one command on OpenShift Virtualization, without writing YAML.
+- Auto-detects storage access modes, clone strategy, and snapshot support so it works with OCS/Ceph, LVMS, NFS, or any block-capable storage class.
+- **Cloud-init** injects workloads at boot (e.g. stress-ng). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
+- **Self-built minimal guests** (high-density VM testing): a stripped x86_64-only kernel and small rootfs, often on the order of ~80 MB per guest, so you can pack many VMs onto finite CPU and RAM and stress scheduling, networking, and storage. Host the disk where the cluster can import it (for example `--dv-url` or your DataSource). Example layout and image live under [`custom-build-images/`](custom-build-images/).
+- **`--profile`**: integrated cluster profiling captures Go runtime pprof data (CPU, heap, mutex, and more) from the KubeVirt control plane during batch runs.
+- **Quality**: 233 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
 
 ---
 
@@ -23,7 +17,7 @@ Backed by 193 unit tests, live cluster validation, and CI on every push
 - [Options](#options)
 - [How it works](#how-it-works)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md)
+- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
 - **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl)
 
 ---
@@ -63,19 +57,26 @@ vstorm --cores=4 --memory=8Gi --vms=10 --namespaces=2
 # 3. Your own DV source (disk image URL)
 vstorm --dv-url=http://myhost:8000/rhel9-disk.qcow2 --vms=10 --namespaces=2
 
-# 4. Cloud-init workload injected at boot
+# 4. Minimal guest (BIOS, tight memory/disk) from a small qcow2 URL, sshd pre-installed
+vstorm --memory=80Mi --cores=1 \
+  --dv-url=http://storage.scalelab.redhat.com/lee/vm-images/vm-80mb.qcow2 \
+  --firmware=bios \
+  --storage-size=100Mi \
+  --vms=1
+
+# 5. Cloud-init workload injected at boot
 vstorm --cloudinit=workload/cloudinit-stress-ng-workload.yaml --vms=10 --namespaces=2
 
-# 5. No OCS: use a different storage class (snapshots auto-disabled)
+# 6. No OCS: use a different storage class (snapshots auto-disabled)
 vstorm --storage-class=my-nfs-sc --vms=10 --namespaces=2
 
-# 6. Dry-run: preview generated YAML without applying
+# 7. Dry-run: preview generated YAML without applying
 vstorm -n --vms=10 --namespaces=2
 
-# 7. Delete all resources for a batch (prompts for confirmation)
+# 8. Delete all resources for a batch (prompts for confirmation)
 vstorm --delete=a3f7b2
 
-# 8. Delete ALL vstorm batches on the cluster
+# 9. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
 ```
 
@@ -112,8 +113,8 @@ vstorm --cloudinit=workload/cloudinit-stress-ng-workload.yaml --vms=10 --namespa
 # stress-ng with env overrides (repeatable --env); e.g. WORKLOAD_TYPE=cpu-heavy|balanced
 vstorm --cloudinit=workload/cloudinit-stress-ng-workload.yaml --env WORKLOAD_TYPE=cpu-heavy --vms=5
 
-# Steady anonymous dirty memory: compiles workload/dirty-mem-pages.c on first boot; DIRTY_RATE_FRACTION is a fraction of total physical RAM (0.1–0.9, e.g. 0.9 = 90%; default 0.5 if --env omitted)
-vstorm --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --env DIRTY_RATE_FRACTION=0.4 --vms=5
+# Steady anonymous dirty memory: compiles workload/dirty-mem-pages.c on first boot; DIRTY_RATE_FRACTION is a fraction of total physical RAM (0.1–0.9; default 0.5 if --env omitted)
+vstorm --cores=4 --memory=8Gi --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --dv-url=http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow --env DIRTY_RATE_FRACTION=0.4 --vms=1
 ```
 
 See [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) for stress-ng design, flow, and parameters. The dirty-mem workload uses [workload/dirty-mem-pages.c](workload/dirty-mem-pages.c).
@@ -182,29 +183,6 @@ The tool performs these steps in order:
 2. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
 3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode
 4. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, base PVC, or container image depending on mode
-
-### Clone modes
-
-vstorm has four disk modes, auto-selected based on your options:
-
-| Mode | Flow | When used |
-|---|---|---|
-| **Snapshot** | DataSource → base DV → VolumeSnapshot → VM clones | Default for OCS storage |
-| **Direct DataSource** | DataSource → each VM clones directly | `--storage-class` without `--snapshot-class`, or `--no-snapshot` |
-| **URL import** | URL → base DV → each VM clones from base PVC | `--dv-url` with `--no-snapshot` |
-| **Container disk** | Container image → each VM boots directly | `--containerdisk`; no storage class or PVC required |
-
-The direct DataSource path skips the intermediate base DV entirely, which avoids deadlocks with WaitForFirstConsumer storage classes (e.g. LVMS, local storage).
-
-Mode auto-detection:
-
-| Options | Snapshot mode |
-|---|---|
-| *(defaults -- OCS storage)* | Enabled |
-| `--storage-class=X` *(no snapshot-class)* | **Auto-disabled** |
-| `--storage-class=X --snapshot-class=Y` | Enabled (matching pair) |
-| `--no-snapshot` | Disabled (explicit) |
-| `--snapshot-class=X` | Enabled (explicit) |
 
 ### Storage considerations
 
