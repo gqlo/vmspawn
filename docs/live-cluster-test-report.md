@@ -282,7 +282,12 @@
 
 ### Failure details -- Test 9
 
-- **Root cause:** `lvms-vg-nvme` uses `WaitForFirstConsumer` (WFFC) volume binding. vstorm detected WFFC and auto-disabled snapshot mode, falling back to "direct PVC clone". A `vm-base` DV was created per namespace from the default URL. However, with WFFC, the base PVC stays `PendingPopulation` until a consumer pod schedules it; CDI's clone DVs (`vm-9b87cd-{1,2,3}`) can't clone from an unbound source, creating a deadlock. After 74+ minutes, all 3 VMs remained in `Provisioning` state and never reached Running.
+- **Root cause:** `lvms-vg-nvme` uses `WaitForFirstConsumer` (WFFC) volume binding. vstorm
+  detected WFFC and auto-disabled snapshot mode, falling back to "direct PVC clone". A
+  `vm-base` DV was created per namespace from the default URL. However, with WFFC, the base
+  PVC stays `PendingPopulation` until a consumer pod schedules it; CDI's clone DVs
+  (`vm-9b87cd-{1,2,3}`) can't clone from an unbound source, creating a deadlock. After 74+
+  minutes, all 3 VMs remained in `Provisioning` state and never reached Running.
 - **Error events:** `target PVC vm-9b87cd-1 Pending and Waiting for a volume to be created by 'topolvm.io'`; base PVC stuck in `WaitForFirstConsumer`.
 - **Verdict:** **FAIL** (WFFC + URL-import base DV deadlock — CDI issue, not a vstorm bug)
 
