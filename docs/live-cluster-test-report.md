@@ -35,7 +35,7 @@
 | 16 | `--memory=8Gi --cores=2 --dv-url=... --cloudinit=... --env STRESS_TOGETHER=0 --env CPU_ACTIVE_PROBABILITY=30 --env MEM_ACTIVE_PROBABILITY=80` | 1 | Yes | 1/1 OK | **PASS** |
 | 17 | `--cores=4 --memory=8Gi --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --dv-url=... --env DIRTY_RATE_FRACTION=0.4 --vms=1` | 1 | Yes | 1/1 OK | **PASS** |
 
-**2026-04-30 run: 59 VMs created across all tests. 53/53 reached Running state (Tests 3 and 9 failed, 0 VMs). 13/17 tests fully passed. 2 partial. 2 fail (infrastructure issues).**
+**2026-04-30 run: 66 VMs created across all tests. 66/66 reached Running state (Tests 3 and 9 failed with 0 VMs created). 13/17 tests fully passed. 2 partial. 2 fail (infrastructure issues).**
 
 ### Run history
 
