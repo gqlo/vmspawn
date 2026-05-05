@@ -119,24 +119,27 @@ vstorm --cores=4 --memory=8Gi --cloudinit=workload/cloudinit-dirty-mem-pages.yam
 
 See [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) for stress-ng design, flow, and parameters. The dirty-mem workload uses [workload/dirty-mem-pages.c](workload/dirty-mem-pages.c).
 
-## Custom templates
+### Custom VM template
 
-Use `--custom-templates=PATH` to point vstorm at your own YAML template files or directories. Templates are discovered by **content** (`kind:` field), not by filename, so you can name files however you like.
+Use `--vm-template=FILE` to supply your own `VirtualMachine` YAML instead of the built-in template. All other templates (Namespace, DataVolume, VolumeSnapshot, cloud-init Secret) remain built-in.
+
+This is the right escape hatch for KubeVirt-specific VM settings that have no dedicated flag: CPU topology (sockets/threads/NUMA/hugepages), node affinity, tolerations, additional network interfaces, GPU passthrough, `dedicatedCpuPlacement`, custom labels, etc.
 
 ```bash
-# Use a custom VM template (built-in templates used for Namespace, DV, etc.)
-vstorm --custom-templates=/path/to/my-vm.yaml --vms=5
+# Custom VM with NUMA pinning and a URL-imported disk
+vstorm --vm-template=my-vm.yaml --dv-url=http://storage.example.com/rhel9.qcow2 \
+       --cores=4 --memory=8Gi --vms=5
 
-# Use a whole directory of custom templates
-vstorm --custom-templates=/path/to/my-templates/ --vms=10
-
-# Mix files and directories (colon-separated)
-vstorm --custom-templates="/path/to/my-vm.yaml:/path/to/extra-templates/" --vms=10
+# Custom VM with a containerDisk baked in -- DV and VolumeSnapshot are skipped automatically
+vstorm --vm-template=my-containerdisk-vm.yaml --cores=4 --memory=8Gi --vms=5
 ```
 
-Partial custom is supported: provide only the templates you want to override and vstorm falls back to the built-in `templates/` directory for any missing roles. For example, providing just a VirtualMachine template file is enough -- Namespace, DataVolume, VolumeSnapshot, and cloud-init Secret templates are sourced from the built-in set.
+Start from a copy of the relevant built-in in `templates/` and modify `spec.domain`. Keep the
+`{VM_CPU_CORES}`, `{VM_MEMORY}`, and other `{PLACEHOLDER}` lines so that `--cores`, `--memory`,
+and other flags still apply. See [docs/custom_template_support.md](docs/custom_template_support.md)
+for the full placeholder reference and design notes.
 
-When a custom template uses literal values instead of `{PLACEHOLDER}` syntax (e.g. `batch-id: "abc123"`), vstorm adopts those values unless the corresponding CLI option is explicitly passed.
+VM and related YAML templates ship in the `templates/` directory next to the `vstorm` script; each resource type is picked by **content** (`kind:` and structure), not by filename.
 
 ## Cluster profiling
 

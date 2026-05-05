@@ -16,7 +16,8 @@ _vstorm() {
 		--run-strategy=
 		--create-existing-vm --wait --wait= --run-strategy=
 		--containerdisk --containerdisk=
-		--cloudinit= --custom-templates=
+		--custom-vm-template=
+		--cloudinit=
 		--profile --profile=
 		--delete= --delete-all --yes
 	)

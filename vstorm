@@ -36,10 +36,8 @@ VM_CPU_CORES="1"
 VM_MEMORY="1Gi"
 # Guest firmware: efi (OVMF + SMM; secureBoot false by default) or bios (legacy)
 VM_FIRMWARE="efi"
-# Default to using the templates/ directory relative to this script.
-BUILTIN_TEMPLATES_DIR="$(dirname "$0")/templates"
-CREATE_VM_PATH=${CREATE_VM_PATH:-$BUILTIN_TEMPLATES_DIR}
-CUSTOM_TEMPLATES_SET=0
+# YAML templates live in templates/ next to this script.
+BUILTIN_TEMPLATES_DIR="$(cd "$(dirname "$0")" && pwd)/templates"
 VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
@@ -62,27 +60,17 @@ DELETE_BATCH=
 DELETE_ALL=0
 CONFIRM_DELETE=0
 PROFILE_TARGET=
+PROFILER_BIN=
+PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vstorm/releases/latest/download/cluster-profiler-linux-amd64"
 declare -A expected_vms=()
-# Content-based detection patterns for template roles.
-# Extend this table to add new template roles.
-declare -A ROLE_PATTERN=(
-    [namespace]='^kind:[[:space:]]*Namespace'
-    [dv]='^kind:[[:space:]]*DataVolume'
-    [volumesnapshot]='^kind:[[:space:]]*VolumeSnapshot'
-    [vm]='^kind:[[:space:]]*VirtualMachine'
-    [cloudinit-secret]='^kind:[[:space:]]*Secret'
-)
 # Validated template paths, keyed by role.  Filled by
 # validate_required_templates; read by creation functions.
 declare -A TEMPLATE_CACHE=()
 
-doit=1
+wet_run=1
 quiet=0
-
-fatal() {
-    echo "${C_ERR}$*${C_RST}" >&2
-    exit 1
-}
+LOG_DIR="logs"
+LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
 
 if [[ -t 1 ]] ; then
     C_VAL=$'\033[0;36m'
@@ -94,6 +82,107 @@ if [[ -t 1 ]] ; then
 else
     C_VAL= C_ERR= C_WARN= C_OK= C_BOLD= C_RST=
 fi
+
+fatal() {
+    echo "${C_ERR}$*${C_RST}" >&2
+    exit 1
+}
+
+usage_error() {
+    echo "${C_ERR}$*${C_RST}" >&2
+    echo "Try '$0 --help' for more information." >&2
+    exit 1
+}
+
+validate_args() {
+    # Detect options misplaced after positional arguments.  Bash getopts
+    # stops at the first non-option word, so any --option that appears
+    # after a positional argument is silently treated as a positional
+    # argument instead of being parsed.  Catch that mistake early.
+    for _arg in "$@"; do
+	if [[ "$_arg" == --* ]]; then
+	    fatal "Misplaced option '$_arg': all options must appear before positional arguments. Run '$0 -h' for usage."
+	fi
+    done
+
+    if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
+	if (($# > 2)) ; then
+	    usage_error "Error: too many positional arguments (expected at most 2, got $#)"
+	fi
+
+	if [[ -n "${1:-}" ]] && ! [[ "$1" =~ ^[0-9]+$ ]]; then
+	    fatal "Invalid argument '$1': expected a number for total VMs"
+	fi
+	if [[ -n "${2:-}" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
+	    fatal "Invalid argument '$2': expected a number for namespaces"
+	fi
+
+	NUM_VMS=${1:-$NUM_VMS}
+	NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
+
+	if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
+	    NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
+	fi
+
+	if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
+	    usage_error "Error: Number of VMs must be a positive integer"
+	fi
+
+	if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
+	    usage_error "Error: Number of namespaces must be a positive integer"
+	fi
+
+	if ((NUM_VMS < NUM_NAMESPACES)) ; then
+	    usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
+	fi
+
+	case "$RUN_STRATEGY" in
+	    Always|Halted|Manual|RerunOnFailure) ;;
+	    *) usage_error "Invalid --run-strategy '$RUN_STRATEGY'; must be one of: Always, Halted, Manual, RerunOnFailure" ;;
+	esac
+
+	if ((ACCESS_MODE_SET)) ; then
+	    case "$ACCESS_MODE" in
+		ReadWriteOnce|ReadWriteMany|ReadOnlyMany) ;;
+		*) usage_error "Invalid --access-mode '$ACCESS_MODE'; must be one of: ReadWriteOnce, ReadWriteMany, ReadOnlyMany" ;;
+	    esac
+	fi
+
+	# --containerdisk is mutually exclusive with --datasource and --dv-url
+	if [[ -n "$CONTAINERDISK_IMAGE" ]] && { [[ -n "$DATASOURCE" ]] || [[ -n "$DV_URL" ]] ; } ; then
+	    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
+	fi
+    fi
+}
+
+derive_defaults() {
+    # Auto-derive VM_BASENAME from the DataSource name when the user
+    # hasn't explicitly set --basename.
+    if [[ -n "$DATASOURCE" ]] && (( ! BASENAME_SET )) ; then
+	VM_BASENAME="$DATASOURCE"
+    elif [[ -n "$CONTAINERDISK_IMAGE" ]] && (( ! BASENAME_SET )) ; then
+	_cdimg=${CONTAINERDISK_IMAGE##*/}
+	VM_BASENAME="${_cdimg%%:*}"
+    fi
+
+    # Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
+    # explicitly set --pvc-base-name.  Previously this derivation only ran
+    # inside the DATASOURCE block, so --dv-url + --basename left
+    # BASE_PVC_NAME at the default "vm-base" while the DV template created
+    # a PVC named "{VM_BASENAME}-base", causing VolumeSnapshot to reference
+    # a non-existent PVC.
+    if (( ! PVC_BASE_NAME_SET )) ; then
+	BASE_PVC_NAME="${VM_BASENAME}-base"
+    fi
+
+    # Auto-disable snapshots when a custom storage class is used without
+    # a matching snapshot class.  The hardcoded SNAPSHOT_CLASS only works
+    # with the default OCS STORAGE_CLASS, so using a different storage class
+    # without providing a snapshot class means snapshots won't work.
+    if (( ! SNAPSHOT_EXPLICITLY_SET && STORAGE_CLASS_SET && ! SNAPSHOT_CLASS_SET )); then
+	USE_SNAPSHOT=0
+    fi
+}
 
 # | | | represents spaces that creates indentation for te continuation lines
 help() {
@@ -137,11 +226,6 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. workload/cloudinit-stress-ng-workload.yaml)
         --env KEY=VAL           Set env in guest (repeatable; written to /etc/default/vstorm-guest-env)
-        --custom-templates=PATH Use YAML templates from PATH (file or
-                                | | | directory; colon-separated for
-                                | | | multiple paths). Falls back to
-                                | | | built-in templates/ for any
-                                | | | missing roles (partial custom OK)
         --profile[=COMPONENT]   Profile KubeVirt control plane during
                                 | | | VM creation (CPU, memory, goroutine, etc.)
                                 | | | COMPONENT: virt-api, virt-controller,
@@ -153,12 +237,6 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
     --vms-per-namespace takes precedence.
 EOF
     exit 0
-}
-
-usage_error() {
-    echo "${C_ERR}$*${C_RST}" >&2
-    echo "Try '$0 --help' for more information." >&2
-    exit 1
 }
 
 # Process long options.  Handle options names case-insensitive
@@ -215,7 +293,6 @@ process_option() {
 		   DATASOURCE=; DV_URL= ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
 	profile)   PROFILE_TARGET=${value:-all} ;;
-	customtemplate*) CREATE_VM_PATH=$value; CUSTOM_TEMPLATES_SET=1 ;;
 	*) 	   fatal "Error: unrecognized option '--${optstr%%=*}'. Run '$0 -h' to see all options." ;;
     esac
 }
@@ -240,8 +317,8 @@ set -- "${_argv[@]}"
 # Leading : suppresses getopts default error so we can show our own message.
 while getopts ':nqyh-:' opt "$@" ; do
     case "$opt" in
-	n) doit=0		    ;;
-	q) quiet=1; doit=0	    ;;
+	n) wet_run=0	    ;;
+	q) quiet=1; wet_run=0	    ;;
 	y) CONFIRM_DELETE=1	    ;;
 	h) help			    ;;
 	-) process_option "$OPTARG" ;;
@@ -252,97 +329,8 @@ done
 # clean all the optional arguments that have been processed by getopts so that the positional arguments are now the remaining arguments
 shift $((OPTIND-1))
 
-# Detect options misplaced after positional arguments.  Bash getopts
-# stops at the first non-option word, so any --option that appears
-# after a positional argument is silently treated as a positional
-# argument instead of being parsed.  Catch that mistake early.
-for _arg in "$@"; do
-    if [[ "$_arg" == --* ]]; then
-	fatal "Misplaced option '$_arg': all options must appear before positional arguments. Run '$0 -h' for usage."
-    fi
-done
-
-# Auto-derive VM_BASENAME from the DataSource name when the user
-# hasn't explicitly set --basename.
-if [[ -n "$DATASOURCE" ]] && (( ! BASENAME_SET )) ; then
-    VM_BASENAME="$DATASOURCE"
-elif [[ -n "$CONTAINERDISK_IMAGE" ]] && (( ! BASENAME_SET )) ; then
-    _cdimg=${CONTAINERDISK_IMAGE##*/}
-    VM_BASENAME="${_cdimg%%:*}"
-fi
-
-# Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
-# explicitly set --pvc-base-name.  Previously this derivation only ran
-# inside the DATASOURCE block, so --dv-url + --basename left
-# BASE_PVC_NAME at the default "vm-base" while the DV template created
-# a PVC named "{VM_BASENAME}-base", causing VolumeSnapshot to reference
-# a non-existent PVC.
-if (( ! PVC_BASE_NAME_SET )) ; then
-    BASE_PVC_NAME="${VM_BASENAME}-base"
-fi
-
-# --containerdisk is mutually exclusive with --datasource and --dv-url
-if [[ -n "$CONTAINERDISK_IMAGE" ]] && { [[ -n "$DATASOURCE" ]] || [[ -n "$DV_URL" ]] ; } ; then
-    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
-fi
-
-# Auto-disable snapshots when a custom storage class is used without
-# a matching snapshot class.  The hardcoded SNAPSHOT_CLASS only works
-# with the default OCS STORAGE_CLASS, so using a different storage class
-# without providing a snapshot class means snapshots won't work.
-if (( ! SNAPSHOT_EXPLICITLY_SET && STORAGE_CLASS_SET && ! SNAPSHOT_CLASS_SET )); then
-    USE_SNAPSHOT=0
-fi
-
-# Validate arguments early -- before creating log files or contacting the
-# cluster -- so pure input errors are reported instantly.
-if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
-    if (($# > 2)) ; then
-	usage_error "Error: too many positional arguments (expected at most 2, got $#)"
-    fi
-
-    if [[ -n "${1:-}" ]] && ! [[ "$1" =~ ^[0-9]+$ ]]; then
-	fatal "Invalid argument '$1': expected a number for total VMs"
-    fi
-    if [[ -n "${2:-}" ]] && ! [[ "$2" =~ ^[0-9]+$ ]]; then
-	fatal "Invalid argument '$2': expected a number for namespaces"
-    fi
-
-    NUM_VMS=${1:-$NUM_VMS}
-    NUM_NAMESPACES=${2:-$NUM_NAMESPACES}
-
-    if [[ -n "$NUM_VMS_PER_NAMESPACE" ]] ; then
-	NUM_VMS=$((NUM_VMS_PER_NAMESPACE * NUM_NAMESPACES))
-    fi
-
-    if ! [[ "$NUM_VMS" =~ ^[0-9]+$ && "$NUM_VMS" -ge 1 ]]; then
-	usage_error "Error: Number of VMs must be a positive integer"
-    fi
-
-    if ! [[ "$NUM_NAMESPACES" =~ ^[0-9]+$ && "$NUM_NAMESPACES" -ge 1 ]]; then
-	usage_error "Error: Number of namespaces must be a positive integer"
-    fi
-
-    if ((NUM_VMS < NUM_NAMESPACES)) ; then
-	usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
-    fi
-
-    case "$RUN_STRATEGY" in
-	Always|Halted|Manual|RerunOnFailure) ;;
-	*) usage_error "Invalid --run-strategy '$RUN_STRATEGY'; must be one of: Always, Halted, Manual, RerunOnFailure" ;;
-    esac
-
-    if ((ACCESS_MODE_SET)) ; then
-	case "$ACCESS_MODE" in
-	    ReadWriteOnce|ReadWriteMany|ReadOnlyMany) ;;
-	    *) usage_error "Invalid --access-mode '$ACCESS_MODE'; must be one of: ReadWriteOnce, ReadWriteMany, ReadOnlyMany" ;;
-	esac
-    fi
-fi
-
-# Setup logging
-LOG_DIR="logs"
-LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
+derive_defaults
+validate_args "$@"
 
 # Function to log with timestamp
 # Output may be provided on command line; if not, it is
@@ -363,14 +351,14 @@ _log_message() {
     if ((from_stdin)) ; then
 	local line
 	while IFS= read -r line ; do
-	    if ((doit)) ; then
+	    if ((wet_run)) ; then
 		printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$line"
 	    else
 		echo "$line"
 	    fi
 	done
     else
-	if ((doit)) ; then
+	if ((wet_run)) ; then
 	    printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$*"
 	else
 	    echo "$*"
@@ -379,30 +367,30 @@ _log_message() {
 }
 
 log_message() {
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	_log_message "$*" | tee -a "$LOG_FILE"
     else
 	_log_message "$*"
     fi
 }
 
-if ((doit)) ; then
-    # Create log directory if it doesn't exist
-    if [[ ! -d "$LOG_DIR" ]]; then
-	mkdir -p "$LOG_DIR"
-	echo "Created log directory: $LOG_DIR"
-    fi
-
-    log_message "Log file created: ${C_VAL}$LOG_FILE${C_RST}"
-else
-    # In dry-run mode, save generated YAML to a file for reference
-    if (( ! quiet )) ; then
+setup_logging() {
+    if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
 	    mkdir -p "$LOG_DIR"
+	    echo "Created log directory: $LOG_DIR"
 	fi
-	DRYRUN_FILE="${LOG_DIR}/${BATCH_ID}-dryrun.yaml"
+	log_message "Log file created: ${C_VAL}$LOG_FILE${C_RST}"
+    else
+	if (( ! quiet )) ; then
+	    if [[ ! -d "$LOG_DIR" ]]; then
+		mkdir -p "$LOG_DIR"
+	    fi
+	    DRYRUN_FILE="${LOG_DIR}/${BATCH_ID}-dryrun.yaml"
+	fi
     fi
-fi
+}
+
 
 # Run oc whoami with timeout; prints "Checking..." every 3s while waiting.
 # Returns: 0 = success, 124 = timeout, non-zero = failure.
@@ -584,216 +572,85 @@ detect_access_mode() {
     fi
 }
 
-# Check if a file matches all given grep patterns.
-_template_matches() {
-    local file=$1
-    shift
-    local pattern
-    for pattern in "$@"; do
-	[[ -n "$pattern" ]] || continue
-	grep -qE "$pattern" "$file" 2>/dev/null || return 1
-    done
-    return 0
+# Resolve a built-in template path and fatal if the file is missing.
+_require_builtin() {
+    local role=$1 path=$2
+    [[ -f "$path" ]] || fatal "No $role template found: $path"
+    echo "$path"
 }
 
-# Find a template file by content-based detection.
-# Usage: find_template_by_content ROLE [EXTRA_PATTERN ...]
-# Searches CREATE_VM_PATH entries (files checked directly, directories
-# scanned for .yaml/.yml), then falls back to built-in templates/ when
-# CUSTOM_TEMPLATES_SET.  Returns the path to the first matching file.
-# Exits with fatal error if no match is found.
-find_template_by_content() {
-    local role=$1
-    shift
-    local base_pattern="${ROLE_PATTERN[$role]:-}"
-    [[ -n "$base_pattern" ]] || fatal "Unknown template role: $role"
-
-    local -a all_patterns=("$base_pattern" "$@")
-    local -i has_extra=$(( $# > 0 ))
-
-    # Build search path list
-    local -a search_paths=()
-    IFS=: read -r -a search_paths <<< "$CREATE_VM_PATH"
-    if (( CUSTOM_TEMPLATES_SET )); then
-	local p resolved_builtin
-	resolved_builtin=$(cd "$BUILTIN_TEMPLATES_DIR" 2>/dev/null && pwd) || resolved_builtin=""
-	local -i found_builtin=0
-	for p in "${search_paths[@]}"; do
-	    local resolved
-	    if [[ -d "$p" ]]; then
-		resolved=$(cd "$p" 2>/dev/null && pwd) || resolved=""
-	    else
-		resolved="$p"
-	    fi
-	    if [[ -n "$resolved_builtin" && "$resolved" == "$resolved_builtin" ]]; then
-		found_builtin=1
-		break
-	    fi
-	done
-	(( found_builtin )) || search_paths+=("$BUILTIN_TEMPLATES_DIR")
-    fi
-
-    local entry file
-
-    # Pass 1: match base pattern + all extra patterns across all paths
-    for entry in "${search_paths[@]}"; do
-	if [[ -f "$entry" ]]; then
-	    if _template_matches "$entry" "${all_patterns[@]}"; then
-		echo "$entry"
-		return 0
-	    fi
-	elif [[ -d "$entry" ]]; then
-	    for file in "$entry"/*.yaml "$entry"/*.yml; do
-		[[ -f "$file" ]] || continue
-		if _template_matches "$file" "${all_patterns[@]}"; then
-		    echo "$file"
-		    return 0
-		fi
-	    done
-	fi
-    done
-
-    # Pass 2: when custom templates are set and extra patterns were used,
-    # retry on custom paths with base pattern only.  Custom templates may
-    # not contain the sub-type markers that built-in templates have.
-    if (( CUSTOM_TEMPLATES_SET && has_extra )); then
-	local -a custom_paths=()
-	IFS=: read -r -a custom_paths <<< "$CREATE_VM_PATH"
-	for entry in "${custom_paths[@]}"; do
-	    if [[ -f "$entry" ]]; then
-		if _template_matches "$entry" "$base_pattern"; then
-		    echo "$entry"
-		    return 0
-		fi
-	    elif [[ -d "$entry" ]]; then
-		for file in "$entry"/*.yaml "$entry"/*.yml; do
-		    [[ -f "$file" ]] || continue
-		    if _template_matches "$file" "$base_pattern"; then
-			echo "$file"
-			return 0
-		    fi
-		done
-	    fi
-	done
-    fi
-
-    local searched
-    searched=$(IFS=', '; echo "${search_paths[*]}")
-    # Write to stderr so the message survives $() capture in callers.
-    echo "${C_ERR}No $role template found; searched: $searched${C_RST}" >&2
-    return 1
-}
-
-# Extract a literal (non-placeholder) value from a YAML template field.
-# Returns 1 when the field is absent or contains a {PLACEHOLDER}.
-_extract_template_field() {
-    local file=$1
-    local field=$2
-    local value
-    value=$(grep -m1 "[[:space:]]${field}:" "$file" 2>/dev/null |
-	sed "s/.*${field}:[[:space:]]*//" |
-	sed 's/^"//;s/"$//;s/[[:space:]]*$//') || return 1
-    [[ -n "$value" && "$value" != "{"*"}" ]] || return 1
-    echo "$value"
-}
-
-# When custom templates contain literal values for known fields and
-# the user did not pass the corresponding option, adopt the template's
-# value so the rest of vstorm uses it consistently.
-_apply_template_literals() {
-    (( ${#TEMPLATE_CACHE[@]} > 0 )) || return 0
-    local file value
-
-    if (( ! BATCH_ID_SET )); then
-	for file in "${TEMPLATE_CACHE[@]}"; do
-	    value=$(_extract_template_field "$file" "batch-id") || continue
-	    BATCH_ID="$value"
-	    break
-	done
-    fi
-
-    if (( ! BASENAME_SET )); then
-	for file in "${TEMPLATE_CACHE[@]}"; do
-	    value=$(_extract_template_field "$file" "vm-basename") || continue
-	    VM_BASENAME="$value"
-	    if (( ! PVC_BASE_NAME_SET )); then
-		BASE_PVC_NAME="${VM_BASENAME}-base"
-	    fi
-	    break
-	done
-    fi
-}
-
-# Validate that all templates required for the current clone mode
-# are discoverable, and cache their paths for creation functions.
+# Validate that all templates required for the current clone mode exist,
+# and cache their paths for creation functions.
 validate_required_templates() {
-    TEMPLATE_CACHE[namespace]=$(find_template_by_content namespace)
+    local T=$BUILTIN_TEMPLATES_DIR
+
+    TEMPLATE_CACHE[namespace]=$(_require_builtin namespace "$T/namespace.yaml")
 
     if [[ -n "$CONTAINERDISK_IMAGE" ]]; then
-	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "containerDisk:")
+	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-containerdisk.yaml")
     elif ((USE_SNAPSHOT)); then
-	TEMPLATE_CACHE[volumesnapshot]=$(find_template_by_content volumesnapshot)
-	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "snapshot:")
+	TEMPLATE_CACHE[volumesnapshot]=$(_require_builtin volumesnapshot "$T/volumesnap.yaml")
+	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-snap.yaml")
     elif [[ -n "$DATASOURCE" ]]; then
-	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "sourceRef:")
+	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-datasource.yaml")
     else
-	TEMPLATE_CACHE[vm]=$(find_template_by_content vm "pvc:")
+	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-clone.yaml")
     fi
 
     if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
 	if [[ -n "$DATASOURCE" ]]; then
 	    if ((USE_SNAPSHOT)); then
-		TEMPLATE_CACHE[dv]=$(find_template_by_content dv "sourceRef:")
+		TEMPLATE_CACHE[dv]=$(_require_builtin dv "$T/dv-datasource.yaml")
 	    fi
 	else
 	    if [[ -z "$DV_URL" ]]; then
 		fatal "Either --datasource, --dv-url, or --containerdisk must be set"
 	    fi
-	    TEMPLATE_CACHE[dv]=$(find_template_by_content dv "http:")
+	    TEMPLATE_CACHE[dv]=$(_require_builtin dv "$T/dv.yaml")
 	fi
     fi
 
     if [[ -n "$CLOUDINIT_FILE" ]]; then
-	TEMPLATE_CACHE[cloudinit-secret]=$(find_template_by_content cloudinit-secret "userdata:")
+	TEMPLATE_CACHE[cloudinit-secret]=$(_require_builtin cloudinit-secret "$T/cloudinit-secret.yaml")
 	if [[ ! -f "$CLOUDINIT_FILE" ]]; then
 	    fatal "Cloud-init file not found: $CLOUDINIT_FILE"
 	fi
     fi
+}
 
-    if (( CUSTOM_TEMPLATES_SET )); then
-	_apply_template_literals
+validate_delete_and_profile_options() {
+    # Validate batch ID format for --delete (Kubernetes label value rules:
+    # alphanumeric, dots, hyphens, underscores; 1-63 chars; starts/ends alphanumeric).
+    # This blocks wildcards, commas, spaces, and other special characters that
+    # could confuse label selectors or cause unexpected behavior.
+    if [[ -n "$DELETE_BATCH" ]] ; then
+	if ! [[ "$DELETE_BATCH" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$ ]]; then
+	    fatal "Invalid batch ID '$DELETE_BATCH': must be 1-63 alphanumeric characters (plus . _ -), starting and ending with alphanumeric"
+	fi
+    fi
+
+    # --delete and --delete-all are mutually exclusive
+    if [[ -n "$DELETE_BATCH" ]] && ((DELETE_ALL)) ; then
+	fatal "Cannot use --delete and --delete-all together"
+    fi
+
+    # --profile is incompatible with --delete and --delete-all
+    if [[ -n "$PROFILE_TARGET" ]] ; then
+	if [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) ; then
+	    fatal "Cannot use --profile with --delete or --delete-all"
+	fi
+	case "$PROFILE_TARGET" in
+	    all|virt-api|virt-controller|virt-handler|virt-operator) ;;
+	    *) fatal "Invalid --profile value '$PROFILE_TARGET'. Valid values: virt-api, virt-controller, virt-handler, virt-operator, all" ;;
+	esac
     fi
 }
 
-# Validate batch ID format for --delete (Kubernetes label value rules:
-# alphanumeric, dots, hyphens, underscores; 1-63 chars; starts/ends alphanumeric).
-# This blocks wildcards, commas, spaces, and other special characters that
-# could confuse label selectors or cause unexpected behavior.
-if [[ -n "$DELETE_BATCH" ]] ; then
-    if ! [[ "$DELETE_BATCH" =~ ^[a-zA-Z0-9]([a-zA-Z0-9._-]{0,61}[a-zA-Z0-9])?$ ]]; then
-	fatal "Invalid batch ID '$DELETE_BATCH': must be 1-63 alphanumeric characters (plus . _ -), starting and ending with alphanumeric"
-    fi
-fi
+prepare_creation() {
+    # Skip creation-specific checks when deleting
+    [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) && return
 
-# --delete and --delete-all are mutually exclusive
-if [[ -n "$DELETE_BATCH" ]] && ((DELETE_ALL)) ; then
-    fatal "Cannot use --delete and --delete-all together"
-fi
-
-# --profile is incompatible with --delete and --delete-all
-if [[ -n "$PROFILE_TARGET" ]] ; then
-    if [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) ; then
-	fatal "Cannot use --profile with --delete or --delete-all"
-    fi
-    case "$PROFILE_TARGET" in
-	all|virt-api|virt-controller|virt-handler|virt-operator) ;;
-	*) fatal "Invalid --profile value '$PROFILE_TARGET'. Valid values: virt-api, virt-controller, virt-handler, virt-operator, all" ;;
-    esac
-fi
-
-# Skip creation-specific checks when deleting
-if [[ -z "$DELETE_BATCH" ]] && (( ! DELETE_ALL )) ; then
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	check_prerequisites
     fi
 
@@ -825,10 +682,11 @@ Creating resources for:
   Cloud-init: ${CLOUDINIT_FILE:-none}
 
 EOF
-fi
+}
 
-do_oc() {
-    if ((doit)) ; then
+
+oc_apply() {
+    if ((wet_run)) ; then
 	oc apply -f -
     elif ((quiet)) ; then
 	local line
@@ -844,7 +702,7 @@ do_oc() {
 }
 
 # Replace templated variables in YAML files with their values.
-function process_template() {
+process_template() {
     local file=$1
     local -a sed_args=(
         -e "s/{vm-ns}/$namespace/g"
@@ -864,20 +722,6 @@ function process_template() {
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
     )
-
-    # For custom templates with literal label values: replace only when
-    # the user's option differs from the template's literal.
-    if (( CUSTOM_TEMPLATES_SET )); then
-	local tpl_val
-	tpl_val=$(_extract_template_field "$file" "batch-id") || true
-	if [[ -n "${tpl_val:-}" && "$tpl_val" != "$BATCH_ID" ]]; then
-	    sed_args+=(-e "s/batch-id: \"${tpl_val}\"/batch-id: \"${BATCH_ID}\"/g")
-	fi
-	tpl_val=$(_extract_template_field "$file" "vm-basename") || true
-	if [[ -n "${tpl_val:-}" && "$tpl_val" != "$VM_BASENAME" ]]; then
-	    sed_args+=(-e "s/vm-basename: \"${tpl_val}\"/vm-basename: \"${VM_BASENAME}\"/g")
-	fi
-    fi
 
     sed "${sed_args[@]}" "$file"
 }
@@ -911,7 +755,7 @@ create_namespaces() {
     local -i ns
     local ns_file="${TEMPLATE_CACHE[namespace]}"
     local -A existing_namespaces=()
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	local namespace
 	while read -r namespace ; do
 	    if [[ -n "$namespace" ]] ; then existing_namespaces["$namespace"]=1; fi
@@ -925,7 +769,7 @@ create_namespaces() {
             log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
         else
             log_message "Creating namespace: ${C_VAL}$namespace${C_RST}"
-            process_template "$ns_file" | do_oc
+            process_template "$ns_file" | oc_apply
         fi
     done
 }
@@ -994,9 +838,9 @@ create_datavolumes() {
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
         log_message "Creating DataVolume for namespace: ${C_VAL}$namespace${C_RST}"
-        process_template "$dv_file" | do_oc
+        process_template "$dv_file" | oc_apply
     done
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	if ((WAIT_FOR_FIRST_CONSUMER)) ; then
 	    log_message "Skipping DataVolume wait (${C_VAL}WaitForFirstConsumer${C_RST}); VMs will trigger PVC binding."
 	else
@@ -1054,9 +898,9 @@ create_volumesnapshots() {
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
         namespace="vm-${BATCH_ID}-ns-${ns}"
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
-        process_template "$vs_file" | do_oc
+        process_template "$vs_file" | oc_apply
     done
-    if ((doit)) ; then wait_for_all_datavolumes; fi
+    if ((wet_run)) ; then wait_for_all_datavolumes; fi
 }
 
 ################################################################
@@ -1166,7 +1010,7 @@ firmware:
 	cloudinit_b64=$(printf '%s' "$cloudinit_content" | base64 -w0)
 	cloudinit_secret_file="${TEMPLATE_CACHE[cloudinit-secret]:-}"
 	if [[ -z "$cloudinit_secret_file" ]]; then
-	    cloudinit_secret_file=$(find_template_by_content cloudinit-secret "userdata:")
+	    cloudinit_secret_file=$(_require_builtin cloudinit-secret "$BUILTIN_TEMPLATES_DIR/cloudinit-secret.yaml")
 	    TEMPLATE_CACHE[cloudinit-secret]="$cloudinit_secret_file"
 	fi
 	cloudinit_disk="- disk:
@@ -1192,7 +1036,7 @@ firmware:
 	    log_message "Creating cloud-init Secret in namespace: ${C_VAL}$namespace${C_RST}"
 	    process_template "$cloudinit_secret_file" |
 		sed "s|{CLOUDINIT_B64}|$cloudinit_b64|g" |
-		do_oc ||
+		oc_apply ||
 		fatal "Cannot create cloud-init secret in $namespace!"
 	fi
 
@@ -1212,14 +1056,14 @@ firmware:
 		    indent_token RESOURCES "$requeststr" |
 		    indent_token CLOUDINIT_DISK "$cloudinit_disk" |
 		    indent_token CLOUDINIT_VOLUME "$cloudinit_volume" |
-		    do_oc ||
+		    oc_apply ||
 		    fatal "Cannot create vm $vm_name!"
 	    fi
 	    expected_vms["$vm_name"]=1
             VM_ID=$((VM_ID + 1))
         done
     done
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	if ((WAIT)) ; then
 	    wait_for_all_vms
 	else
@@ -1235,17 +1079,6 @@ firmware:
 # reports "done" or "error".  Gracefully skips if tools
 # are missing.
 verify_cloudinit() {
-    if [[ -z "$(type -t virtctl)" ]]; then
-	log_message "Note: install 'virtctl' to enable automatic cloud-init verification"
-	log_message "  Manual check: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
-	return 0
-    fi
-    if [[ -z "$(type -t sshpass)" ]]; then
-	log_message "Note: install 'sshpass' to enable automatic cloud-init verification"
-	log_message "  Manual check: virtctl ssh -n <ns> root@<vm> -c 'cloud-init status --long'"
-	return 0
-    fi
-
     # Collect VMs for this batch from the cluster
     local -a all_vms=()
     local ns vm_name
@@ -1333,7 +1166,7 @@ delete_batch() {
     local batch=$1
     local skip_confirm=${2:-}
 
-    if ((! doit)) ; then
+    if ((! wet_run)) ; then
         echo "(dry-run) Would delete all resources for batch '$batch':"
         echo "  oc delete ns -l batch-id=$batch"
         echo ""
@@ -1400,7 +1233,7 @@ delete_all_batches() {
     # then extract unique batch IDs from the namespace names.
     local all_batches
 
-    if ((! doit)) ; then
+    if ((! wet_run)) ; then
 	cat <<-EOF
 	(dry-run) Would discover and delete all vstorm batches.
 	  oc get ns -l batch-id --no-headers
@@ -1451,9 +1284,6 @@ delete_all_batches() {
 
 ################################################################
 # Cluster profiler functions
-PROFILER_BIN=
-PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vstorm/releases/latest/download/cluster-profiler-linux-amd64"
-
 ensure_profiler_binary() {
     # 1. Check if cluster-profiler is on PATH
     if command -v cluster-profiler &>/dev/null ; then
@@ -1612,6 +1442,8 @@ profiler_prompt_and_stop() {
 ################################################################
 # Main execution
 main() {
+    setup_logging
+    prepare_creation
     log_message "${C_BOLD}Starting resource creation process...${C_RST}"
     log_message "Batch ID:      ${C_VAL}$BATCH_ID${C_RST}"
     log_message "Configuration: ${C_VAL}$NUM_VMS${C_RST} VMs across ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces"
@@ -1652,11 +1484,11 @@ main() {
     create_virtualmachines
 
     # TODO: re-enable once verify_cloudinit is improved
-    # if ((doit && WAIT)) && [[ -n "$CLOUDINIT_FILE" ]]; then
+    # if ((wet_run && WAIT)) && [[ -n "$CLOUDINIT_FILE" ]]; then
     #     verify_cloudinit
     # fi
 
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	log_message "${C_OK}Resource creation completed successfully!${C_RST}"
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
 	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (container disk)"
@@ -1717,19 +1549,20 @@ main() {
 }
 
 # Run delete or create
+validate_delete_and_profile_options
 if (( DELETE_ALL )) ; then
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	ensure_oc_ready
     fi
     delete_all_batches
 elif [[ -n "$DELETE_BATCH" ]] ; then
-    if ((doit)) ; then
+    if ((wet_run)) ; then
 	ensure_oc_ready
     fi
     delete_batch "$DELETE_BATCH"
 else
     if [[ -n "$PROFILE_TARGET" ]] ; then
-	if ((doit)) ; then
+	if ((wet_run)) ; then
 	    ensure_profiler_binary
 	    ensure_profiler_feature_gate
 	    profiler_start
@@ -1741,7 +1574,7 @@ else
     fi
     main
     if [[ -n "$PROFILE_TARGET" ]] ; then
-	if ((doit)) ; then
+	if ((wet_run)) ; then
 	    profiler_prompt_and_stop
 	else
 	    echo "(dry-run) Would prompt to stop profiling and dump results"
