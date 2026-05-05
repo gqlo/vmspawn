@@ -70,7 +70,7 @@ declare -A TEMPLATE_CACHE=()
 wet_run=1
 quiet=0
 LOG_DIR="logs"
-LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
+LOG_FILE=
 
 if [[ -t 1 ]] ; then
     C_VAL=$'\033[0;36m'
@@ -375,6 +375,7 @@ log_message() {
 }
 
 setup_logging() {
+    LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
     if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
 	    mkdir -p "$LOG_DIR"
@@ -1442,7 +1443,6 @@ profiler_prompt_and_stop() {
 ################################################################
 # Main execution
 main() {
-    setup_logging
     prepare_creation
     log_message "${C_BOLD}Starting resource creation process...${C_RST}"
     log_message "Batch ID:      ${C_VAL}$BATCH_ID${C_RST}"
@@ -1550,6 +1550,7 @@ main() {
 
 # Run delete or create
 validate_delete_and_profile_options
+setup_logging
 if (( DELETE_ALL )) ; then
     if ((wet_run)) ; then
 	ensure_oc_ready
