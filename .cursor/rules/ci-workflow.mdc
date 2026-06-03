@@ -13,7 +13,7 @@ Three independent jobs in `.github/workflows/test.yaml`:
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs `bats tests/` (all unit tests) |
-| `lint-yaml` | `yamllint` | Lints `helpers/*.yaml` |
+| `lint-yaml` | `yamllint` | Lints plain YAML under `helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/` |
 | `lint-markdown` | `markdownlint-cli2` | Lints `**/*.md` |
 
 ## Conventions
@@ -25,7 +25,7 @@ Three independent jobs in `.github/workflows/test.yaml`:
 
 ## When Modifying
 
-- Adding YAML files outside `helpers/`: update the yamllint glob in the workflow
+- Adding YAML files outside the lint-yaml globs: update yamllint in `.github/workflows/test.yaml`, `hooks/pre-commit`, and `helpers/run-all-tests.sh`
 - Adding a new linter (e.g. shellcheck): add it as a **new job**, not inline in an existing one
 - Adding new template YAML files in `templates/`: consider extending yamllint scope
 - Keep each job focused on one tool for clear failure reporting

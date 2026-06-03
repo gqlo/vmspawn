@@ -212,7 +212,7 @@ GitHub Actions runs three independent jobs on every push and pull request to `ma
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs all unit tests (`bats tests/`) |
-| `lint-yaml` | `yamllint` | Lints helper YAML files (`helpers/*.yaml`) |
+| `lint-yaml` | `yamllint` | Lints plain YAML (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`) |
 | `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
 
 All three jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook.
@@ -230,7 +230,7 @@ The hook runs only the checks relevant to the files you are committing:
 | Staged files | Check |
 |---|---|
 | `vstorm`, `templates/*`, `helpers/*`, `workload/*`, `tests/*.bats` | `bats tests/` |
-| `helpers/*.yaml`, `workload/*.yaml` | `yamllint` on changed files |
+| `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` | `yamllint` on changed files |
 | any staged `*.md` / `*.MD` (e.g. `docs/...`, `monitoring/...`) | `markdownlint-cli2` on changed files |
 
 If any check fails, the commit is aborted. Fix the issues and commit again. In emergencies, use `git commit --no-verify` to skip the hook.

@@ -323,7 +323,7 @@ GitHub Actions runs three jobs on every push and PR to `main`:
 | Job | Tool | Scope |
 |---|---|---|
 | `test` | `bats` | All tests in `tests/` |
-| `lint-yaml` | `yamllint` | `helpers/*.yaml` |
+| `lint-yaml` | `yamllint` | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` |
 | `lint-markdown` | `markdownlint-cli2` | All `*.md` files |
 
 Configuration files:
