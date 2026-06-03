@@ -44,18 +44,33 @@ def pending_succeeded(item: dict) -> tuple[datetime, datetime] | None:
 
 
 def overlaps(pending: datetime, succeeded: datetime, start: datetime, end: datetime) -> bool:
+    if succeeded < pending:
+        return False
     return succeeded >= start and pending <= end
 
 
 def load_range_from_yaml(path: Path) -> tuple[str, str]:
-    data = yaml.safe_load(path.read_text()) or {}
+    try:
+        data = yaml.safe_load(path.read_text()) or {}
+    except OSError as e:
+        print(f"Error: cannot read {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    except yaml.YAMLError as e:
+        print(f"Error: invalid YAML in {path}: {e}", file=sys.stderr)
+        sys.exit(1)
+    if not isinstance(data, dict):
+        print(f"Error: {path} must contain a YAML mapping", file=sys.stderr)
+        sys.exit(1)
     defaults = data.get("defaults") or {}
     start = defaults.get("start")
     end = defaults.get("end")
     if not start or not end:
         print(f"Error: {path} defaults must include start and end", file=sys.stderr)
         sys.exit(1)
-    return str(start), str(end)
+    if not isinstance(start, str) or not isinstance(end, str):
+        print(f"Error: {path} defaults.start and defaults.end must be strings", file=sys.stderr)
+        sys.exit(1)
+    return start, end
 
 
 def main() -> None:

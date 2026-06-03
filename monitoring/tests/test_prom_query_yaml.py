@@ -282,6 +282,39 @@ class TestMergeMode(unittest.TestCase):
         series = pqy.series_from_range_json(payload)
         self.assertEqual(list(series.values()), ["3"])
 
+    def test_series_from_range_json_rejects_multi_series(self) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {"metric": {"instance": "a"}, "values": [[1716820954, "1"]]},
+                    {"metric": {"instance": "b"}, "values": [[1716820954, "2"]]},
+                ],
+            },
+        }
+        with self.assertRaises(ValueError) as ctx:
+            pqy.series_from_range_json(payload)
+        self.assertIn("single-valued", str(ctx.exception))
+
+    def test_series_from_range_json_rejects_duplicate_timestamp(self) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"job": "test"},
+                        "values": [[1716820954, "1"], [1716820954, "2"]],
+                    },
+                ],
+            },
+        }
+        with self.assertRaises(ValueError) as ctx:
+            pqy.series_from_range_json(payload)
+        self.assertIn("duplicate timestamp", str(ctx.exception))
+        self.assertIn("series_from_range_json", str(ctx.exception))
+
     def test_write_merged_csv(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             out = Path(tmp) / "combined.csv"

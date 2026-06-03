@@ -202,10 +202,22 @@ def series_from_range_json(payload: dict) -> Dict[str, str]:
     """Map timestamp string -> scalar value from a query_range response."""
     if payload.get("status") != "success":
         raise RuntimeError(payload.get("error", payload.get("message", "query failed")))
+    results = payload.get("data", {}).get("result", [])
+    if len(results) > 1:
+        raise ValueError(
+            f"query is not single-valued: expected 1 series in payload result, got {len(results)}"
+        )
     out: Dict[str, str] = {}
-    for result in payload.get("data", {}).get("result", []):
+    for result in results:
+        metric = result.get("metric", {})
         for ts_epoch, value in result.get("values", []):
-            out[_format_ts(float(ts_epoch))] = value
+            key = _format_ts(float(ts_epoch))
+            if key in out:
+                raise ValueError(
+                    f"duplicate timestamp {key!r} in series_from_range_json "
+                    f"(series metric={metric!r}, values={result.get('values', [])!r})"
+                )
+            out[key] = value
     return out
 
 
@@ -255,12 +267,10 @@ def query_range(
     pod: str,
     container: str,
     query: str,
-    start: str,
-    end: str,
+    ts_start: int,
+    ts_end: int,
     step: str,
 ) -> dict:
-    ts_start = resolve_timestamp(start)
-    ts_end = resolve_timestamp(end or "now")
     r = subprocess.run(
         [
             "oc",
@@ -308,9 +318,15 @@ def run_merge(
     prom_pod = prometheus_pod(namespace, pod)
     print(f"Using pod {prom_pod} in {namespace}", file=sys.stderr)
 
+    merge_start, merge_end, _, _ = lookup_query_lines(data, names[0])
+    if not merge_start:
+        raise ValueError(f'query "{names[0]}" requires start in YAML defaults')
+    ts_start = resolve_timestamp(merge_start)
+    ts_end = resolve_timestamp(merge_end or "now")
+
     series_by_name: Dict[str, Dict[str, str]] = {}
     for name in names:
-        start, end, step, query = lookup_query_lines(data, name)
+        start, _end, step, query = lookup_query_lines(data, name)
         if not start or not step:
             raise ValueError(f'query "{name}" requires start and step in YAML defaults')
         print(f"[{name}]", file=sys.stderr)
@@ -319,8 +335,8 @@ def run_merge(
             pod=prom_pod,
             container=container,
             query=query,
-            start=start,
-            end=end,
+            ts_start=ts_start,
+            ts_end=ts_end,
             step=step,
         )
         series_by_name[name] = series_from_range_json(payload)
