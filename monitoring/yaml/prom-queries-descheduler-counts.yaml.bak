@@ -15,31 +15,31 @@ defaults:
   step: 1m
   threshold: 0.1
 
-cpu-util:
+count-cpu-util-pd:
   description: "Count of nodes with CPU util positive deviation >= ${threshold}"
   query: count(descheduler:nodeutilization:cpu:avg1m:positivedeviation >= ${threshold})
 
-cpu-pressure:
+count-cpu-pressure-pd:
   description: "Count of nodes with CPU pressure positive deviation >= ${threshold}"
   query: count(descheduler:nodepressure:cpu:avg1m:positivedeviation >= ${threshold})
 
-memory-util:
+count-memory-util-pd:
   description: "Count of nodes with memory util positive deviation >= ${threshold}"
   query: count(descheduler:nodeutilization:memory:avg1m:positivedeviation >= ${threshold})
 
-memory-pressure:
+count-memory-pressure-pd:
   description: "Count of nodes with memory pressure positive deviation >= ${threshold}"
   query: count(descheduler:nodepressure:memory:avg1m:positivedeviation >= ${threshold})
 
-ideal-point-dt:
+count-ideal-point-distance:
   description: "Count of nodes with ideal-point distance >= ${threshold}"
   query: count(descheduler:node:ideal_point_positive_distance:avg1m >= ${threshold})
 
-amplified-dt:
+count-linear-amplified-distance:
   description: "Count of nodes with linear amplified (k3) distance >= ${threshold}"
   query: count(descheduler:node:linear_amplified_ideal_point_positive_distance:k3:avg1m >= ${threshold})
 
-overutilized-nodes-classified:
+overutilized-nodes-metrics:
   description: "Count of classified overutilized nodes"
   query: |
     count(

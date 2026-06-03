@@ -901,7 +901,7 @@ create_volumesnapshots() {
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$vs_file" | oc_apply
     done
-    if ((wet_run)) ; then wait_for_all_datavolumes; fi
+    if ((wet_run)) ; then wait_for_all_volumesnapshots; fi
 }
 
 ################################################################

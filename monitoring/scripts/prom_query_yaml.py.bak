@@ -4,14 +4,8 @@
 from __future__ import annotations
 
 import argparse
-import csv
-import datetime
-import json
 import re
-import subprocess
 import sys
-import time
-from pathlib import Path
 from typing import Any, Dict, List, Tuple, Union
 
 import yaml
@@ -97,6 +91,7 @@ def _validate_resolved_query(name: str, q: str) -> None:
     s = q.strip()
     if not s:
         raise ValueError(f'query "{name}" is empty after resolving YAML')
+    # PromQL rejects a query that is only a leading-dot number (e.g. YAML typo query: ".2")
     if s[0] == ".":
         raise ValueError(
             f'query "{name}" starts with "." (invalid PromQL). '
@@ -171,198 +166,13 @@ def lookup_query_lines(data: Dict[str, Any], name: str) -> Tuple[str, str, str, 
     )
 
 
-def resolve_timestamp(val: str) -> int:
-    if not val:
-        raise ValueError("empty time spec")
-    if val == "now":
-        return int(time.time())
-    m = re.fullmatch(r"(\d+)([smhd])", val)
-    if m:
-        amount, unit = int(m.group(1)), m.group(2)
-        mult = {"s": 1, "m": 60, "h": 3600, "d": 86400}
-        return int(time.time()) - amount * mult[unit]
-    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S"):
-        try:
-            dt = datetime.datetime.strptime(val, fmt).replace(tzinfo=datetime.timezone.utc)
-            return int(dt.timestamp())
-        except ValueError:
-            continue
-    raise ValueError(
-        f'invalid time spec "{val}" (use "YYYY-MM-DD HH:MM:SS", 30s, 5m, 1h, 2d, or "now")'
-    )
-
-
-def _format_ts(epoch: float) -> str:
-    return datetime.datetime.fromtimestamp(epoch, tz=datetime.timezone.utc).strftime(
-        "%Y-%m-%d %H:%M:%S"
-    )
-
-
-def series_from_range_json(payload: dict) -> Dict[str, str]:
-    """Map timestamp string -> scalar value from a query_range response."""
-    if payload.get("status") != "success":
-        raise RuntimeError(payload.get("error", payload.get("message", "query failed")))
-    out: Dict[str, str] = {}
-    for result in payload.get("data", {}).get("result", []):
-        for ts_epoch, value in result.get("values", []):
-            out[_format_ts(float(ts_epoch))] = value
-    return out
-
-
-def write_merged_csv(
-    names: List[str],
-    series_by_name: Dict[str, Dict[str, str]],
-    output_path: str,
-) -> None:
-    all_ts = sorted({ts for s in series_by_name.values() for ts in s})
-    out = Path(output_path)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    with open(out, "w", encoding="utf-8", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["timestamp", *names])
-        for ts in all_ts:
-            writer.writerow([ts] + [series_by_name[n].get(ts, "") for n in names])
-
-
-def prometheus_pod(namespace: str, pod: str) -> str:
-    if pod:
-        return pod
-    r = subprocess.run(
-        [
-            "oc",
-            "get",
-            "pods",
-            "-n",
-            namespace,
-            "-l",
-            "app.kubernetes.io/name=prometheus",
-            "-o",
-            "jsonpath={.items[0].metadata.name}",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    found = (r.stdout or "").strip()
-    if found:
-        return found
-    return "prometheus-k8s-0"
-
-
-def query_range(
-    *,
-    namespace: str,
-    pod: str,
-    container: str,
-    query: str,
-    start: str,
-    end: str,
-    step: str,
-) -> dict:
-    ts_start = resolve_timestamp(start)
-    ts_end = resolve_timestamp(end or "now")
-    r = subprocess.run(
-        [
-            "oc",
-            "exec",
-            "-c",
-            container,
-            "-n",
-            namespace,
-            pod,
-            "--",
-            "curl",
-            "-s",
-            "--data-urlencode",
-            f"query={query}",
-            "--data-urlencode",
-            f"start={ts_start}",
-            "--data-urlencode",
-            f"end={ts_end}",
-            "--data-urlencode",
-            f"step={step}",
-            "http://localhost:9090/api/v1/query_range",
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if r.returncode != 0:
-        raise RuntimeError(r.stderr.strip() or "oc exec failed")
-    return json.loads(r.stdout)
-
-
-def run_merge(
-    yaml_path: str,
-    output: str | None,
-    *,
-    namespace: str,
-    pod: str,
-    container: str,
-) -> str:
-    data = load_queries_yaml(yaml_path)
-    names = query_names(data)
-    if not names:
-        raise ValueError("no queries in file")
-
-    prom_pod = prometheus_pod(namespace, pod)
-    print(f"Using pod {prom_pod} in {namespace}", file=sys.stderr)
-
-    series_by_name: Dict[str, Dict[str, str]] = {}
-    for name in names:
-        start, end, step, query = lookup_query_lines(data, name)
-        if not start or not step:
-            raise ValueError(f'query "{name}" requires start and step in YAML defaults')
-        print(f"[{name}]", file=sys.stderr)
-        payload = query_range(
-            namespace=namespace,
-            pod=prom_pod,
-            container=container,
-            query=query,
-            start=start,
-            end=end,
-            step=step,
-        )
-        series_by_name[name] = series_from_range_json(payload)
-
-    out = output or str(Path(yaml_path).parent / "csv-data" / "combined.csv")
-    write_merged_csv(names, series_by_name, out)
-    return out
-
-
 def _die(msg: str) -> None:
     print(msg, file=sys.stderr)
     sys.exit(1)
 
 
-def _main_merge(argv: List[str]) -> None:
-    p = argparse.ArgumentParser(prog="prom_query_yaml")
-    p.add_argument("--merge", action="store_true", help="query Prometheus, write one CSV")
-    p.add_argument("file", help="queries YAML")
-    p.add_argument("-o", "--output", help="output CSV (default: csv-data/combined.csv)")
-    p.add_argument("-n", "--namespace", default="openshift-monitoring")
-    p.add_argument("-p", "--pod", default="")
-    p.add_argument("-c", "--container", default="prometheus")
-    args = p.parse_args(argv)
-    try:
-        out = run_merge(
-            args.file,
-            args.output,
-            namespace=args.namespace,
-            pod=args.pod,
-            container=args.container,
-        )
-    except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as e:
-        _die(str(e))
-    print(out)
-
-
 def main(argv: List[str] | None = None) -> None:
     argv = argv if argv is not None else sys.argv[1:]
-    if "--merge" in argv:
-        _main_merge(argv)
-        return
-
     p = argparse.ArgumentParser(prog="prom_query_yaml")
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -407,7 +217,7 @@ def main(argv: List[str] | None = None) -> None:
                 f'Available queries: {", ".join(e.available)}'
             )
         except MissingQueryFieldError as e:
-            _die(f"Error: {e}")
+            _die(f'Error: {e}')
         except MissingThresholdError as e:
             _die(f"Error: {e}")
         except ValueError as e:
