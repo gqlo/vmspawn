@@ -7,8 +7,9 @@
 # Or:
 #   ln -sf ../../hooks/pre-commit .git/hooks/pre-commit
 #
-# Runs yamllint on staged helpers/*.yaml and workload/*.yaml, markdownlint-cli2
-# on any staged *.md, and bats when vstorm / templates / helpers / workload / tests change.
+# Runs yamllint on staged plain YAML (same globs as CI lint-yaml; templates/*.yaml
+# omitted — not valid YAML for yamllint), markdownlint-cli2 on any staged *.md, and
+# bats when vstorm / templates / helpers / workload / tests change.
 
 set -eu
 
@@ -28,10 +29,12 @@ while IFS= read -r f; do
         md_files+=("$f")
     fi
 
-    # Same scope as documented for yamllint (templates/*.yaml omitted — not valid YAML for yamllint)
-    if [[ "$f" == helpers/*.yaml || "$f" == workload/*.yaml ]]; then
-        yaml_files+=("$f")
-    fi
+    # Same scope as CI lint-yaml (.github/workflows/test.yaml)
+    case "$f" in
+        helpers/*.yaml|workload/*.yaml|monitoring/yaml/*.yaml|\
+        monitoring/tests/fixtures/*.yaml|.github/workflows/*.yaml)
+            yaml_files+=("$f") ;;
+    esac
 
     case "$f" in
         vstorm|templates/*|helpers/*|workload/*|tests/*.bats|tests/helpers.bash)

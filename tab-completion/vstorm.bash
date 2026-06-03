@@ -14,9 +14,10 @@ _vstorm() {
 		--cores= --memory= --request-memory= --request-cpu=
 		--vms= --vms-per-namespace= --namespaces=
 		--run-strategy=
-		--create-existing-vm --wait --wait= --run-strategy=
+		--create-existing-vm --wait --wait=
 		--containerdisk --containerdisk=
-		--cloudinit= --custom-templates=
+		--vm-template=
+		--cloudinit=
 		--profile --profile=
 		--delete= --delete-all --yes
 	)

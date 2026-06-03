@@ -185,7 +185,10 @@ setup_file() {
 @test "ERR: missing namespace template fails" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err017 --vms=1 --namespaces=1
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  run bash "$tmpdir/vstorm" -n --batch-id=err017 --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
   [[ "$output" == *"No namespace template found"* ]]
   rm -rf "$tmpdir"
@@ -197,10 +200,12 @@ setup_file() {
 @test "ERR: missing dv template fails in snapshot+datasource mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp templates/namespace.yaml "$tmpdir/"
-  cp templates/volumesnap.yaml "$tmpdir/"
-  cp templates/vm-snap.yaml "$tmpdir/"
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err018 \
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  cp templates/namespace.yaml templates/volumesnap.yaml templates/vm-snap.yaml \
+    "$tmpdir/templates/"
+  run bash "$tmpdir/vstorm" -n --batch-id=err018 \
     --vms=1 --namespaces=1 --snapshot-class=my-snap
   [ "$status" -ne 0 ]
   [[ "$output" == *"No dv template found"* ]]
@@ -213,9 +218,11 @@ setup_file() {
 @test "ERR: missing dv template fails in URL mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp templates/namespace.yaml "$tmpdir/"
-  cp templates/vm-clone.yaml "$tmpdir/"
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err019 \
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  cp templates/namespace.yaml templates/vm-clone.yaml "$tmpdir/templates/"
+  run bash "$tmpdir/vstorm" -n --batch-id=err019 \
     --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
   [ "$status" -ne 0 ]
   [[ "$output" == *"No dv template found"* ]]
@@ -228,10 +235,12 @@ setup_file() {
 @test "ERR: missing vm template fails in snapshot mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp templates/namespace.yaml "$tmpdir/"
-  cp templates/volumesnap.yaml "$tmpdir/"
-  cp templates/dv-datasource.yaml "$tmpdir/"
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err020 \
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  cp templates/namespace.yaml templates/volumesnap.yaml templates/dv-datasource.yaml \
+    "$tmpdir/templates/"
+  run bash "$tmpdir/vstorm" -n --batch-id=err020 \
     --vms=1 --namespaces=1 --snapshot-class=my-snap
   [ "$status" -ne 0 ]
   [[ "$output" == *"No vm template found"* ]]
@@ -244,8 +253,11 @@ setup_file() {
 @test "ERR: missing vm template fails in no-snapshot datasource mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp templates/namespace.yaml "$tmpdir/"
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err021 \
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  cp templates/namespace.yaml "$tmpdir/templates/"
+  run bash "$tmpdir/vstorm" -n --batch-id=err021 \
     --vms=1 --namespaces=1 --no-snapshot
   [ "$status" -ne 0 ]
   [[ "$output" == *"No vm template found"* ]]
@@ -258,9 +270,11 @@ setup_file() {
 @test "ERR: missing vm template fails in URL no-snapshot mode" {
   local tmpdir
   tmpdir=$(mktemp -d)
-  cp templates/namespace.yaml "$tmpdir/"
-  cp templates/dv.yaml "$tmpdir/"
-  run env CREATE_VM_PATH="$tmpdir" bash "$VSTORM" -n --batch-id=err022 \
+  cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
+  chmod +x "$tmpdir/vstorm"
+  mkdir "$tmpdir/templates"
+  cp templates/namespace.yaml templates/dv.yaml "$tmpdir/templates/"
+  run bash "$tmpdir/vstorm" -n --batch-id=err022 \
     --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2 --no-snapshot
   [ "$status" -ne 0 ]
   [[ "$output" == *"No vm template found"* ]]

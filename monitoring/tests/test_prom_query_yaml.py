@@ -270,6 +270,77 @@ class TestPromQueryYamlCLI(unittest.TestCase):
         self.assertIn("Available queries", err)
 
 
+class TestMergeMode(unittest.TestCase):
+    def test_series_from_range_json(self) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [{"metric": {}, "values": [[1716820954, "3"]]}],
+            },
+        }
+        series = pqy.series_from_range_json(payload)
+        self.assertEqual(list(series.values()), ["3"])
+
+    def test_series_from_range_json_rejects_multi_series(self) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {"metric": {"instance": "a"}, "values": [[1716820954, "1"]]},
+                    {"metric": {"instance": "b"}, "values": [[1716820954, "2"]]},
+                ],
+            },
+        }
+        with self.assertRaises(ValueError) as ctx:
+            pqy.series_from_range_json(payload)
+        self.assertIn("single-valued", str(ctx.exception))
+
+    def test_series_from_range_json_rejects_duplicate_timestamp(self) -> None:
+        payload = {
+            "status": "success",
+            "data": {
+                "resultType": "matrix",
+                "result": [
+                    {
+                        "metric": {"job": "test"},
+                        "values": [[1716820954, "1"], [1716820954, "2"]],
+                    },
+                ],
+            },
+        }
+        with self.assertRaises(ValueError) as ctx:
+            pqy.series_from_range_json(payload)
+        self.assertIn("duplicate timestamp", str(ctx.exception))
+        self.assertIn("series_from_range_json", str(ctx.exception))
+
+    def test_write_merged_csv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "combined.csv"
+            pqy.write_merged_csv(
+                ["count-cpu-util-pd", "count-memory-util-pd"],
+                {
+                    "count-cpu-util-pd": {
+                        "2026-05-27 15:22:34": "1",
+                        "2026-05-27 15:23:34": "0",
+                    },
+                    "count-memory-util-pd": {
+                        "2026-05-27 15:22:34": "2",
+                        "2026-05-27 15:24:34": "1",
+                    },
+                },
+                str(out),
+            )
+            self.assertEqual(
+                out.read_text(encoding="utf-8"),
+                "timestamp,count-cpu-util-pd,count-memory-util-pd\n"
+                "2026-05-27 15:22:34,1,2\n"
+                "2026-05-27 15:23:34,0,\n"
+                "2026-05-27 15:24:34,,1\n",
+            )
+
+
 class TestPromQueryShellScript(unittest.TestCase):
     @unittest.skipUnless(_PROM_QUERY.is_file(), "prom-query not present")
     def test_list_matches_python_cli(self) -> None:
