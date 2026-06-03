@@ -46,4 +46,3 @@ overutilized-nodes-classified:
       descheduler:node:linear_amplified_ideal_point_positive_distance:k3:avg1m
       > on() group_left() avg(descheduler:node:linear_amplified_ideal_point_positive_distance:k3:avg1m) + ${threshold}
     )
-
