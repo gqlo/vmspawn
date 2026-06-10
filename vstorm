@@ -26,6 +26,7 @@ USE_SNAPSHOT=1
 STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
+UDN_L2=0
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="vm-base"
@@ -214,6 +215,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms=N                 Number of VMs ($NUM_VMS)
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
+        --udn-l2                Label namespaces for Layer 2 primary UDN
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -278,6 +280,7 @@ process_option() {
 	vmsper*)   NUM_VMS_PER_NAMESPACE=$value ;;
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
+	udnl2)     UDN_L2=1 ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
 		       '') WAIT=1 ;;  # --wait with no value
@@ -681,6 +684,7 @@ Creating resources for:
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
+  UDN L2: $(if ((UDN_L2)); then echo "enabled"; else echo "disabled"; fi)
 
 EOF
 }
@@ -755,7 +759,11 @@ create_namespaces() {
     log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
     local ns_file="${TEMPLATE_CACHE[namespace]}"
+    local udn_label=
     local -A existing_namespaces=()
+    if ((UDN_L2)); then
+	udn_label='k8s.ovn.org/primary-user-defined-network: ""'
+    fi
     if ((wet_run)) ; then
 	local namespace
 	while read -r namespace ; do
@@ -767,14 +775,29 @@ create_namespaces() {
 
         # Check if namespace already exists
 	if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
-            log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
+			if ((UDN_L2)); then
+				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, UDN label cannot be applied.. exiting"
+				exit 1
+			else
+				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
+			fi
         else
             log_message "Creating namespace: ${C_VAL}$namespace${C_RST}"
-            process_template "$ns_file" | oc_apply
+            process_template "$ns_file" |
+		indent_token UDN_LABEL "$udn_label" |
+		oc_apply
         fi
     done
 }
 
+################################################################
+# UDN L2
+create_udn_l2() {
+    log_message "${C_BOLD}Creating UDN L2...${C_RST}"
+    local udn_l2_file="${TEMPLATE_CACHE[udn-l2]}"
+    process_template "$udn_l2_file" |
+	oc_apply
+}
 ################################################################
 # DataVolumes
 check_datavolume_status() {
@@ -935,8 +958,11 @@ wait_for_all_vms() {
 create_virtualmachines() {
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
     VM_ID=1
-    local vm_file="${TEMPLATE_CACHE[vm]}"
-
+	if ((UDN_L2)); then
+		vm_file="${TEMPLATE_CACHE[vm-udn]}"
+	else
+		vm_file="${TEMPLATE_CACHE[vm]}"
+	fi
     # Auto-apply default cloud-init when using DataSource or container disk
     # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
     if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
@@ -1440,6 +1466,7 @@ profiler_prompt_and_stop() {
     echo "Plot with:    go tool pprof -svg $output_dir/<pod>/cpu.pprof > cpu.svg"
 }
 
+
 ################################################################
 # Main execution
 main() {
@@ -1473,6 +1500,10 @@ main() {
     log_message "Run strategy:  ${C_VAL}$RUN_STRATEGY${C_RST}"
 
     create_namespaces
+	if ((UDN_L2)); then
+		log_message "UDN L2: enabled"
+		create_udn_l2
+	fi
     if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
 	create_datavolumes
 	if ((USE_SNAPSHOT)) ; then
