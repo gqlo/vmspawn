@@ -2,6 +2,9 @@ apiVersion: k8s.ovn.org/v1
 kind: UserDefinedNetwork
 metadata:
   name: l2-network-{BATCH_ID}
+  namespace: {vm-ns}
+  labels:
+    batch-id: "{BATCH_ID}"
 spec:
   topology: Layer2
   layer2:

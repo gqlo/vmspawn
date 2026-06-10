@@ -774,7 +774,7 @@ create_namespaces() {
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
         # Check if namespace already exists
-	if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
+		if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
 			if ((UDN_L2)); then
 				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, UDN label cannot be applied.. exiting"
 				exit 1
@@ -784,18 +784,22 @@ create_namespaces() {
         else
             log_message "Creating namespace: ${C_VAL}$namespace${C_RST}"
             process_template "$ns_file" |
-		indent_token UDN_LABEL "$udn_label" |
-		oc_apply
-        fi
+			indent_token UDN_LABEL "$udn_label" |
+			oc_apply
+			if ((UDN_L2)); then
+				create_udn_l2 "$namespace"
+			fi
+		fi
     done
 }
 
 ################################################################
 # UDN L2
 create_udn_l2() {
-    log_message "${C_BOLD}Creating UDN L2...${C_RST}"
+	local namespace=$1
+	log_message "Creating UDN L2 in namespace: ${C_VAL}$namespace${C_RST}"
     local udn_l2_file="${TEMPLATE_CACHE[udn-l2]}"
-    process_template "$udn_l2_file" |
+    process_template "$udn_l2_file" | indent_token NAMESPACE "$namespace" |
 	oc_apply
 }
 ################################################################
@@ -1500,10 +1504,6 @@ main() {
     log_message "Run strategy:  ${C_VAL}$RUN_STRATEGY${C_RST}"
 
     create_namespaces
-	if ((UDN_L2)); then
-		log_message "UDN L2: enabled"
-		create_udn_l2
-	fi
     if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
 	create_datavolumes
 	if ((USE_SNAPSHOT)) ; then
