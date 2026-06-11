@@ -9,7 +9,7 @@ spec:
   topology: Layer2
   layer2:
     role: Primary
-    subnets: ["10.132.0.0/20"]
+    subnets: ["{SUBNET}"]
     ipam:
       mode: Enabled
       lifecycle: Persistent

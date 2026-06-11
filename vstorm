@@ -27,6 +27,7 @@ STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
 UDN_L2=0
+SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="vm-base"
@@ -216,6 +217,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --udn-l2                Label namespaces for Layer 2 primary UDN
+        --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -281,6 +283,7 @@ process_option() {
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
 	udnl2)     UDN_L2=1 ;;
+	subnet*)   SUBNET=$value ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
 		       '') WAIT=1 ;;  # --wait with no value
@@ -601,6 +604,19 @@ validate_required_templates() {
 	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-clone.yaml")
     fi
 
+    if ((UDN_L2)); then
+	TEMPLATE_CACHE[udn-l2]=$(_require_builtin udn-l2 "$T/udn-l2.yaml")
+	if [[ -n "$CONTAINERDISK_IMAGE" ]]; then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-containerdisk-udn.yaml")
+	elif ((USE_SNAPSHOT)); then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-snap-udn.yaml")
+	elif [[ -n "$DATASOURCE" ]]; then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-datasource-udn.yaml")
+	else
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-clone-udn.yaml")
+	fi
+    fi
+
     if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
 	if [[ -n "$DATASOURCE" ]]; then
 	    if ((USE_SNAPSHOT)); then
@@ -684,7 +700,7 @@ Creating resources for:
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
-  UDN L2: $(if ((UDN_L2)); then echo "enabled"; else echo "disabled"; fi)
+  UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
 
 EOF
 }
@@ -725,6 +741,7 @@ process_template() {
         -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g"
         -e "s/{VM_MEMORY}/$VM_MEMORY/g"
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
+        -e "s|{SUBNET}|$SUBNET|g"
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
     )
 
