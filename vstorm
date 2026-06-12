@@ -1064,10 +1064,24 @@ firmware:
 	cloudinit_disk="- disk:
     bus: virtio
   name: cloudinit"
-	cloudinit_volume="- cloudInitNoCloud:
+	if ((UDN_L2)); then
+	    cloudinit_volume="- cloudInitNoCloud:
+    secretRef:
+      name: ${VM_BASENAME}-cloudinit
+    networkData: |
+      version: 2
+      ethernets:
+        primary-nic: # This is just a label/ID, not the OS device name
+          match:
+            name: "e*" # Matches eth0, enp1s0, ens3, etc.
+          dhcp4: true
+  name: cloudinit"
+	else
+	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
       name: ${VM_BASENAME}-cloudinit
   name: cloudinit"
+	fi
     fi
     local -A existing_vms=()
     if ((! RECREATE_EXISTING_VMS)) ; then
