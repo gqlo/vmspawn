@@ -1,0 +1,19 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ssh-nodeport-{VM_BASENAME}-{BATCH_ID}
+  namespace: {vm-ns}
+  labels:
+    batch-id: "{BATCH_ID}"
+    vm-basename: "{VM_BASENAME}"
+spec:
+  type: NodePort
+  selector:
+    kubevirt.io/domain: {VM_BASENAME}
+    vm.kubevirt.io/name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+  ports:
+  - name: ssh
+    protocol: TCP
+    port: 22          # Cluster internal port
+    targetPort: 22    # The SSH port inside the VM guest OS
+    nodePort: {SSH_NODEPORT}

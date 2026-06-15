@@ -27,6 +27,10 @@ STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
 UDN_L2=0
+UDN_SSH_SVC=0
+UDN_SSH_NODEPORT_BASE=32222
+UDN_SSH_NODEPORT_NEXT=
+UDN_SSH_SVC_INFO=()
 SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
@@ -138,6 +142,10 @@ validate_args() {
 	    usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
 	fi
 
+	if ((UDN_SSH_SVC)) && (( ! UDN_L2 )) ; then
+	    fatal "--udn-ssh requires --udn-l2"
+	fi
+
 	case "$RUN_STRATEGY" in
 	    Always|Halted|Manual|RerunOnFailure) ;;
 	    *) usage_error "Invalid --run-strategy '$RUN_STRATEGY'; must be one of: Always, Halted, Manual, RerunOnFailure" ;;
@@ -218,6 +226,8 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --udn-l2                Label namespaces for Layer 2 primary UDN
         --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
+        --udn-ssh               Expose the first VM in each namespace via NodePort SSH
+                                | | | (requires --udn-l2; ports from 32222, auto-incremented)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -283,6 +293,7 @@ process_option() {
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
 	udnl2)     UDN_L2=1 ;;
+	udnssh)    UDN_SSH_SVC=1 ;;
 	subnet*)   SUBNET=$value ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
@@ -615,6 +626,9 @@ validate_required_templates() {
 	else
 	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-clone-udn.yaml")
 	fi
+	if ((UDN_SSH_SVC)); then
+	    TEMPLATE_CACHE[svc-ssh-udn]=$(_require_builtin svc-ssh-udn "$T/svc-ssh-udn.yaml")
+	fi
     fi
 
     if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
@@ -701,6 +715,7 @@ Creating resources for:
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
   UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
+  UDN SSH: $(if ((UDN_SSH_SVC)); then echo "enabled (NodePort from $UDN_SSH_NODEPORT_BASE, auto-incremented per service)"; else echo "disabled"; fi)
 
 EOF
 }
@@ -743,6 +758,7 @@ process_template() {
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
         -e "s|{SUBNET}|$SUBNET|g"
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
+        -e "s/{SSH_NODEPORT}/${SSH_NODEPORT:-$UDN_SSH_NODEPORT_BASE}/g"
     )
 
     sed "${sed_args[@]}" "$file"
@@ -818,6 +834,65 @@ create_udn_l2() {
     local udn_l2_file="${TEMPLATE_CACHE[udn-l2]}"
     process_template "$udn_l2_file" | indent_token NAMESPACE "$namespace" |
 	oc_apply
+}
+
+first_vm_id_for_namespace() {
+    local -i ns=$1
+    local -i vm_id=1
+    local -i i count
+    for ((i=1; i<ns; i++)); do
+	count=$VMS_PER_NAMESPACE
+	if (( i <= REMAINDER_VMS )); then
+	    count=$((count + 1))
+	fi
+	vm_id=$((vm_id + count))
+    done
+    echo "$vm_id"
+}
+
+init_udn_ssh_nodeport_next() {
+    UDN_SSH_NODEPORT_NEXT=$UDN_SSH_NODEPORT_BASE
+    if ((wet_run)); then
+	local -i max_port=0
+	local port
+	while read -r port; do
+	    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= UDN_SSH_NODEPORT_BASE && port <= 32767 )); then
+		if (( port > max_port )); then max_port=$port; fi
+	    fi
+	done < <(oc get svc -A -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' 2>/dev/null || true)
+	if (( max_port >= UDN_SSH_NODEPORT_BASE )); then
+	    UDN_SSH_NODEPORT_NEXT=$((max_port + 1))
+	fi
+    fi
+    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+    fi
+}
+
+next_udn_ssh_nodeport() {
+    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+    fi
+    SSH_NODEPORT=$UDN_SSH_NODEPORT_NEXT
+    UDN_SSH_NODEPORT_NEXT=$((UDN_SSH_NODEPORT_NEXT + 1))
+}
+
+create_udn_ssh_svc() {
+    local svc_file="${TEMPLATE_CACHE[svc-ssh-udn]}"
+    local -i ns first_vm_id
+    local svc_name
+    UDN_SSH_SVC_INFO=()
+    init_udn_ssh_nodeport_next
+    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+	namespace="vm-${BATCH_ID}-ns-${ns}"
+	first_vm_id=$(first_vm_id_for_namespace "$ns")
+	VM_ID=$first_vm_id
+	next_udn_ssh_nodeport
+	svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	process_template "$svc_file" | oc_apply
+	UDN_SSH_SVC_INFO+=("${namespace}:${VM_ID}:${SSH_NODEPORT}")
+    done
 }
 ################################################################
 # DataVolumes
@@ -1544,6 +1619,9 @@ main() {
 	fi
     fi
     create_virtualmachines
+    if ((UDN_SSH_SVC)); then
+	create_udn_ssh_svc
+    fi
 
     # TODO: re-enable once verify_cloudinit is improved
     # if ((wet_run && WAIT)) && [[ -n "$CLOUDINIT_FILE" ]]; then
@@ -1599,6 +1677,19 @@ main() {
 	fi
 	cat <<-EOF
 	  oc get vm -A -l batch-id=$BATCH_ID
+	EOF
+	if ((UDN_SSH_SVC)) && ((${#UDN_SSH_SVC_INFO[@]} > 0)); then
+	    local entry ns_name vm_id ssh_port
+	    cat <<-EOF
+
+	SSH to the first VM in each namespace (NodePort on any cluster node):
+	EOF
+	    for entry in "${UDN_SSH_SVC_INFO[@]}"; do
+		IFS=: read -r ns_name vm_id ssh_port <<< "$entry"
+		echo "  ${ns_name}: ssh root@<node-ip> -p ${ssh_port}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+	    done
+	fi
+	cat <<-EOF
 
 	To delete all resources in this batch:
 	  oc delete vm -A -l batch-id=$BATCH_ID
