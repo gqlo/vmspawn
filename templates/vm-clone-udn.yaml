@@ -12,6 +12,9 @@ spec:
     kind: DataVolume
     metadata:
       name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+      labels:
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
     spec:
       storage:
         accessModes:
@@ -24,7 +27,7 @@ spec:
       source:
         pvc:
           namespace: {vm-ns}
-          name: {VM_BASENAME}-base
+          name: {BASE_PVC_NAME}
   runStrategy: {RUN_STRATEGY}
   template:
     metadata:

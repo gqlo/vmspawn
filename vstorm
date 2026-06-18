@@ -17,7 +17,7 @@ done
 # Configuration variables - modify these as needed
 DATASOURCE=
 DATASOURCE_NS="openshift-virtualization-os-images"
-DV_URL="http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow"
+DV_URL="http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com/images/rhel9-cloud-init.qcow"
 STORAGE_SIZE="32Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
@@ -100,6 +100,14 @@ usage_error() {
     exit 1
 }
 
+validate_subnet() {
+    local cidr=$1
+    [[ -n "$cidr" ]] || fatal "--subnet requires a non-empty IPv4 CIDR (e.g. 10.132.10.0/16)"
+    if ! [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; then
+	fatal "Invalid --subnet='$cidr'; expected IPv4 CIDR (e.g. 10.132.10.0/16)"
+    fi
+}
+
 validate_args() {
     # Detect options misplaced after positional arguments.  Bash getopts
     # stops at the first non-option word, so any --option that appears
@@ -144,6 +152,10 @@ validate_args() {
 
 	if ((UDN_SSH_SVC)) && (( ! UDN_L2 )) ; then
 	    fatal "--udn-ssh requires --udn-l2"
+	fi
+
+	if ((UDN_L2)); then
+	    validate_subnet "$SUBNET"
 	fi
 
 	case "$RUN_STRATEGY" in
@@ -294,7 +306,10 @@ process_option() {
 	namesp*)   NUM_NAMESPACES=$value ;;
 	udnl2)     UDN_L2=1 ;;
 	udnssh)    UDN_SSH_SVC=1 ;;
-	subnet*)   SUBNET=$value ;;
+	subnet*)
+	    SUBNET=$value
+	    validate_subnet "$SUBNET"
+	    ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
 		       '') WAIT=1 ;;  # --wait with no value
@@ -809,8 +824,7 @@ create_namespaces() {
         # Check if namespace already exists
 		if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
 			if ((UDN_L2)); then
-				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, UDN label cannot be applied.. exiting"
-				exit 1
+				fatal "Namespace ${C_VAL}$namespace${C_RST} already exists, UDN label cannot be applied."
 			else
 				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
 			fi
