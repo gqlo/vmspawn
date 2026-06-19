@@ -102,6 +102,15 @@ vstorm --udn-l2 --service=nodeport:22:2222 --vms=10 --namespaces=2
 
 # 15. VM Service without UDN (defaults: nodeport, port 22, targetPort 22)
 vstorm --service --containerdisk --vms=6 --namespaces=3
+
+# 16. Descheduler stress-ng workload with UDN + NodePort (l2bridge + DHCP networkData; basename labels the batch)
+vstorm --memory=8Gi --cores=2 \
+  --udn-l2 --service \
+  --cloudinit=workload/cloudinit-stress-ng-workload.yaml \
+  --env STRESS_TOGETHER=0 \
+  --env CPU_ACTIVE_PROBABILITY=30 \
+  --env MEM_ACTIVE_PROBABILITY=80 \
+  --wait --basename=desched-t1 --vms=11 --namespaces=2
 ```
 
 ## Cloud-init
