@@ -12,18 +12,22 @@ setup_file() {
 }
 
 # ===============================================================
-# Category 14: Validation / error handling (ERR-UDN-1 through ERR-UDN-7)
+# Category 14: Standalone VM Service
 # ===============================================================
 
 # ---------------------------------------------------------------
-# ERR-UDN-1: --service without --udn-l2
+# Standalone --service without --udn-l2
 # ---------------------------------------------------------------
 @test "UDN: --service works without --udn-l2" {
-  run bash "$VSTORM" -n --batch-id=udnerr1 --service --vms=1 --namespaces=1
+  run bash "$VSTORM" -n --batch-id=udnsvc1 --service --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
   [[ "$output" == *"kind: Service"* ]]
   [[ "$output" == *"Service: enabled (NodePort"* ]]
 }
+
+# ===============================================================
+# Category 14: Validation / error handling (ERR-UDN-2 through ERR-UDN-7)
+# ===============================================================
 
 # ---------------------------------------------------------------
 # ERR-UDN-2: invalid --service value

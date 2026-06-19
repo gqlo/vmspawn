@@ -300,13 +300,13 @@ Live-mode tests using a mock `oc` that simulates WFFC storage combined with othe
 | COMBO-48 | `-q --dv-url=... --vms=2` | Quiet mode with URL import |
 | COMBO-49 | `-q --delete=abc123` | Quiet mode with delete |
 
-### User Defined Network and VM Service (UDN-1 through UDN-16, ERR-UDN-1 through ERR-UDN-7)
+### User Defined Network and VM Service (UDN-1 through UDN-16, ERR-UDN-2 through ERR-UDN-7)
 
 Tests in `tests/14-udn.bats` cover the `--udn-l2[=CIDR]` and `--service` flags. All use dry-run mode with the shared mock `oc`.
 
 | Test | Command | What it validates |
 |---|---|---|
-| ERR-UDN-1 | `--service` (no `--udn-l2`) | Service created without UDN |
+| Standalone service | `--service` (no `--udn-l2`) | Service created without UDN |
 | ERR-UDN-2 | `--service=invalid` | Invalid service type rejected |
 | ERR-UDN-2b | `--service=nodeport:70000` | Invalid port rejected |
 | ERR-UDN-3 | `--udn-l2=not-a-cidr` | Invalid CIDR format rejected |
