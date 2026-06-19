@@ -470,12 +470,12 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-11: ./vstorm --udn-l2 --udn-service --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+# QS-11: ./vstorm --udn-l2=10.132.10.0/16 --service --vms=10 --namespaces=2
 #   Layer 2 primary UDN + NodePort service (README Quick Start #10)
 # ---------------------------------------------------------------
 @test "QS: UDN L2 with NodePort service across 2 namespaces" {
-  run bash "$VSTORM" -n --batch-id=qs0011 --udn-l2 --udn-service \
-    --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+  run bash "$VSTORM" -n --batch-id=qs0011 --udn-l2=10.132.10.0/16 --service \
+    --vms=10 --namespaces=2
   [ "$status" -eq 0 ]
 
   # --- two namespaces with UDN label ---

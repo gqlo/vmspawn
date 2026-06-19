@@ -16,53 +16,54 @@ setup_file() {
 # ===============================================================
 
 # ---------------------------------------------------------------
-# ERR-UDN-1: --udn-service without --udn-l2
+# ERR-UDN-1: --service without --udn-l2
 # ---------------------------------------------------------------
-@test "ERR: --udn-service requires --udn-l2" {
-  run bash "$VSTORM" -n --batch-id=udnerr1 --udn-service --vms=1 --namespaces=1
-  [ "$status" -ne 0 ]
-  [[ "$output" == *"--udn-service requires --udn-l2"* ]]
+@test "UDN: --service works without --udn-l2" {
+  run bash "$VSTORM" -n --batch-id=udnerr1 --service --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kind: Service"* ]]
+  [[ "$output" == *"Service: enabled (NodePort"* ]]
 }
 
 # ---------------------------------------------------------------
-# ERR-UDN-2: invalid --udn-service value
+# ERR-UDN-2: invalid --service value
 # ---------------------------------------------------------------
-@test "ERR: invalid --udn-service value rejected" {
-  run bash "$VSTORM" -n --batch-id=udnerr2 --udn-l2 --udn-service=invalid \
+@test "ERR: invalid --service value rejected" {
+  run bash "$VSTORM" -n --batch-id=udnerr2 --udn-l2 --service=invalid \
     --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Invalid --udn-service value 'invalid'"* ]]
+  [[ "$output" == *"Invalid --service value 'invalid'"* ]]
   [[ "$output" == *"use TYPE[:PORT[:TARGET_PORT]]"* ]]
 }
 
 # ---------------------------------------------------------------
-# ERR-UDN-2b: invalid --udn-service port
+# ERR-UDN-2b: invalid --service port
 # ---------------------------------------------------------------
-@test "ERR: invalid --udn-service port rejected" {
-  run bash "$VSTORM" -n --batch-id=udnerr2b --udn-l2 --udn-service=nodeport:70000 \
+@test "ERR: invalid --service port rejected" {
+  run bash "$VSTORM" -n --batch-id=udnerr2b --udn-l2 --service=nodeport:70000 \
     --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
   [[ "$output" == *"Invalid port '70000'"* ]]
 }
 
 # ---------------------------------------------------------------
-# ERR-UDN-3: invalid --subnet format
+# ERR-UDN-3: invalid --udn-l2 CIDR format
 # ---------------------------------------------------------------
-@test "ERR: invalid --subnet format rejected" {
-  run bash "$VSTORM" -n --batch-id=udnerr3 --udn-l2 --subnet=not-a-cidr \
+@test "ERR: invalid --udn-l2 CIDR format rejected" {
+  run bash "$VSTORM" -n --batch-id=udnerr3 --udn-l2=not-a-cidr \
     --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Invalid --subnet='not-a-cidr'"* ]]
+  [[ "$output" == *"Invalid --udn-l2='not-a-cidr'"* ]]
 }
 
 # ---------------------------------------------------------------
-# ERR-UDN-4: --subnet prefix out of range
+# ERR-UDN-4: --udn-l2 prefix out of range
 # ---------------------------------------------------------------
-@test "ERR: --subnet prefix out of range rejected" {
-  run bash "$VSTORM" -n --batch-id=udnerr4 --udn-l2 --subnet=10.0.0.0/33 \
+@test "ERR: --udn-l2 prefix out of range rejected" {
+  run bash "$VSTORM" -n --batch-id=udnerr4 --udn-l2=10.0.0.0/33 \
     --vms=1 --namespaces=1
   [ "$status" -ne 0 ]
-  [[ "$output" == *"Invalid --subnet='10.0.0.0/33'"* ]]
+  [[ "$output" == *"Invalid --udn-l2='10.0.0.0/33'"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -102,9 +103,9 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# ERR-UDN-7: missing svc-udn template
+# ERR-UDN-7: missing service template
 # ---------------------------------------------------------------
-@test "ERR: missing svc-udn template fails with --udn-service" {
+@test "ERR: missing service template fails with --service" {
   local tmpdir
   tmpdir=$(mktemp -d)
   cp "$BATS_TEST_DIRNAME/../vstorm" "$tmpdir/vstorm"
@@ -112,10 +113,10 @@ setup_file() {
   mkdir "$tmpdir/templates"
   cp templates/namespace.yaml templates/udn-l2.yaml templates/vm-clone.yaml \
     templates/vm-clone-udn.yaml templates/dv.yaml "$tmpdir/templates/"
-  run bash "$tmpdir/vstorm" -n --batch-id=udnerr7 --udn-l2 --udn-service \
+  run bash "$tmpdir/vstorm" -n --batch-id=udnerr7 --service \
     --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow --no-snapshot
   [ "$status" -ne 0 ]
-  [[ "$output" == *"No svc-udn template found"* ]]
+  [[ "$output" == *"No vm-service template found"* ]]
   rm -rf "$tmpdir"
 }
 
@@ -143,10 +144,10 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# UDN-2: custom --subnet
+# UDN-2: custom --udn-l2 CIDR
 # ---------------------------------------------------------------
-@test "UDN: custom --subnet appears in UDN CR and summary" {
-  run bash "$VSTORM" -n --batch-id=udn002 --udn-l2 --subnet=10.200.0.0/16 \
+@test "UDN: custom --udn-l2 CIDR appears in UDN CR and summary" {
+  run bash "$VSTORM" -n --batch-id=udn002 --udn-l2=10.200.0.0/16 \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
@@ -261,7 +262,7 @@ setup_file() {
 # UDN-10: NodePort services per namespace (default port 22)
 # ---------------------------------------------------------------
 @test "UDN: NodePort service created per namespace with default port 22" {
-  run bash "$VSTORM" -n --batch-id=udn010 --udn-l2 --udn-service \
+  run bash "$VSTORM" -n --batch-id=udn010 --udn-l2 --service \
     --vms=2 --namespaces=2
   [ "$status" -eq 0 ]
 
@@ -275,23 +276,23 @@ setup_file() {
   [[ "$output" == *"nodePort: 32222"* ]]
   [[ "$output" == *"nodePort: 32223"* ]]
   [[ "$output" == *"kubevirt.io/domain: vm"* ]]
-  [[ "$output" == *"Creating UDN NodePort Service"* ]]
-  [[ "$output" == *"UDN service: enabled (NodePort, port 22"* ]]
+  [[ "$output" == *"Creating NodePort Service"* ]]
+  [[ "$output" == *"Service: enabled (NodePort, port 22"* ]]
 }
 
 # ---------------------------------------------------------------
 # UDN-11: ClusterIP service (default port 22)
 # ---------------------------------------------------------------
 @test "UDN: ClusterIP service has no nodePort" {
-  run bash "$VSTORM" -n --batch-id=udn011 --udn-l2 --udn-service=clusterip \
+  run bash "$VSTORM" -n --batch-id=udn011 --udn-l2 --service=clusterip \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"type: ClusterIP"* ]]
-  [[ "$output" == *"name: udn-clusterip-vm-udn011"* ]]
+  [[ "$output" == *"name: svc-clusterip-vm-udn011"* ]]
   [[ "$output" == *"port: 22"* ]]
-  [[ "$output" == *"Creating UDN ClusterIP Service"* ]]
-  [[ "$output" == *"UDN service: enabled (ClusterIP, port 22)"* ]]
+  [[ "$output" == *"Creating ClusterIP Service"* ]]
+  [[ "$output" == *"Service: enabled (ClusterIP, port 22)"* ]]
   [[ "$output" != *"nodePort:"* ]]
 }
 
@@ -299,61 +300,61 @@ setup_file() {
 # UDN-12: NodePort allocation logged per namespace
 # ---------------------------------------------------------------
 @test "UDN: NodePort service ports auto-increment per namespace" {
-  run bash "$VSTORM" -n --batch-id=udn012 --udn-l2 --udn-service \
+  run bash "$VSTORM" -n --batch-id=udn012 --udn-l2 --service \
     --vms=2 --namespaces=2
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"Creating UDN NodePort Service udn-nodeport-vm-udn012 on nodePort 32222 (port 22)"* ]]
-  [[ "$output" == *"Creating UDN NodePort Service udn-nodeport-vm-udn012 on nodePort 32223 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32222 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32223 (port 22)"* ]]
 }
 
 # ---------------------------------------------------------------
 # UDN-13: ClusterIP service naming matches in-cluster hostname pattern
 # ---------------------------------------------------------------
 @test "UDN: ClusterIP service name matches in-cluster hostname pattern" {
-  run bash "$VSTORM" -n --batch-id=udn013 --udn-l2 --udn-service=clusterip \
+  run bash "$VSTORM" -n --batch-id=udn013 --udn-l2 --service=clusterip \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"name: udn-clusterip-vm-udn013"* ]]
+  [[ "$output" == *"name: svc-clusterip-vm-udn013"* ]]
   [[ "$output" == *"namespace: vm-udn013-ns-1"* ]]
-  [[ "$output" == *"Creating UDN ClusterIP Service udn-clusterip-vm-udn013"* ]]
+  [[ "$output" == *"Creating ClusterIP Service svc-clusterip-vm-udn013"* ]]
 }
 
 # ---------------------------------------------------------------
-# UDN-14: without --udn-service, no Service resources
+# UDN-14: without --service, no Service resources
 # ---------------------------------------------------------------
-@test "UDN: without --udn-service, no Service is created" {
+@test "UDN: without --service, no Service is created" {
   run bash "$VSTORM" -n --batch-id=udn014 --udn-l2 --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" != *"kind: Service"* ]]
-  [[ "$output" == *"UDN service: disabled"* ]]
+  [[ "$output" == *"Service: disabled"* ]]
 }
 
 # ---------------------------------------------------------------
 # UDN-15: custom service port
 # ---------------------------------------------------------------
-@test "UDN: custom --udn-service port appears in Service spec" {
-  run bash "$VSTORM" -n --batch-id=udn015 --udn-l2 --udn-service=nodeport:8080 \
+@test "UDN: custom --service port appears in Service spec" {
+  run bash "$VSTORM" -n --batch-id=udn015 --udn-l2 --service=nodeport:8080 \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"port: 8080"* ]]
   [[ "$output" == *"targetPort: 8080"* ]]
-  [[ "$output" == *"UDN service: enabled (NodePort, port 8080"* ]]
+  [[ "$output" == *"Service: enabled (NodePort, port 8080"* ]]
 }
 
 # ---------------------------------------------------------------
 # UDN-16: service port and targetPort differ
 # ---------------------------------------------------------------
-@test "UDN: --udn-service=nodeport:22:2222 sets port and targetPort separately" {
-  run bash "$VSTORM" -n --batch-id=udn016 --udn-l2 --udn-service=nodeport:22:2222 \
+@test "UDN: --service=nodeport:22:2222 sets port and targetPort separately" {
+  run bash "$VSTORM" -n --batch-id=udn016 --udn-l2 --service=nodeport:22:2222 \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"port: 22"* ]]
   [[ "$output" == *"targetPort: 2222"* ]]
-  [[ "$output" == *"UDN service: enabled (NodePort, port 22 -> targetPort 2222"* ]]
+  [[ "$output" == *"Service: enabled (NodePort, port 22 -> targetPort 2222"* ]]
   [[ "$output" == *"port 22 -> targetPort 2222"* ]]
 }
