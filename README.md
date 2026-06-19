@@ -79,16 +79,22 @@ vstorm --delete=a3f7b2
 # 9. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
 
-# 10. Layer 2 primary UDN + SSH via NodePort (--udn-ssh defaults to nodeport; all VMs per namespace; ports from 32222)
-vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+# 10. Layer 2 primary UDN + NodePort service (--udn-service defaults to nodeport:22; node ports from 32222)
+vstorm --udn-l2 --udn-service --subnet=10.132.10.0/16 --vms=10 --namespaces=2
 
-# 11. UDN + container disk + NodePort SSH
-vstorm --udn-l2 --udn-ssh --containerdisk --vms=6 --namespaces=3
-# ssh -o PubkeyAuthentication=no root@<node-ip> -p <port>  (password: password)
+# 11. UDN + container disk + NodePort (port 22)
+vstorm --udn-l2 --udn-service --containerdisk --vms=6 --namespaces=3
+# ssh -o PubkeyAuthentication=no root@<node-ip> -p <node-port>  (password: password)
 
-# 12. UDN + ClusterIP SSH (in-cluster only; all VMs per namespace)
-vstorm --udn-l2 --udn-ssh=clusterip --subnet=10.200.0.0/16 --vms=20 --namespaces=4
+# 12. UDN + ClusterIP: service port 22, VM targetPort 22 (clusterip; in-cluster only)
+vstorm --udn-l2 --udn-service=clusterip --subnet=10.200.0.0/16 --vms=20 --namespaces=4
 # ssh -o PubkeyAuthentication=no root@clusterip
+
+# 13. UDN + NodePort: service port 8080, VM targetPort 8080 (nodeport:SERVICE_PORT)
+vstorm --udn-l2 --udn-service=nodeport:8080 --vms=10 --namespaces=2
+
+# 14. UDN + NodePort: service port 22, VM targetPort 2222 (nodeport:SERVICE_PORT:TARGET_PORT)
+vstorm --udn-l2 --udn-service=nodeport:22:2222 --vms=10 --namespaces=2
 ```
 
 ## Cloud-init

@@ -44,7 +44,7 @@ One test per README Quick Start example. Each validates the full YAML output end
 | QS-8 | `--no-snapshot --vms=10` | Explicit no-snapshot mode, direct DataSource clone, auto cloud-init |
 | QS-9 | `-n --vms=10` | Dry-run outputs YAML, no `oc apply`, no completion message |
 | QS-10 | `--delete=a3f7b2` | Delete dry-run shows correct `oc delete` command |
-| QS-11 | `--udn-l2 --udn-ssh --subnet=... --vms=10 --namespaces=2` | UDN CR per namespace, l2bridge VMs, NodePort SSH services |
+| QS-11 | `--udn-l2 --udn-service --subnet=... --vms=10 --namespaces=2` | UDN CR per namespace, l2bridge VMs, NodePort services (port 22) |
 
 ### Dirty-rate cloud-init workload
 
@@ -300,19 +300,20 @@ Live-mode tests using a mock `oc` that simulates WFFC storage combined with othe
 | COMBO-48 | `-q --dv-url=... --vms=2` | Quiet mode with URL import |
 | COMBO-49 | `-q --delete=abc123` | Quiet mode with delete |
 
-### User Defined Network (UDN-1 through UDN-14, ERR-UDN-1 through ERR-UDN-7)
+### User Defined Network (UDN-1 through UDN-16, ERR-UDN-1 through ERR-UDN-7)
 
-Tests in `tests/14-udn.bats` cover the `--udn-l2`, `--subnet`, and `--udn-ssh` flags. All use dry-run mode with the shared mock `oc`.
+Tests in `tests/14-udn.bats` cover the `--udn-l2`, `--subnet`, and `--udn-service` flags. All use dry-run mode with the shared mock `oc`.
 
 | Test | Command | What it validates |
 |---|---|---|
-| ERR-UDN-1 | `--udn-ssh` (no `--udn-l2`) | Fatal: `--udn-ssh requires --udn-l2` |
-| ERR-UDN-2 | `--udn-ssh=invalid` | Invalid SSH service type rejected |
+| ERR-UDN-1 | `--udn-service` (no `--udn-l2`) | Fatal: `--udn-service requires --udn-l2` |
+| ERR-UDN-2 | `--udn-service=invalid` | Invalid service type rejected |
+| ERR-UDN-2b | `--udn-service=nodeport:70000` | Invalid port rejected |
 | ERR-UDN-3 | `--subnet=not-a-cidr` | Invalid subnet format rejected |
 | ERR-UDN-4 | `--subnet=10.0.0.0/33` | Subnet prefix out of range rejected |
 | ERR-UDN-5 | partial templates | Missing `udn-l2.yaml` template fails |
 | ERR-UDN-6 | partial templates | Missing `vm-*-udn.yaml` template fails |
-| ERR-UDN-7 | partial templates | Missing `svc-ssh-udn.yaml` template fails |
+| ERR-UDN-7 | partial templates | Missing `svc-udn.yaml` template fails |
 | UDN-1 | `--udn-l2 --vms=2 --namespaces=2` | `UserDefinedNetwork` CR per namespace, primary UDN label, default subnet |
 | UDN-2 | `--udn-l2 --subnet=10.200.0.0/16` | Custom subnet in CR and summary |
 | UDN-3 | `--udn-l2` | VM uses `l2bridge` / `primary-udn-net`, not `masquerade` |
@@ -322,11 +323,13 @@ Tests in `tests/14-udn.bats` cover the `--udn-l2`, `--subnet`, and `--udn-ssh` f
 | UDN-7 | `--udn-l2 --containerdisk` | Auto cloud-init includes DHCP `networkData` |
 | UDN-8 | `--udn-l2 --cloudinit=...` | Explicit cloud-init includes DHCP `networkData` |
 | UDN-9 | `--udn-l2 --dv-url=... --no-snapshot` | No `networkData` when cloud-init not applied |
-| UDN-10 | `--udn-l2 --udn-ssh --namespaces=2` | NodePort SSH Service per namespace (32222+) |
-| UDN-11 | `--udn-l2 --udn-ssh=clusterip` | ClusterIP SSH Service, no `nodePort` |
-| UDN-12 | `--udn-l2 --udn-ssh --namespaces=2` | NodePort auto-increment logged per namespace |
-| UDN-13 | `--udn-l2 --udn-ssh=clusterip` | ClusterIP service name matches in-cluster hostname pattern |
-| UDN-14 | `--udn-l2` (no `--udn-ssh`) | No SSH Service created |
+| UDN-10 | `--udn-l2 --udn-service --namespaces=2` | NodePort Service per namespace, port 22 (32222+) |
+| UDN-11 | `--udn-l2 --udn-service=clusterip` | ClusterIP Service, port 22, no `nodePort` |
+| UDN-12 | `--udn-l2 --udn-service --namespaces=2` | NodePort auto-increment logged per namespace |
+| UDN-13 | `--udn-l2 --udn-service=clusterip` | ClusterIP service name matches in-cluster hostname pattern |
+| UDN-14 | `--udn-l2` (no `--udn-service`) | No Service created |
+| UDN-15 | `--udn-l2 --udn-service=nodeport:8080` | Custom port in Service spec (port and targetPort both 8080) |
+| UDN-16 | `--udn-l2 --udn-service=nodeport:22:2222` | Service port and targetPort set separately |
 
 ## Three clone paths
 

@@ -470,11 +470,11 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# QS-11: ./vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
-#   Layer 2 primary UDN + NodePort SSH (README Quick Start #10)
+# QS-11: ./vstorm --udn-l2 --udn-service --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+#   Layer 2 primary UDN + NodePort service (README Quick Start #10)
 # ---------------------------------------------------------------
-@test "QS: UDN L2 with NodePort SSH across 2 namespaces" {
-  run bash "$VSTORM" -n --batch-id=qs0011 --udn-l2 --udn-ssh \
+@test "QS: UDN L2 with NodePort service across 2 namespaces" {
+  run bash "$VSTORM" -n --batch-id=qs0011 --udn-l2 --udn-service \
     --subnet=10.132.10.0/16 --vms=10 --namespaces=2
   [ "$status" -eq 0 ]
 
@@ -496,7 +496,7 @@ setup_file() {
   [[ "$output" == *"name: l2bridge"* ]]
   [[ "$output" != *"masquerade"* ]]
 
-  # --- two NodePort SSH services ---
+  # --- two NodePort services (port 22) ---
   local svc_count
   svc_count=$(echo "$output" | grep -c "kind: Service")
   [ "$svc_count" -eq 2 ]
