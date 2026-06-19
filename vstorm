@@ -239,7 +239,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --udn-l2                Label namespaces for Layer 2 primary UDN
         --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
-        --udn-ssh[=TYPE]        Expose the first VM in each namespace via SSH Service
+        --udn-ssh[=TYPE]        Expose VMs in each namespace via SSH Service
                                 | | | TYPE: nodeport (default) or clusterip
                                 | | | (requires --udn-l2; nodeport ports from 32222)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
@@ -862,20 +862,6 @@ create_udn_l2() {
 	oc_apply
 }
 
-first_vm_id_for_namespace() {
-    local -i ns=$1
-    local -i vm_id=1
-    local -i i count
-    for ((i=1; i<ns; i++)); do
-	count=$VMS_PER_NAMESPACE
-	if (( i <= REMAINDER_VMS )); then
-	    count=$((count + 1))
-	fi
-	vm_id=$((vm_id + count))
-    done
-    echo "$vm_id"
-}
-
 init_udn_ssh_nodeport_next() {
     UDN_SSH_NODEPORT_NEXT=$UDN_SSH_NODEPORT_BASE
     if ((wet_run)); then
@@ -905,7 +891,7 @@ next_udn_ssh_nodeport() {
 
 create_udn_ssh_svc() {
     local svc_file="${TEMPLATE_CACHE[svc-ssh-udn]}"
-    local -i ns first_vm_id
+    local -i ns
     local svc_name ssh_port_info
     UDN_SSH_SVC_INFO=()
     if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
@@ -913,8 +899,6 @@ create_udn_ssh_svc() {
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
 	namespace="vm-${BATCH_ID}-ns-${ns}"
-	first_vm_id=$(first_vm_id_for_namespace "$ns")
-	VM_ID=$first_vm_id
 	if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
 	    SVC_TYPE=NodePort
 	    SVC_NAME_SUFFIX=nodeport
@@ -922,17 +906,17 @@ create_udn_ssh_svc() {
 	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
 	    ssh_port_info=$SSH_NODEPORT
 	    svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
-	    log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	    log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	else
 	    SVC_TYPE=ClusterIP
 	    SVC_NAME_SUFFIX=clusterip
 	    SSH_NODEPORT_LINE=
 	    ssh_port_info=
 	    svc_name="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}"
-	    log_message "Creating SSH ClusterIP Service ${C_VAL}$svc_name${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	    log_message "Creating SSH ClusterIP Service ${C_VAL}$svc_name${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	fi
 	process_template "$svc_file" | oc_apply
-	UDN_SSH_SVC_INFO+=("${namespace}:${VM_ID}:${UDN_SSH_TYPE}:${ssh_port_info}")
+	UDN_SSH_SVC_INFO+=("${namespace}:${UDN_SSH_TYPE}:${ssh_port_info}")
     done
 }
 ################################################################
@@ -1720,25 +1704,25 @@ main() {
 	  oc get vm -A -l batch-id=$BATCH_ID
 	EOF
 	if ((UDN_SSH_SVC)) && ((${#UDN_SSH_SVC_INFO[@]} > 0)); then
-	    local entry ns_name vm_id svc_type ssh_port svc_host
+	    local entry ns_name svc_type ssh_port svc_host
 	    if [[ "$UDN_SSH_TYPE" == clusterip ]]; then
 		cat <<-EOF
 
-	SSH to the first VM in each namespace (ClusterIP; from inside the cluster):
+	SSH to VMs in each namespace (ClusterIP; OVN load-balances across running VMs):
 	EOF
 	    else
 		cat <<-EOF
 
-	SSH to the first VM in each namespace (NodePort on any cluster node):
+	SSH to VMs in each namespace (NodePort on any cluster node; OVN load-balances across running VMs):
 	EOF
 	    fi
 	    for entry in "${UDN_SSH_SVC_INFO[@]}"; do
-		IFS=: read -r ns_name vm_id svc_type ssh_port <<< "$entry"
+		IFS=: read -r ns_name svc_type ssh_port <<< "$entry"
 		if [[ "$svc_type" == clusterip ]]; then
 		    svc_host="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
-		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
 		else
-		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${ssh_port}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${ssh_port}"
 		fi
 	    done
 	fi

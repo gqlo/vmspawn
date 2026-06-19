@@ -19,6 +19,7 @@ Use `@test "PREFIX: descriptive title"` where PREFIX is a category code:
 - `WFFC` -- WaitForFirstConsumer
 - `COMBO` -- Option combinations
 - `OPT` -- Option coverage
+- `UDN` -- User Defined Network (Layer 2 primary UDN)
 
 ## Test Structure
 
@@ -61,6 +62,7 @@ The test suite is split across numbered files so `bats tests/ --jobs N` parallel
 | `tests/09-delete-profile.bats` | Delete hardening + --delete-all + --yes + --profile |
 | `tests/10-containerdisk.bats` | Container Disk mode (cdisk) |
 | `tests/11-completion.bats` | Tab completion smoke test |
+| `tests/14-udn.bats` | User Defined Network (UDN) L2 + SSH services |
 
 Shared helpers (e.g. `_create_mock_oc`) live in `tests/helpers.bash` and are loaded
 with `load 'helpers'` at the top of any file that needs them.

@@ -10,7 +10,6 @@ spec:
   type: {SVC_TYPE}
   selector:
     kubevirt.io/domain: {VM_BASENAME}
-    vm.kubevirt.io/name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
   ports:
   - name: ssh
     protocol: TCP

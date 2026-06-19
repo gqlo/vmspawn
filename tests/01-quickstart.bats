@@ -469,3 +469,38 @@ setup_file() {
   [[ "$output" == *"oc delete ns -l batch-id=a3f7b2"* ]]
 }
 
+# ---------------------------------------------------------------
+# QS-11: ./vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+#   Layer 2 primary UDN + NodePort SSH (README Quick Start #10)
+# ---------------------------------------------------------------
+@test "QS: UDN L2 with NodePort SSH across 2 namespaces" {
+  run bash "$VSTORM" -n --batch-id=qs0011 --udn-l2 --udn-ssh \
+    --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+  [ "$status" -eq 0 ]
+
+  # --- two namespaces with UDN label ---
+  [[ "$output" == *"name: vm-qs0011-ns-1"* ]]
+  [[ "$output" == *"name: vm-qs0011-ns-2"* ]]
+  [[ "$output" == *"k8s.ovn.org/primary-user-defined-network"* ]]
+
+  # --- two UserDefinedNetwork CRs with custom subnet ---
+  local udn_count
+  udn_count=$(echo "$output" | grep -c "kind: UserDefinedNetwork")
+  [ "$udn_count" -eq 2 ]
+  [[ "$output" == *'subnets: ["10.132.10.0/16"]'* ]]
+
+  # --- 10 VMs with l2bridge networking ---
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 10 ]
+  [[ "$output" == *"name: l2bridge"* ]]
+  [[ "$output" != *"masquerade"* ]]
+
+  # --- two NodePort SSH services ---
+  local svc_count
+  svc_count=$(echo "$output" | grep -c "kind: Service")
+  [ "$svc_count" -eq 2 ]
+  [[ "$output" == *"nodePort: 32222"* ]]
+  [[ "$output" == *"nodePort: 32223"* ]]
+}
+
