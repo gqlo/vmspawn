@@ -5,13 +5,14 @@
 - **Cloud-init** injects workloads at boot (e.g. stress-ng). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
 - **Self-built minimal guests** (high-density VM testing): a stripped x86_64-only kernel and small rootfs, often on the order of ~80 MB per guest, so you can pack many VMs onto finite CPU and RAM and stress scheduling, networking, and storage. Host the disk where the cluster can import it (for example `--dv-url` or your DataSource). Example layout and image live under [`custom-build-images/`](custom-build-images/).
 - **`--profile`**: integrated cluster profiling captures Go runtime pprof data (CPU, heap, mutex, and more) from the KubeVirt control plane during batch runs.
-- **Quality**: 233 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
+- **Quality**: 243 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
 
 ---
 
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Tab completion](#clone-and-setup)
+- [User-defined networks (UDN)](#user-defined-networks-udn)
 - [Cloud-init](#cloud-init)
 - [Cluster profiling](#cluster-profiling)
 - [Options](#options)
@@ -78,7 +79,35 @@ vstorm --delete=a3f7b2
 
 # 9. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
+
+# 10. Layer 2 primary UDN + SSH via NodePort (all VMs per namespace; ports from 32222)
+vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
 ```
+
+## User-defined networks (UDN)
+
+Use `--udn-l2` to attach each batch namespace to a **Layer 2 primary UserDefinedNetwork** (OVN `UserDefinedNetwork` CR). vstorm labels new namespaces with `k8s.ovn.org/primary-user-defined-network`, creates a UDN in each namespace, and uses UDN-aware VM templates with an `l2bridge` interface on the primary pod network.
+
+```bash
+# Default OCS storage with a custom UDN subnet and NodePort SSH
+vstorm --udn-l2 --udn-ssh --subnet=10.200.0.0/16 --vms=20 --namespaces=4
+
+# Container disk + SSH via NodePort (all VMs in each namespace; ports from 32222)
+vstorm --udn-l2 --udn-ssh --containerdisk --vms=6 --namespaces=3
+# After NodePort run: ssh -o PubkeyAuthentication=no root@<node-ip> -p <port>  (password: password)
+
+# ClusterIP SSH (in-cluster access only; all VMs per namespace)
+vstorm --udn-l2 --udn-ssh=clusterip --subnet=10.200.0.0/16 --vms=20 --namespaces=4
+# From a pod in the cluster:
+# ssh -o PubkeyAuthentication=no root@ssh-clusterip-vm-<batch>.vm-<batch>-ns-1.svc.cluster.local
+```
+
+After a run with `--udn-ssh`, vstorm prints SSH hints for each namespace (default cloud-init root password is `password` when using `--datasource` or `--containerdisk`). The Service selects all VMs with `kubevirt.io/domain`; OVN load-balances SSH across running VM pods. Use `-o PubkeyAuthentication=no` if your SSH client tries keys first and hits "Too many authentication failures".
+
+- `--udn-ssh` or `--udn-ssh=nodeport` — expose SSH on a NodePort (from 32222) on any cluster node
+- `--udn-ssh=clusterip` — expose SSH via a ClusterIP Service (reachable from inside the cluster, e.g. a debug pod with `oc run -it --rm debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest -- bash`)
+
+`--udn-ssh` requires `--udn-l2`. Namespaces must not already exist when using `--udn-l2` (the primary UDN label is applied at creation time).
 
 ## Cloud-init
 

@@ -4,3 +4,4 @@ metadata:
   name: {vm-ns}
   labels:
     batch-id: "{BATCH_ID}"
+    {UDN_LABEL}

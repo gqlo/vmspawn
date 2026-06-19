@@ -1,0 +1,66 @@
+apiVersion: kubevirt.io/v1
+kind: VirtualMachine
+metadata:
+  name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+  namespace: {vm-ns}
+  labels:
+    batch-id: "{BATCH_ID}"
+    vm-basename: "{VM_BASENAME}"
+spec:
+  dataVolumeTemplates:
+  - apiVersion: cdi.kubevirt.io/v1beta1
+    kind: DataVolume
+    metadata:
+      name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+      labels:
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
+    spec:
+      storage:
+        accessModes:
+        - {ACCESS_MODE}
+        resources:
+          requests:
+            storage: {STORAGE_SIZE}
+        volumeMode: Block
+        storageClassName: {STORAGE_CLASS}
+      source:
+        pvc:
+          namespace: {vm-ns}
+          name: {BASE_PVC_NAME}
+  runStrategy: {RUN_STRATEGY}
+  template:
+    metadata:
+      labels:
+        kubevirt.io/domain: {VM_BASENAME}
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
+    spec:
+      domain:
+        cpu:
+          cores: {VM_CPU_CORES}
+        memory:
+          guest: {VM_MEMORY}
+        devices:
+          disks:
+          - disk:
+              bus: virtio
+            name: vda
+          {CLOUDINIT_DISK}
+          interfaces:
+          - name: primary-udn-net
+            binding:
+              name: l2bridge
+          networkInterfaceMultiqueue: true
+          rng: {}
+        {DOMAIN_FIRMWARE}
+        {RESOURCES}
+      evictionStrategy: LiveMigrate
+      networks:
+      - name: primary-udn-net
+        pod: {}
+      volumes:
+      - dataVolume:
+          name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+        name: vda
+      {CLOUDINIT_VOLUME}

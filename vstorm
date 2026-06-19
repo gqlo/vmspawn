@@ -26,6 +26,13 @@ USE_SNAPSHOT=1
 STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
+UDN_L2=0
+UDN_SSH_SVC=0
+UDN_SSH_TYPE=nodeport
+UDN_SSH_NODEPORT_BASE=32222
+UDN_SSH_NODEPORT_NEXT=
+UDN_SSH_SVC_INFO=()
+SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
 BASE_PVC_NAME="vm-base"
@@ -94,6 +101,14 @@ usage_error() {
     exit 1
 }
 
+validate_subnet() {
+    local cidr=$1
+    [[ -n "$cidr" ]] || fatal "--subnet requires a non-empty IPv4 CIDR (e.g. 10.132.10.0/16)"
+    if ! [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; then
+	fatal "Invalid --subnet='$cidr'; expected IPv4 CIDR (e.g. 10.132.10.0/16)"
+    fi
+}
+
 validate_args() {
     # Detect options misplaced after positional arguments.  Bash getopts
     # stops at the first non-option word, so any --option that appears
@@ -134,6 +149,14 @@ validate_args() {
 
 	if ((NUM_VMS < NUM_NAMESPACES)) ; then
 	    usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
+	fi
+
+	if ((UDN_SSH_SVC)) && (( ! UDN_L2 )) ; then
+	    fatal "--udn-ssh requires --udn-l2"
+	fi
+
+	if ((UDN_L2)); then
+	    validate_subnet "$SUBNET"
 	fi
 
 	case "$RUN_STRATEGY" in
@@ -214,6 +237,11 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms=N                 Number of VMs ($NUM_VMS)
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
+        --udn-l2                Label namespaces for Layer 2 primary UDN
+        --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
+        --udn-ssh[=TYPE]        Expose VMs in each namespace via SSH Service
+                                | | | TYPE: nodeport (default) or clusterip
+                                | | | (requires --udn-l2; nodeport ports from 32222)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -278,6 +306,20 @@ process_option() {
 	vmsper*)   NUM_VMS_PER_NAMESPACE=$value ;;
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
+	udnl2)     UDN_L2=1 ;;
+	udnssh)
+	    UDN_SSH_SVC=1
+	    if [[ -n "$value" ]]; then
+		case "${value,,}" in
+		    nodeport|clusterip) UDN_SSH_TYPE=${value,,} ;;
+		    *) fatal "Invalid --udn-ssh value '$value'; use nodeport or clusterip" ;;
+		esac
+	    fi
+	    ;;
+	subnet*)
+	    SUBNET=$value
+	    validate_subnet "$SUBNET"
+	    ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
 		       '') WAIT=1 ;;  # --wait with no value
@@ -598,6 +640,22 @@ validate_required_templates() {
 	TEMPLATE_CACHE[vm]=$(_require_builtin vm "$T/vm-clone.yaml")
     fi
 
+    if ((UDN_L2)); then
+	TEMPLATE_CACHE[udn-l2]=$(_require_builtin udn-l2 "$T/udn-l2.yaml")
+	if [[ -n "$CONTAINERDISK_IMAGE" ]]; then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-containerdisk-udn.yaml")
+	elif ((USE_SNAPSHOT)); then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-snap-udn.yaml")
+	elif [[ -n "$DATASOURCE" ]]; then
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-datasource-udn.yaml")
+	else
+	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-clone-udn.yaml")
+	fi
+	if ((UDN_SSH_SVC)); then
+	    TEMPLATE_CACHE[svc-ssh-udn]=$(_require_builtin svc-ssh-udn "$T/svc-ssh-udn.yaml")
+	fi
+    fi
+
     if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
 	if [[ -n "$DATASOURCE" ]]; then
 	    if ((USE_SNAPSHOT)); then
@@ -681,6 +739,8 @@ Creating resources for:
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
+  UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
+  UDN SSH: $(if ((UDN_SSH_SVC)); then if [[ "$UDN_SSH_TYPE" == clusterip ]]; then echo "enabled (ClusterIP)"; else echo "enabled (NodePort from $UDN_SSH_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
 
 EOF
 }
@@ -721,7 +781,11 @@ process_template() {
         -e "s/{VM_CPU_CORES}/$VM_CPU_CORES/g"
         -e "s/{VM_MEMORY}/$VM_MEMORY/g"
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
+        -e "s|{SUBNET}|$SUBNET|g"
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
+        -e "s/{SVC_TYPE}/${SVC_TYPE:-ClusterIP}/g"
+        -e "s/{SVC_NAME_SUFFIX}/${SVC_NAME_SUFFIX:-clusterip}/g"
+        -e "s/{SSH_NODEPORT_LINE}/${SSH_NODEPORT_LINE:-}/g"
     )
 
     sed "${sed_args[@]}" "$file"
@@ -755,7 +819,11 @@ create_namespaces() {
     log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
     local ns_file="${TEMPLATE_CACHE[namespace]}"
+    local udn_label=
     local -A existing_namespaces=()
+    if ((UDN_L2)); then
+	udn_label='k8s.ovn.org/primary-user-defined-network: ""'
+    fi
     if ((wet_run)) ; then
 	local namespace
 	while read -r namespace ; do
@@ -766,15 +834,91 @@ create_namespaces() {
         namespace="vm-${BATCH_ID}-ns-${ns}"
 
         # Check if namespace already exists
-	if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
-            log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
+		if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
+			if ((UDN_L2)); then
+				fatal "Namespace ${C_VAL}$namespace${C_RST} already exists, UDN label cannot be applied."
+			else
+				log_message "Namespace ${C_VAL}$namespace${C_RST} already exists, skipping creation"
+			fi
         else
             log_message "Creating namespace: ${C_VAL}$namespace${C_RST}"
-            process_template "$ns_file" | oc_apply
-        fi
+            process_template "$ns_file" |
+			indent_token UDN_LABEL "$udn_label" |
+			oc_apply
+			if ((UDN_L2)); then
+				create_udn_l2 "$namespace"
+			fi
+		fi
     done
 }
 
+################################################################
+# UDN L2
+create_udn_l2() {
+	local namespace=$1
+	log_message "Creating UDN L2 in namespace: ${C_VAL}$namespace${C_RST}"
+    local udn_l2_file="${TEMPLATE_CACHE[udn-l2]}"
+    process_template "$udn_l2_file" | indent_token NAMESPACE "$namespace" |
+	oc_apply
+}
+
+init_udn_ssh_nodeport_next() {
+    UDN_SSH_NODEPORT_NEXT=$UDN_SSH_NODEPORT_BASE
+    if ((wet_run)); then
+	local -i max_port=0
+	local port
+	while read -r port; do
+	    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= UDN_SSH_NODEPORT_BASE && port <= 32767 )); then
+		if (( port > max_port )); then max_port=$port; fi
+	    fi
+	done < <(oc get svc -A -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' 2>/dev/null || true)
+	if (( max_port >= UDN_SSH_NODEPORT_BASE )); then
+	    UDN_SSH_NODEPORT_NEXT=$((max_port + 1))
+	fi
+    fi
+    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+    fi
+}
+
+next_udn_ssh_nodeport() {
+    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+    fi
+    SSH_NODEPORT=$UDN_SSH_NODEPORT_NEXT
+    UDN_SSH_NODEPORT_NEXT=$((UDN_SSH_NODEPORT_NEXT + 1))
+}
+
+create_udn_ssh_svc() {
+    local svc_file="${TEMPLATE_CACHE[svc-ssh-udn]}"
+    local -i ns
+    local svc_name ssh_port_info
+    UDN_SSH_SVC_INFO=()
+    if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
+	init_udn_ssh_nodeport_next
+    fi
+    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+	namespace="vm-${BATCH_ID}-ns-${ns}"
+	if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
+	    SVC_TYPE=NodePort
+	    SVC_NAME_SUFFIX=nodeport
+	    next_udn_ssh_nodeport
+	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
+	    ssh_port_info=$SSH_NODEPORT
+	    svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	    log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	else
+	    SVC_TYPE=ClusterIP
+	    SVC_NAME_SUFFIX=clusterip
+	    SSH_NODEPORT_LINE=
+	    ssh_port_info=
+	    svc_name="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}"
+	    log_message "Creating SSH ClusterIP Service ${C_VAL}$svc_name${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	fi
+	process_template "$svc_file" | oc_apply
+	UDN_SSH_SVC_INFO+=("${namespace}:${UDN_SSH_TYPE}:${ssh_port_info}")
+    done
+}
 ################################################################
 # DataVolumes
 check_datavolume_status() {
@@ -935,8 +1079,11 @@ wait_for_all_vms() {
 create_virtualmachines() {
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
     VM_ID=1
-    local vm_file="${TEMPLATE_CACHE[vm]}"
-
+	if ((UDN_L2)); then
+		vm_file="${TEMPLATE_CACHE[vm-udn]}"
+	else
+		vm_file="${TEMPLATE_CACHE[vm]}"
+	fi
     # Auto-apply default cloud-init when using DataSource or container disk
     # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
     if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
@@ -1017,10 +1164,24 @@ firmware:
 	cloudinit_disk="- disk:
     bus: virtio
   name: cloudinit"
-	cloudinit_volume="- cloudInitNoCloud:
+	if ((UDN_L2)); then
+	    cloudinit_volume="- cloudInitNoCloud:
+    secretRef:
+      name: ${VM_BASENAME}-cloudinit
+    networkData: |
+      version: 2
+      ethernets:
+        primary-nic: # This is just a label/ID, not the OS device name
+          match:
+            name: "e*" # Matches eth0, enp1s0, ens3, etc.
+          dhcp4: true
+  name: cloudinit"
+	else
+	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
       name: ${VM_BASENAME}-cloudinit
   name: cloudinit"
+	fi
     fi
     local -A existing_vms=()
     if ((! RECREATE_EXISTING_VMS)) ; then
@@ -1440,6 +1601,7 @@ profiler_prompt_and_stop() {
     echo "Plot with:    go tool pprof -svg $output_dir/<pod>/cpu.pprof > cpu.svg"
 }
 
+
 ################################################################
 # Main execution
 main() {
@@ -1482,6 +1644,9 @@ main() {
 	fi
     fi
     create_virtualmachines
+    if ((UDN_SSH_SVC)); then
+	create_udn_ssh_svc
+    fi
 
     # TODO: re-enable once verify_cloudinit is improved
     # if ((wet_run && WAIT)) && [[ -n "$CLOUDINIT_FILE" ]]; then
@@ -1537,6 +1702,31 @@ main() {
 	fi
 	cat <<-EOF
 	  oc get vm -A -l batch-id=$BATCH_ID
+	EOF
+	if ((UDN_SSH_SVC)) && ((${#UDN_SSH_SVC_INFO[@]} > 0)); then
+	    local entry ns_name svc_type ssh_port svc_host
+	    if [[ "$UDN_SSH_TYPE" == clusterip ]]; then
+		cat <<-EOF
+
+	SSH to VMs in each namespace (ClusterIP; OVN load-balances across running VMs):
+	EOF
+	    else
+		cat <<-EOF
+
+	SSH to VMs in each namespace (NodePort on any cluster node; OVN load-balances across running VMs):
+	EOF
+	    fi
+	    for entry in "${UDN_SSH_SVC_INFO[@]}"; do
+		IFS=: read -r ns_name svc_type ssh_port <<< "$entry"
+		if [[ "$svc_type" == clusterip ]]; then
+		    svc_host="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
+		else
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${ssh_port}"
+		fi
+	    done
+	fi
+	cat <<-EOF
 
 	To delete all resources in this batch:
 	  oc delete vm -A -l batch-id=$BATCH_ID
