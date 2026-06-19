@@ -80,8 +80,8 @@ vstorm --delete=a3f7b2
 # 9. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
 
-# 10. Layer 2 primary UDN (UserDefinedNetwork per namespace; requires OVN-Kubernetes)
-vstorm --udn-l2 --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+# 10. Layer 2 primary UDN + SSH via NodePort (first VM per namespace; ports from 32222)
+vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
 ```
 
 ## User-defined networks (UDN)
@@ -89,14 +89,25 @@ vstorm --udn-l2 --subnet=10.132.10.0/16 --vms=10 --namespaces=2
 Use `--udn-l2` to attach each batch namespace to a **Layer 2 primary UserDefinedNetwork** (OVN `UserDefinedNetwork` CR). vstorm labels new namespaces with `k8s.ovn.org/primary-user-defined-network`, creates a UDN in each namespace, and uses UDN-aware VM templates with an `l2bridge` interface on the primary pod network.
 
 ```bash
-# Default OCS storage with a custom UDN subnet
-vstorm --udn-l2 --subnet=10.200.0.0/16 --vms=20 --namespaces=4
+# Default OCS storage with a custom UDN subnet and NodePort SSH
+vstorm --udn-l2 --udn-ssh --subnet=10.200.0.0/16 --vms=20 --namespaces=4
 
 # Container disk + SSH via NodePort on the first VM in each namespace (ports from 32222)
 vstorm --udn-l2 --udn-ssh --containerdisk --vms=6 --namespaces=3
+# After NodePort run: ssh -o PubkeyAuthentication=no root@<node-ip> -p <port>  (password: password)
+
+# ClusterIP SSH (in-cluster access only; first VM per namespace)
+vstorm --udn-l2 --udn-ssh=clusterip --subnet=10.200.0.0/16 --vms=20 --namespaces=4
+# From a pod in the cluster:
+# ssh -o PubkeyAuthentication=no root@ssh-clusterip-vm-<batch>.vm-<batch>-ns-1.svc.cluster.local
 ```
 
-After a run with `--udn-ssh`, vstorm prints `ssh root@<node-ip> -p <port>` hints (default cloud-init root password is `password` when using `--datasource` or `--containerdisk`). `--udn-ssh` requires `--udn-l2`. Namespaces must not already exist when using `--udn-l2` (the primary UDN label is applied at creation time).
+After a run with `--udn-ssh`, vstorm prints SSH hints for the first VM in each namespace (default cloud-init root password is `password` when using `--datasource` or `--containerdisk`). Use `-o PubkeyAuthentication=no` if your SSH client tries keys first and hits "Too many authentication failures".
+
+- `--udn-ssh` or `--udn-ssh=nodeport` — expose SSH on a NodePort (from 32222) on any cluster node
+- `--udn-ssh=clusterip` — expose SSH via a ClusterIP Service (reachable from inside the cluster, e.g. a debug pod with `oc run -it --rm debug --image=registry.redhat.io/ubi9/ubi -- bash`)
+
+`--udn-ssh` requires `--udn-l2`. Namespaces must not already exist when using `--udn-l2` (the primary UDN label is applied at creation time).
 
 ## Cloud-init
 

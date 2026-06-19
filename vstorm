@@ -17,7 +17,7 @@ done
 # Configuration variables - modify these as needed
 DATASOURCE=
 DATASOURCE_NS="openshift-virtualization-os-images"
-DV_URL="http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com/images/rhel9-cloud-init.qcow"
+DV_URL="http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow"
 STORAGE_SIZE="32Gi"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
@@ -28,6 +28,7 @@ ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
 UDN_L2=0
 UDN_SSH_SVC=0
+UDN_SSH_TYPE=nodeport
 UDN_SSH_NODEPORT_BASE=32222
 UDN_SSH_NODEPORT_NEXT=
 UDN_SSH_SVC_INFO=()
@@ -238,8 +239,9 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
         --udn-l2                Label namespaces for Layer 2 primary UDN
         --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
-        --udn-ssh               Expose the first VM in each namespace via NodePort SSH
-                                | | | (requires --udn-l2; ports from 32222, auto-incremented)
+        --udn-ssh[=TYPE]        Expose the first VM in each namespace via SSH Service
+                                | | | TYPE: nodeport (default) or clusterip
+                                | | | (requires --udn-l2; nodeport ports from 32222)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -305,7 +307,15 @@ process_option() {
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
 	udnl2)     UDN_L2=1 ;;
-	udnssh)    UDN_SSH_SVC=1 ;;
+	udnssh)
+	    UDN_SSH_SVC=1
+	    if [[ -n "$value" ]]; then
+		case "${value,,}" in
+		    nodeport|clusterip) UDN_SSH_TYPE=${value,,} ;;
+		    *) fatal "Invalid --udn-ssh value '$value'; use nodeport or clusterip" ;;
+		esac
+	    fi
+	    ;;
 	subnet*)
 	    SUBNET=$value
 	    validate_subnet "$SUBNET"
@@ -730,7 +740,7 @@ Creating resources for:
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
   UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
-  UDN SSH: $(if ((UDN_SSH_SVC)); then echo "enabled (NodePort from $UDN_SSH_NODEPORT_BASE, auto-incremented per service)"; else echo "disabled"; fi)
+  UDN SSH: $(if ((UDN_SSH_SVC)); then if [[ "$UDN_SSH_TYPE" == clusterip ]]; then echo "enabled (ClusterIP)"; else echo "enabled (NodePort from $UDN_SSH_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
 
 EOF
 }
@@ -773,7 +783,9 @@ process_template() {
         -e "s/{RUN_STRATEGY}/$RUN_STRATEGY/g"
         -e "s|{SUBNET}|$SUBNET|g"
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
-        -e "s/{SSH_NODEPORT}/${SSH_NODEPORT:-$UDN_SSH_NODEPORT_BASE}/g"
+        -e "s/{SVC_TYPE}/${SVC_TYPE:-ClusterIP}/g"
+        -e "s/{SVC_NAME_SUFFIX}/${SVC_NAME_SUFFIX:-clusterip}/g"
+        -e "s/{SSH_NODEPORT_LINE}/${SSH_NODEPORT_LINE:-}/g"
     )
 
     sed "${sed_args[@]}" "$file"
@@ -894,18 +906,33 @@ next_udn_ssh_nodeport() {
 create_udn_ssh_svc() {
     local svc_file="${TEMPLATE_CACHE[svc-ssh-udn]}"
     local -i ns first_vm_id
-    local svc_name
+    local svc_name ssh_port_info
     UDN_SSH_SVC_INFO=()
-    init_udn_ssh_nodeport_next
+    if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
+	init_udn_ssh_nodeport_next
+    fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
 	namespace="vm-${BATCH_ID}-ns-${ns}"
 	first_vm_id=$(first_vm_id_for_namespace "$ns")
 	VM_ID=$first_vm_id
-	next_udn_ssh_nodeport
-	svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
-	log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
+	    SVC_TYPE=NodePort
+	    SVC_NAME_SUFFIX=nodeport
+	    next_udn_ssh_nodeport
+	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
+	    ssh_port_info=$SSH_NODEPORT
+	    svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	    log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	else
+	    SVC_TYPE=ClusterIP
+	    SVC_NAME_SUFFIX=clusterip
+	    SSH_NODEPORT_LINE=
+	    ssh_port_info=
+	    svc_name="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}"
+	    log_message "Creating SSH ClusterIP Service ${C_VAL}$svc_name${C_RST} for VM ${C_VAL}${VM_BASENAME}-${BATCH_ID}-${VM_ID}${C_RST} in namespace: ${C_VAL}$namespace${C_RST}"
+	fi
 	process_template "$svc_file" | oc_apply
-	UDN_SSH_SVC_INFO+=("${namespace}:${VM_ID}:${SSH_NODEPORT}")
+	UDN_SSH_SVC_INFO+=("${namespace}:${VM_ID}:${UDN_SSH_TYPE}:${ssh_port_info}")
     done
 }
 ################################################################
@@ -1693,14 +1720,26 @@ main() {
 	  oc get vm -A -l batch-id=$BATCH_ID
 	EOF
 	if ((UDN_SSH_SVC)) && ((${#UDN_SSH_SVC_INFO[@]} > 0)); then
-	    local entry ns_name vm_id ssh_port
-	    cat <<-EOF
+	    local entry ns_name vm_id svc_type ssh_port svc_host
+	    if [[ "$UDN_SSH_TYPE" == clusterip ]]; then
+		cat <<-EOF
+
+	SSH to the first VM in each namespace (ClusterIP; from inside the cluster):
+	EOF
+	    else
+		cat <<-EOF
 
 	SSH to the first VM in each namespace (NodePort on any cluster node):
 	EOF
+	    fi
 	    for entry in "${UDN_SSH_SVC_INFO[@]}"; do
-		IFS=: read -r ns_name vm_id ssh_port <<< "$entry"
-		echo "  ${ns_name}: ssh root@<node-ip> -p ${ssh_port}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+		IFS=: read -r ns_name vm_id svc_type ssh_port <<< "$entry"
+		if [[ "$svc_type" == clusterip ]]; then
+		    svc_host="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+		else
+		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${ssh_port}  (${VM_BASENAME}-${BATCH_ID}-${vm_id})"
+		fi
 	    done
 	fi
 	cat <<-EOF
