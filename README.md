@@ -5,7 +5,7 @@
 - **Cloud-init** injects workloads at boot (e.g. stress-ng). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
 - **Self-built minimal guests** (high-density VM testing): a stripped x86_64-only kernel and small rootfs, often on the order of ~80 MB per guest, so you can pack many VMs onto finite CPU and RAM and stress scheduling, networking, and storage. Host the disk where the cluster can import it (for example `--dv-url` or your DataSource). Example layout and image live under [`custom-build-images/`](custom-build-images/).
 - **`--profile`**: integrated cluster profiling captures Go runtime pprof data (CPU, heap, mutex, and more) from the KubeVirt control plane during batch runs.
-- **Quality**: 243 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
+- **Quality**: 246 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
 
 ---
 
@@ -79,16 +79,38 @@ vstorm --delete=a3f7b2
 # 9. Delete ALL vstorm batches on the cluster
 vstorm --delete-all
 
-# 10. Layer 2 primary UDN + SSH via NodePort (--udn-ssh defaults to nodeport; all VMs per namespace; ports from 32222)
-vstorm --udn-l2 --udn-ssh --subnet=10.132.10.0/16 --vms=10 --namespaces=2
+# 10. Layer 2 primary UDN + NodePort (--udn-l2 default subnet 10.132.10.0/16; --service defaults: nodeport, port 22, targetPort 22, nodePort from 32222)
+vstorm --udn-l2 --service --vms=10 --namespaces=2
 
-# 11. UDN + container disk + NodePort SSH
-vstorm --udn-l2 --udn-ssh --containerdisk --vms=6 --namespaces=3
-# ssh -o PubkeyAuthentication=no root@<node-ip> -p <port>  (password: password)
+# 10b. UDN with custom subnet CIDR
+vstorm --udn-l2=10.200.0.0/16 --service --vms=10 --namespaces=2
 
-# 12. UDN + ClusterIP SSH (in-cluster only; all VMs per namespace)
-vstorm --udn-l2 --udn-ssh=clusterip --subnet=10.200.0.0/16 --vms=20 --namespaces=4
-# ssh -o PubkeyAuthentication=no root@clusterip
+# 11. UDN + container disk + NodePort (defaults: port 22, targetPort 22)
+vstorm --udn-l2 --service --containerdisk --vms=6 --namespaces=3
+# ssh -o PubkeyAuthentication=no root@<node-ip> -p <node-port>  (password: password)
+
+# 12. UDN + ClusterIP (defaults: port 22, targetPort 22; access via pod network from a debug pod in the namespace)
+vstorm --udn-l2 --service=clusterip --vms=20 --namespaces=4
+# oc -n vm-<batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
+# ssh -o PubkeyAuthentication=no root@svc-clusterip-vm-<batch-id>.vm-<batch-id>-ns-1.svc.cluster.local  (password: password)
+
+# 13. UDN + NodePort: service port 8080, VM targetPort 8080 (nodeport:SERVICE_PORT)
+vstorm --udn-l2 --service=nodeport:8080 --vms=10 --namespaces=2
+
+# 14. UDN + NodePort: service port 22, VM targetPort 2222 (nodeport:SERVICE_PORT:TARGET_PORT)
+vstorm --udn-l2 --service=nodeport:22:2222 --vms=10 --namespaces=2
+
+# 15. VM Service without UDN (defaults: nodeport, port 22, targetPort 22)
+vstorm --service --containerdisk --vms=6 --namespaces=3
+
+# 16. Descheduler stress-ng workload with UDN + NodePort (l2bridge + DHCP networkData; basename labels the batch)
+vstorm --memory=8Gi --cores=2 \
+  --udn-l2 --service \
+  --cloudinit=workload/cloudinit-stress-ng-workload.yaml \
+  --env STRESS_TOGETHER=0 \
+  --env CPU_ACTIVE_PROBABILITY=30 \
+  --env MEM_ACTIVE_PROBABILITY=80 \
+  --wait --basename=desched-t1 --vms=11 --namespaces=2
 ```
 
 ## Cloud-init
@@ -183,9 +205,28 @@ feature gate management, and analysis instructions.
 
 Run `./vstorm -h` from the repo directory to see all options and their defaults (positional arguments `number_of_vms` and `number_of_namespaces` are supported as shortcuts for `--vms` and `--namespaces`).
 
-Note: KubeVirt sets **no resource limits** by default -- only requests. The guest VM
-cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request
-to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
+### UDN L2 networking
+
+`--udn-l2[=CIDR]` enables Layer 2 primary UserDefinedNetwork (OVN) per namespace: namespaces are labeled for primary UDN, a `UserDefinedNetwork` CR is created, and VMs use `l2bridge` instead of default masquerade networking. Omit the CIDR to use the default subnet `10.132.10.0/16`; pass a CIDR (e.g. `--udn-l2=10.200.0.0/16`) to override.
+
+### VM Service
+
+`--service[=TYPE[:PORT[:TARGET_PORT]]]` creates a Kubernetes Service per namespace that load-balances TCP traffic across all VM pods with the batch basename (`kubevirt.io/domain` selector). Works with or without `--udn-l2`.
+
+| Form | Meaning |
+|---|---|
+| `--service` | NodePort, service port 22, VM targetPort 22 |
+| `--service=clusterip` | ClusterIP, port 22 |
+| `--service=nodeport:8080` | NodePort, port and targetPort both 8080 |
+| `--service=nodeport:22:2222` | NodePort, service port 22, VM targetPort 2222 |
+
+NodePort values are auto-allocated from 32222 upward (one per namespace). OVN load-balances connections across running VM pods in each namespace.
+
+### Other notes
+
+KubeVirt sets **no resource limits** by default — only requests. The guest VM cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
+
+Use `--create-existing-vm` with `--batch-id` to re-apply VM YAML for an existing batch (e.g. after changing `--cores` or `--memory`); without it, VMs that already exist on the cluster are skipped.
 
 ## How it works
 
@@ -194,9 +235,11 @@ Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). T
 The tool performs these steps in order:
 
 1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
-2. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
-3. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode
-4. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, base PVC, or container image depending on mode
+2. **Create UDN** *(optional, `--udn-l2`)* -- `UserDefinedNetwork` CR per namespace with the chosen subnet
+3. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
+4. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode
+5. **Create VMs** -- each VM gets its own disk, cloned from the snapshot, DataSource, base PVC, or container image depending on mode
+6. **Create VM Services** *(optional, `--service`)* -- NodePort or ClusterIP Service per namespace, load-balancing to VM pods
 
 ### Storage considerations
 
@@ -269,6 +312,8 @@ hooks/
   pre-commit         # git pre-commit hook (runs tests and linters)
 templates/
   namespace.yaml     # namespace template
+  udn-l2.yaml        # UserDefinedNetwork (Layer 2 primary UDN)
+  vm-service.yaml    # Service template (NodePort/ClusterIP to VM pods)
   dv.yaml            # DataVolume template (import from URL)
   dv-datasource.yaml # DataVolume template (clone from DataSource)
   volumesnap.yaml    # VolumeSnapshot template
@@ -276,8 +321,12 @@ templates/
   vm-datasource.yaml    # VirtualMachine template (clone from DataSource, no-snapshot mode)
   vm-clone.yaml         # VirtualMachine template (clone from PVC, URL import mode)
   vm-containerdisk.yaml # VirtualMachine template (container disk, no storage class needed)
+  vm-snap-udn.yaml      # VirtualMachine + l2bridge (snapshot mode, UDN)
+  vm-datasource-udn.yaml
+  vm-clone-udn.yaml
+  vm-containerdisk-udn.yaml
   cloudinit-secret.yaml # cloud-init userdata Secret template
 tests/
-  vstorm.bats       # unit tests (run with: bats tests/)
+  *.bats            # unit tests (run with: bats tests/)
 logs/                # created at runtime -- logs and batch manifests
 ```

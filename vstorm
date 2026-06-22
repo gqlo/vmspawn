@@ -27,11 +27,13 @@ STORAGE_CLASS_SET=0
 ACCESS_MODE_SET=0
 WAIT_FOR_FIRST_CONSUMER=0
 UDN_L2=0
-UDN_SSH_SVC=0
-UDN_SSH_TYPE=nodeport
-UDN_SSH_NODEPORT_BASE=32222
-UDN_SSH_NODEPORT_NEXT=
-UDN_SSH_SVC_INFO=()
+VM_SERVICE=0
+VM_SERVICE_TYPE=nodeport
+VM_SERVICE_PORT=22
+VM_SERVICE_TARGET_PORT=22
+VM_SERVICE_NODEPORT_BASE=32222
+VM_SERVICE_NODEPORT_NEXT=
+VM_SERVICE_INFO=()
 SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
@@ -103,9 +105,57 @@ usage_error() {
 
 validate_subnet() {
     local cidr=$1
-    [[ -n "$cidr" ]] || fatal "--subnet requires a non-empty IPv4 CIDR (e.g. 10.132.10.0/16)"
+    [[ -n "$cidr" ]] || fatal "--udn-l2 requires a non-empty IPv4 CIDR (e.g. 10.132.10.0/16)"
     if ! [[ "$cidr" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}/([0-9]|[1-2][0-9]|3[0-2])$ ]]; then
-	fatal "Invalid --subnet='$cidr'; expected IPv4 CIDR (e.g. 10.132.10.0/16)"
+	fatal "Invalid --udn-l2='$cidr'; expected IPv4 CIDR (e.g. 10.132.10.0/16)"
+    fi
+}
+
+validate_service_port() {
+    local port=$1
+    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
+	fatal "Invalid port '$port' in --service; use 1-65535"
+    fi
+}
+
+parse_service_value() {
+    local value=${1:-}
+    VM_SERVICE=1
+    VM_SERVICE_TYPE=nodeport
+    VM_SERVICE_PORT=22
+    VM_SERVICE_TARGET_PORT=22
+    [[ -n "$value" ]] || return 0
+
+    local type_part rest
+    if [[ "$value" == *:* ]]; then
+	IFS=: read -r type_part rest <<< "$value"
+	type_part=${type_part,,}
+    else
+	type_part=${value,,}
+	rest=
+    fi
+
+    case "$type_part" in
+	nodeport|clusterip) VM_SERVICE_TYPE=$type_part ;;
+	*) fatal "Invalid --service value '$value'; use TYPE[:PORT[:TARGET_PORT]] (TYPE: nodeport or clusterip; default port/targetPort 22)" ;;
+    esac
+
+    if [[ -n "$rest" ]]; then
+	local port_part target_part
+	if [[ "$rest" == *:* ]]; then
+	    IFS=: read -r port_part target_part <<< "$rest"
+	else
+	    port_part=$rest
+	    target_part=
+	fi
+	validate_service_port "$port_part"
+	VM_SERVICE_PORT=$port_part
+	if [[ -n "$target_part" ]]; then
+	    validate_service_port "$target_part"
+	    VM_SERVICE_TARGET_PORT=$target_part
+	else
+	    VM_SERVICE_TARGET_PORT=$port_part
+	fi
     fi
 }
 
@@ -149,10 +199,6 @@ validate_args() {
 
 	if ((NUM_VMS < NUM_NAMESPACES)) ; then
 	    usage_error "Error: Number of VMs must be greater than or equal to number of namespaces"
-	fi
-
-	if ((UDN_SSH_SVC)) && (( ! UDN_L2 )) ; then
-	    fatal "--udn-ssh requires --udn-l2"
 	fi
 
 	if ((UDN_L2)); then
@@ -237,11 +283,13 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms=N                 Number of VMs ($NUM_VMS)
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
-        --udn-l2                Label namespaces for Layer 2 primary UDN
-        --subnet=CIDR           UDN L2 subnet ($SUBNET; used with --udn-l2)
-        --udn-ssh[=TYPE]        Expose VMs in each namespace via SSH Service
+        --udn-l2[=CIDR]         Layer 2 primary UDN (default subnet: $SUBNET)
+        --service[=TYPE[:PORT[:TARGET_PORT]]]
+                                Expose VMs in each namespace via Service
                                 | | | TYPE: nodeport (default) or clusterip
-                                | | | (requires --udn-l2; nodeport ports from 32222)
+                                | | | PORT: service port (default 22)
+                                | | | TARGET_PORT: VM port (default PORT)
+                                | | | (nodeport ports allocated from 32222)
         --run-strategy=strategy Run strategy ($RUN_STRATEGY; Always, Halted, Manual, RerunOnFailure)
         --create-existing-vm    Re-apply all VMs even if they already exist
                                 | | | Use with --batch-id to update an existing
@@ -306,19 +354,15 @@ process_option() {
 	vmsper*)   NUM_VMS_PER_NAMESPACE=$value ;;
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
-	udnl2)     UDN_L2=1 ;;
-	udnssh)
-	    UDN_SSH_SVC=1
+	udnl2)
+	    UDN_L2=1
 	    if [[ -n "$value" ]]; then
-		case "${value,,}" in
-		    nodeport|clusterip) UDN_SSH_TYPE=${value,,} ;;
-		    *) fatal "Invalid --udn-ssh value '$value'; use nodeport or clusterip" ;;
-		esac
+		SUBNET=$value
+		validate_subnet "$SUBNET"
 	    fi
 	    ;;
-	subnet*)
-	    SUBNET=$value
-	    validate_subnet "$SUBNET"
+	service)
+	    parse_service_value "$value"
 	    ;;
 	runstrat*) RUN_STRATEGY=$value ;;
 	wait)	   case "${value,,}" in
@@ -651,9 +695,10 @@ validate_required_templates() {
 	else
 	    TEMPLATE_CACHE[vm-udn]=$(_require_builtin vm-udn "$T/vm-clone-udn.yaml")
 	fi
-	if ((UDN_SSH_SVC)); then
-	    TEMPLATE_CACHE[svc-ssh-udn]=$(_require_builtin svc-ssh-udn "$T/svc-ssh-udn.yaml")
-	fi
+    fi
+
+    if ((VM_SERVICE)); then
+	TEMPLATE_CACHE[vm-service]=$(_require_builtin vm-service "$T/vm-service.yaml")
     fi
 
     if [[ -z "$CONTAINERDISK_IMAGE" ]]; then
@@ -740,7 +785,7 @@ Creating resources for:
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
   UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
-  UDN SSH: $(if ((UDN_SSH_SVC)); then if [[ "$UDN_SSH_TYPE" == clusterip ]]; then echo "enabled (ClusterIP)"; else echo "enabled (NodePort from $UDN_SSH_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
+  Service: $(if ((VM_SERVICE)); then local _svc_ports="port $VM_SERVICE_PORT"; if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then _svc_ports="port $VM_SERVICE_PORT -> targetPort $VM_SERVICE_TARGET_PORT"; fi; if [[ "$VM_SERVICE_TYPE" == clusterip ]]; then echo "enabled (ClusterIP, $_svc_ports)"; else echo "enabled (NodePort, $_svc_ports, node ports from $VM_SERVICE_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
 
 EOF
 }
@@ -785,6 +830,8 @@ process_template() {
         -e "s|{CONTAINERDISK_IMAGE}|$CONTAINERDISK_IMAGE|g"
         -e "s/{SVC_TYPE}/${SVC_TYPE:-ClusterIP}/g"
         -e "s/{SVC_NAME_SUFFIX}/${SVC_NAME_SUFFIX:-clusterip}/g"
+        -e "s/{SVC_PORT}/${VM_SERVICE_PORT}/g"
+        -e "s/{SVC_TARGET_PORT}/${VM_SERVICE_TARGET_PORT}/g"
         -e "s/{SSH_NODEPORT_LINE}/${SSH_NODEPORT_LINE:-}/g"
     )
 
@@ -862,61 +909,69 @@ create_udn_l2() {
 	oc_apply
 }
 
-init_udn_ssh_nodeport_next() {
-    UDN_SSH_NODEPORT_NEXT=$UDN_SSH_NODEPORT_BASE
+init_service_nodeport_next() {
+    VM_SERVICE_NODEPORT_NEXT=$VM_SERVICE_NODEPORT_BASE
     if ((wet_run)); then
 	local -i max_port=0
 	local port
 	while read -r port; do
-	    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= UDN_SSH_NODEPORT_BASE && port <= 32767 )); then
+	    if [[ "$port" =~ ^[0-9]+$ ]] && (( port >= VM_SERVICE_NODEPORT_BASE && port <= 32767 )); then
 		if (( port > max_port )); then max_port=$port; fi
 	    fi
 	done < <(oc get svc -A -o jsonpath='{range .items[*]}{.spec.ports[*].nodePort}{"\n"}{end}' 2>/dev/null || true)
-	if (( max_port >= UDN_SSH_NODEPORT_BASE )); then
-	    UDN_SSH_NODEPORT_NEXT=$((max_port + 1))
+	if (( max_port >= VM_SERVICE_NODEPORT_BASE )); then
+	    VM_SERVICE_NODEPORT_NEXT=$((max_port + 1))
 	fi
     fi
-    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
-	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+    if (( VM_SERVICE_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${VM_SERVICE_NODEPORT_BASE}-32767"
     fi
 }
 
-next_udn_ssh_nodeport() {
-    if (( UDN_SSH_NODEPORT_NEXT > 32767 )); then
-	fatal "No free NodePort available in range ${UDN_SSH_NODEPORT_BASE}-32767"
+next_service_nodeport() {
+    if (( VM_SERVICE_NODEPORT_NEXT > 32767 )); then
+	fatal "No free NodePort available in range ${VM_SERVICE_NODEPORT_BASE}-32767"
     fi
-    SSH_NODEPORT=$UDN_SSH_NODEPORT_NEXT
-    UDN_SSH_NODEPORT_NEXT=$((UDN_SSH_NODEPORT_NEXT + 1))
+    SSH_NODEPORT=$VM_SERVICE_NODEPORT_NEXT
+    VM_SERVICE_NODEPORT_NEXT=$((VM_SERVICE_NODEPORT_NEXT + 1))
 }
 
-create_udn_ssh_svc() {
-    local svc_file="${TEMPLATE_CACHE[svc-ssh-udn]}"
+create_vm_service() {
+    local svc_file="${TEMPLATE_CACHE[vm-service]}"
     local -i ns
-    local svc_name ssh_port_info
-    UDN_SSH_SVC_INFO=()
-    if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
-	init_udn_ssh_nodeport_next
+    local svc_name node_port_info
+    VM_SERVICE_INFO=()
+    if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
+	init_service_nodeport_next
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
 	namespace="vm-${BATCH_ID}-ns-${ns}"
-	if [[ "$UDN_SSH_TYPE" == nodeport ]]; then
+	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
 	    SVC_TYPE=NodePort
 	    SVC_NAME_SUFFIX=nodeport
-	    next_udn_ssh_nodeport
+	    next_service_nodeport
 	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
-	    ssh_port_info=$SSH_NODEPORT
-	    svc_name="ssh-nodeport-${VM_BASENAME}-${BATCH_ID}"
-	    log_message "Creating SSH NodePort Service ${C_VAL}$svc_name${C_RST} on port ${C_VAL}$SSH_NODEPORT${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    node_port_info=$SSH_NODEPORT
+	    svc_name="svc-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
+		log_message "Creating NodePort Service ${C_VAL}$svc_name${C_RST} on nodePort ${C_VAL}$SSH_NODEPORT${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    else
+		log_message "Creating NodePort Service ${C_VAL}$svc_name${C_RST} on nodePort ${C_VAL}$SSH_NODEPORT${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    fi
 	else
 	    SVC_TYPE=ClusterIP
 	    SVC_NAME_SUFFIX=clusterip
 	    SSH_NODEPORT_LINE=
-	    ssh_port_info=
-	    svc_name="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}"
-	    log_message "Creating SSH ClusterIP Service ${C_VAL}$svc_name${C_RST} for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    node_port_info=
+	    svc_name="svc-clusterip-${VM_BASENAME}-${BATCH_ID}"
+	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
+		log_message "Creating ClusterIP Service ${C_VAL}$svc_name${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    else
+		log_message "Creating ClusterIP Service ${C_VAL}$svc_name${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
+	    fi
 	fi
 	process_template "$svc_file" | oc_apply
-	UDN_SSH_SVC_INFO+=("${namespace}:${UDN_SSH_TYPE}:${ssh_port_info}")
+	VM_SERVICE_INFO+=("${namespace}:${VM_SERVICE_TYPE}:${node_port_info}:${VM_SERVICE_PORT}:${VM_SERVICE_TARGET_PORT}")
     done
 }
 ################################################################
@@ -1644,8 +1699,8 @@ main() {
 	fi
     fi
     create_virtualmachines
-    if ((UDN_SSH_SVC)); then
-	create_udn_ssh_svc
+    if ((VM_SERVICE)); then
+	create_vm_service
     fi
 
     # TODO: re-enable once verify_cloudinit is improved
@@ -1703,26 +1758,46 @@ main() {
 	cat <<-EOF
 	  oc get vm -A -l batch-id=$BATCH_ID
 	EOF
-	if ((UDN_SSH_SVC)) && ((${#UDN_SSH_SVC_INFO[@]} > 0)); then
-	    local entry ns_name svc_type ssh_port svc_host
-	    if [[ "$UDN_SSH_TYPE" == clusterip ]]; then
+	if ((VM_SERVICE)) && ((${#VM_SERVICE_INFO[@]} > 0)); then
+	    local entry ns_name svc_type node_port svc_port target_port svc_host
+	    if [[ "$VM_SERVICE_TYPE" == clusterip ]]; then
+		local _hint_port=$VM_SERVICE_PORT
+		if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
+		    _hint_port="$VM_SERVICE_PORT (VM port $VM_SERVICE_TARGET_PORT)"
+		fi
 		cat <<-EOF
 
-	SSH to VMs in each namespace (ClusterIP; OVN load-balances across running VMs):
+	Connect to VMs in each namespace (ClusterIP port $_hint_port; OVN load-balances across running VMs):
 	EOF
 	    else
 		cat <<-EOF
 
-	SSH to VMs in each namespace (NodePort on any cluster node; OVN load-balances across running VMs):
+	Connect to VMs in each namespace (NodePort on any cluster node; OVN load-balances across running VMs):
 	EOF
 	    fi
-	    for entry in "${UDN_SSH_SVC_INFO[@]}"; do
-		IFS=: read -r ns_name svc_type ssh_port <<< "$entry"
+	    for entry in "${VM_SERVICE_INFO[@]}"; do
+		IFS=: read -r ns_name svc_type node_port svc_port target_port <<< "$entry"
 		if [[ "$svc_type" == clusterip ]]; then
-		    svc_host="ssh-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
-		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
+		    svc_host="svc-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
+		    if (( svc_port == 22 )); then
+			echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
+		    else
+			echo "  ${ns_name}: <host>:${svc_port} via ${svc_host}"
+		    fi
 		else
-		    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${ssh_port}"
+		    if (( svc_port == 22 )); then
+			if (( target_port != svc_port )); then
+			    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${node_port} (VM port ${target_port})"
+			else
+			    echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@<node-ip> -p ${node_port}"
+			fi
+		    else
+			if (( target_port != svc_port )); then
+			    echo "  ${ns_name}: <node-ip>:${node_port} -> service port ${svc_port} / VM port ${target_port}"
+			else
+			    echo "  ${ns_name}: <node-ip>:${node_port} -> port ${svc_port}"
+			fi
+		    fi
 		fi
 	    done
 	fi
