@@ -1,7 +1,7 @@
 ---
 description: Shell scripting safety rules for robust Bash code
 globs: vstorm,helpers/*
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Shell Script Safety

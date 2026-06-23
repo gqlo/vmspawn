@@ -1,7 +1,7 @@
 ---
 description: Bash coding conventions for the vstorm script and helper scripts
 globs: vstorm,helpers/*
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Bash Coding Standards

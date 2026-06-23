@@ -1,7 +1,7 @@
 ---
 description: Bats test patterns and naming conventions for vstorm tests
 globs: tests/*.bats
-alwaysApply: false
+alwaysApply: true
 ---
 
 # Bats Testing Patterns

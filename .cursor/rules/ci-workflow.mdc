@@ -1,7 +1,7 @@
 ---
 description: CI/CD pipeline guidelines for GitHub Actions workflows
 globs: .github/workflows/*.yaml
-alwaysApply: false
+alwaysApply: true
 ---
 
 # CI/CD Workflow Guidelines

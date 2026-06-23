@@ -1,7 +1,7 @@
 ---
 description: YAML template conventions for Kubernetes resource templates
 globs: templates/*.yaml
-alwaysApply: false
+alwaysApply: true
 ---
 
 # YAML Template Conventions
