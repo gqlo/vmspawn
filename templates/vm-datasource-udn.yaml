@@ -26,7 +26,7 @@ spec:
         resources:
           requests:
             storage: {STORAGE_SIZE}
-        volumeMode: Block
+        volumeMode: {VOLUME_MODE}
         storageClassName: {STORAGE_CLASS}
   runStrategy: {RUN_STRATEGY}
   template:

@@ -486,3 +486,22 @@ setup_file() {
   [[ "$output" == *"pvc:"* ]]
 }
 
+# ---------------------------------------------------------------
+# COMBO-25: --storage-class + --volume-mode=Filesystem + --access-mode=ReadWriteMany
+# ---------------------------------------------------------------
+@test "combo: NFS storage-class + Filesystem volume-mode + RWX" {
+  run bash "$VSTORM" -n --batch-id=cmb025 --datasource=rhel9 --storage-class=my-nfs-sc \
+    --volume-mode=Filesystem --access-mode=ReadWriteMany \
+    --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+  [[ "$output" == *"Access Mode: ReadWriteMany"* ]]
+  [[ "$output" == *"ReadWriteMany"* ]]
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+}
+

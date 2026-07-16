@@ -9,6 +9,7 @@ _vstorm() {
 		--help
 		--datasource= --dv-url= --storage-size= --storage-class=
 		--access-mode=
+		--volume-mode=
 		--snapshot-class= --no-snapshot
 		--pvc-base-name= --batch-id= --basename=
 		--cores= --memory= --request-memory= --request-cpu=

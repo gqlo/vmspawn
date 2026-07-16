@@ -376,3 +376,70 @@ setup_file() {
   [[ "$output" != *"ReadWriteMany"* ]]
 }
 
+# ===============================================================
+# Volume mode options (--volume-mode)
+# ===============================================================
+
+# ---------------------------------------------------------------
+# OPT-1: ./vstorm -n --batch-id=vm0001 --datasource=rhel9 --vms=1 --namespaces=1
+# ---------------------------------------------------------------
+@test "OPT: default volumeMode is Block" {
+  run bash "$VSTORM" -n --batch-id=vm0001 --datasource=rhel9 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Block"* ]]
+  [[ "$output" == *"volumeMode: Block"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT-2: ./vstorm -n --batch-id=vm0002 --datasource=rhel9 --volume-mode=Filesystem --no-snapshot --vms=1 --namespaces=1
+# ---------------------------------------------------------------
+@test "OPT: --volume-mode=Filesystem sets Filesystem on DV and VM" {
+  run bash "$VSTORM" -n --batch-id=vm0002 --datasource=rhel9 --volume-mode=Filesystem \
+    --no-snapshot --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT-3: ./vstorm -n --batch-id=vm0003 --datasource=rhel9 --volume-mode=Block --vms=1 --namespaces=1
+# ---------------------------------------------------------------
+@test "OPT: --volume-mode=Block is explicit and valid" {
+  run bash "$VSTORM" -n --batch-id=vm0003 --datasource=rhel9 --volume-mode=Block \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Block"* ]]
+  [[ "$output" == *"volumeMode: Block"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT-4: ./vstorm -n --batch-id=vm0004 --datasource=rhel9 --volume-mode=Filesystem --snapshot-class=ocs-storagecluster-rbdplugin-snapclass --vms=2 --namespaces=1
+# ---------------------------------------------------------------
+@test "OPT: Filesystem volumeMode applies to snapshot-based VMs too" {
+  run bash "$VSTORM" -n --batch-id=vm0004 --datasource=rhel9 --volume-mode=Filesystem \
+    --snapshot-class=ocs-storagecluster-rbdplugin-snapclass --vms=2 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT-5: ./vstorm -n --batch-id=vm0005 --volume-mode=Filesystem --no-snapshot --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2
+# ---------------------------------------------------------------
+@test "OPT: Filesystem volumeMode with URL import" {
+  run bash "$VSTORM" -n --batch-id=vm0005 --volume-mode=Filesystem --no-snapshot \
+    --vms=1 --namespaces=1 --dv-url=http://example.com/disk.qcow2
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+  [[ "$output" == *"http://example.com/disk.qcow2"* ]]
+}
+

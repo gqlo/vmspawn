@@ -12,6 +12,9 @@ spec:
     kind: DataVolume
     metadata:
       name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+      labels:
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
     spec:
       storage:
         accessModes:
@@ -19,7 +22,7 @@ spec:
         resources:
           requests:
             storage: {STORAGE_SIZE}
-        volumeMode: Block
+        volumeMode: {VOLUME_MODE}
         storageClassName: {STORAGE_CLASS}
       source:
         pvc:

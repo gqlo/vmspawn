@@ -1,11 +1,11 @@
 # Vstorm
 
 - Scale up hundreds of VMs across multiple namespaces with one command on OpenShift Virtualization, without writing YAML.
-- Auto-detects storage access modes, clone strategy, and snapshot support so it works with OCS/Ceph, LVMS, NFS, or any block-capable storage class.
+- Auto-detects storage access modes, clone strategy, and snapshot support so it works with OCS/Ceph, LVMS, NFS, or any block- or filesystem-capable storage class.
 - **Cloud-init** injects workloads at boot (e.g. stress-ng). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
 - **Self-built minimal guests** (high-density VM testing): a stripped x86_64-only kernel and small rootfs, often on the order of ~80 MB per guest, so you can pack many VMs onto finite CPU and RAM and stress scheduling, networking, and storage. Host the disk where the cluster can import it (for example `--dv-url` or your DataSource). Example layout and image live under [`custom-build-images/`](custom-build-images/).
 - **`--profile`**: integrated cluster profiling captures Go runtime pprof data (CPU, heap, mutex, and more) from the KubeVirt control plane during batch runs.
-- **Quality**: 246 `bats` tests, live cluster validation, and CI on every push (as of April 2026).
+- **Quality**: 257 `bats` tests, live cluster validation, and CI on every push (as of July 2026).
 
 ---
 
@@ -26,7 +26,7 @@
 
 - `oc` CLI logged into an OpenShift cluster
 - OpenShift Virtualization operator installed (`openshift-cnv` namespace)
-- A storage class that supports block volumes (`ReadWriteMany` or `ReadWriteOnce` -- auto-detected)
+- A storage class that supports block or filesystem volumes (`ReadWriteMany` or `ReadWriteOnce` -- auto-detected; use `--volume-mode=Filesystem` for NFS/NAS)
 - **With snapshots (default for OCS):** OpenShift Data Foundation with Ceph RBD storage class and a matching VolumeSnapshotClass
 - **Without snapshots:** any compatible storage class -- pass `--storage-class=CLASS` and snapshots are auto-disabled
 - **Without any storage class:** use `--containerdisk` -- only `oc` and OpenShift Virtualization are required; no PVC or storage configuration needed
@@ -69,6 +69,9 @@ vstorm --cloudinit=workload/cloudinit-stress-ng-workload.yaml --vms=10 --namespa
 
 # 6. No OCS: use a different storage class (snapshots auto-disabled)
 vstorm --storage-class=my-nfs-sc --vms=10 --namespaces=2
+
+# 6b. NFS / filesystem PVC (required for NAS storage classes that do not support Block)
+vstorm --storage-class=trident-nfs-svm --volume-mode=Filesystem --vms=10 --namespaces=2
 
 # 7. Dry-run: preview generated YAML without applying
 vstorm -n --vms=10 --namespaces=2
@@ -224,6 +227,8 @@ NodePort values are auto-allocated from 32222 upward (one per namespace). OVN lo
 
 ### Other notes
 
+`--volume-mode=Block|Filesystem` sets PVC `volumeMode` (default `Block`). Use `Filesystem` for NFS/NAS storage classes. Access mode is still auto-detected from the StorageProfile for the chosen volume mode unless you pass `--access-mode`.
+
 KubeVirt sets **no resource limits** by default — only requests. The guest VM cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 Use `--create-existing-vm` with `--batch-id` to re-apply VM YAML for an existing batch (e.g. after changing `--cores` or `--memory`); without it, VMs that already exist on the cluster are skipped.
@@ -248,6 +253,7 @@ vstorm auto-detects most storage settings from the cluster. Here are the common 
 | Symptom | Cause | Fix |
 |---|---|---|
 | DV stuck in `PendingPopulation` | Access mode mismatch (e.g. RWX on RWO-only storage) | Use `--access-mode=ReadWriteOnce`, or let auto-detection handle it |
+| PVC / DV rejected or stuck on NFS | Storage class only supports Filesystem, but default is Block | Pass `--volume-mode=Filesystem` |
 | PVC stuck `Pending` ("waiting for first consumer") | WaitForFirstConsumer storage with an intermediate base PVC | Handled automatically -- snapshots are disabled and base PVC is skipped |
 | `CloneValidationFailed: target size smaller than source` | Default 32Gi is smaller than your golden image | Use `--storage-size=50Gi` (or larger) |
 | VolumeSnapshot never becomes ready | No matching VolumeSnapshotClass for your storage | Pass `--snapshot-class=CLASS`, or omit it to auto-disable snapshots |
