@@ -279,6 +279,27 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
+# QS-6b: ./vstorm --storage-class=my-nfs-sc --volume-mode=Filesystem ...
+#   NFS / filesystem PVC volume mode
+# ---------------------------------------------------------------
+@test "QS: NFS storage class with Filesystem volume mode" {
+  run bash "$VSTORM" -n --batch-id=qs0006b --datasource=rhel9 --storage-class=my-nfs-sc \
+    --volume-mode=Filesystem --vms=5 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"storageClassName: my-nfs-sc"* ]]
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+  [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
+  [[ "$output" != *"kind: VolumeSnapshot"* ]]
+
+  local vm_count
+  vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
+  [ "$vm_count" -eq 5 ]
+}
+
+# ---------------------------------------------------------------
 # QS-7: ./vstorm --storage-class=my-rbd-sc --snapshot-class=my-rbd-snap --vms=10 --namespaces=2
 #   Custom storage + snapshot class pair (snapshots enabled)
 # ---------------------------------------------------------------

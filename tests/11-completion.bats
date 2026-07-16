@@ -50,3 +50,18 @@
 	rm -f "$tmp"
 	[ "$status" -eq 0 ]
 }
+
+# ---------------------------------------------------------------
+# COMP-5: --volume completes to --volume-mode=
+# ---------------------------------------------------------------
+@test "COMP: --volume completes to --volume-mode=" {
+	run bash -c '
+		source tab-completion/vstorm.bash
+		COMP_WORDS=(vstorm --volume)
+		COMP_CWORD=1
+		_vstorm
+		echo "${COMPREPLY[@]}"
+	'
+	[ "$status" -eq 0 ]
+	[[ "$output" == *"--volume-mode="* ]]
+}

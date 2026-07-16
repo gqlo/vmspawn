@@ -349,3 +349,25 @@ setup_file() {
   [[ "$output" == *'vm-basename: "rhel9"'* ]]
 }
 
+# ---------------------------------------------------------------
+# Volume mode override
+# ---------------------------------------------------------------
+@test "--volume-mode=Filesystem overrides default Block" {
+  run bash "$VSTORM" -n --batch-id=nosn09 --datasource=rhel9 --vms=1 --namespaces=1 \
+    --volume-mode=Filesystem
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Filesystem"* ]]
+  [[ "$output" == *"volumeMode: Filesystem"* ]]
+  [[ "$output" != *"volumeMode: Block"* ]]
+}
+
+@test "default volumeMode is Block" {
+  run bash "$VSTORM" -n --batch-id=nosn10 --datasource=rhel9 --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Volume Mode: Block"* ]]
+  [[ "$output" == *"volumeMode: Block"* ]]
+  [[ "$output" != *"volumeMode: Filesystem"* ]]
+}
+

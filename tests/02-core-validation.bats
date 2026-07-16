@@ -384,6 +384,16 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
+# ERR-22d: invalid --volume-mode rejected
+# ---------------------------------------------------------------
+@test "ERR: invalid --volume-mode rejected" {
+  run bash "$VSTORM" -n --batch-id=err029d --volume-mode=Raw --vms=1 --namespaces=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid --volume-mode 'Raw'"* ]]
+  [[ "$output" == *"Block, Filesystem"* ]]
+}
+
+# ---------------------------------------------------------------
 # ERR-23: option placed after positional arg is detected
 # ---------------------------------------------------------------
 @test "ERR: option after positional arg detected" {
