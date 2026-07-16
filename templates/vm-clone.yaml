@@ -12,6 +12,9 @@ spec:
     kind: DataVolume
     metadata:
       name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
+      labels:
+        batch-id: "{BATCH_ID}"
+        vm-basename: "{VM_BASENAME}"
     spec:
       storage:
         accessModes:

@@ -384,7 +384,7 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# ERR-22d: invalid --volume-mode rejected
+# ERR-22d: ./vstorm -n --batch-id=err029d --volume-mode=Raw --vms=1 --namespaces=1
 # ---------------------------------------------------------------
 @test "ERR: invalid --volume-mode rejected" {
   run bash "$VSTORM" -n --batch-id=err029d --volume-mode=Raw --vms=1 --namespaces=1

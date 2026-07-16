@@ -350,9 +350,9 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# Volume mode override
+# OPT-1: ./vstorm -n --batch-id=nosn09 --datasource=rhel9 --vms=1 --namespaces=1 --volume-mode=Filesystem
 # ---------------------------------------------------------------
-@test "--volume-mode=Filesystem overrides default Block" {
+@test "OPT: --volume-mode=Filesystem overrides default Block" {
   run bash "$VSTORM" -n --batch-id=nosn09 --datasource=rhel9 --vms=1 --namespaces=1 \
     --volume-mode=Filesystem
   [ "$status" -eq 0 ]
@@ -362,7 +362,10 @@ setup_file() {
   [[ "$output" != *"volumeMode: Block"* ]]
 }
 
-@test "default volumeMode is Block" {
+# ---------------------------------------------------------------
+# OPT-2: ./vstorm -n --batch-id=nosn10 --datasource=rhel9 --vms=1 --namespaces=1
+# ---------------------------------------------------------------
+@test "OPT: default volumeMode is Block" {
   run bash "$VSTORM" -n --batch-id=nosn10 --datasource=rhel9 --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 

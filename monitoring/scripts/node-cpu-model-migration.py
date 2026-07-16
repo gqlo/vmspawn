@@ -65,9 +65,7 @@ def cpu_models(labels: dict | None, label_prefix: str) -> list[str]:
 
 
 def format_row(node_name: str, models: list[str]) -> str:
-    if models:
-        return ", ".join([node_name, *models])
-    return node_name
+    return ", ".join([node_name, *models])
 
 
 def main() -> None:
@@ -101,16 +99,13 @@ def main() -> None:
         labels = node.get("metadata", {}).get("labels") or {}
         rows.append(format_row(name, cpu_models(labels, label_prefix)))
 
-    out = sys.stdout
     if args.output:
-        out = open(args.output, "w", encoding="utf-8")
-
-    try:
+        with open(args.output, "w", encoding="utf-8") as out:
+            for row in rows:
+                print(row, file=out)
+    else:
         for row in rows:
-            print(row, file=out)
-    finally:
-        if args.output and out is not sys.stdout:
-            out.close()
+            print(row)
 
 
 if __name__ == "__main__":
