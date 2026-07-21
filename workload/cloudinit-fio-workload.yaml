@@ -1,0 +1,133 @@
+#cloud-config
+ssh_pwauth: true
+disable_root: false
+chpasswd:
+  expire: false
+  users:
+    - name: root
+      password: password
+      type: text
+
+packages:
+  - fio
+
+write_files:
+  - path: /opt/fio_workload.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # fio storage I/O workload: set WORKLOAD_TYPE=randread|randwrite|randrw|seqwrite|seqread (default: randrw).
+      # Override via env: FIO_DIRECTORY, FIO_SIZE, FIO_BS, FIO_IODEPTH, FIO_NUMJOBS, FIO_RUNTIME, FIO_DIRECT, FIO_RW.
+      # Set FIO_CUSTOM_OPTS to run a custom fio command instead of the built-in job (all other tunables still apply for banner/logging).
+      # Use /etc/default/fio-workload or systemd Environment= to customize.
+
+      # Install fio if not already present
+      if ! command -v fio &> /dev/null; then
+          echo "fio not found, installing..."
+          if command -v dnf &> /dev/null; then
+              dnf install -y epel-release 2>/dev/null || true
+              dnf install -y fio
+          elif command -v yum &> /dev/null; then
+              yum install -y epel-release 2>/dev/null || true
+              yum install -y fio
+          elif command -v apt-get &> /dev/null; then
+              apt-get update && apt-get install -y fio
+          else
+              echo "Error: no supported package manager found."
+              exit 1
+          fi
+          if ! command -v fio &> /dev/null; then
+              echo "Error: failed to install fio."
+              exit 1
+          fi
+      fi
+
+      # WORKLOAD_TYPE preset (env overrides below)
+      WORKLOAD_TYPE="${WORKLOAD_TYPE:-randrw}"
+      case "$WORKLOAD_TYPE" in
+          randread)  _rw=randread;  _bs=4k; _rwmix=50 ;;
+          randwrite) _rw=randwrite; _bs=4k; _rwmix=50 ;;
+          randrw)    _rw=randrw;    _bs=4k; _rwmix=50 ;;
+          seqwrite)  _rw=write;     _bs=4k; _rwmix=50 ;;
+          seqread)   _rw=read;      _bs=4k; _rwmix=50 ;;
+          *)         _rw=randrw;    _bs=4k; _rwmix=50 ;;
+      esac
+
+      # Tunables (env overrides preset)
+      FIO_DIRECTORY="${FIO_DIRECTORY:-/var/lib/fio}"
+      FIO_SIZE="${FIO_SIZE:-1G}"
+      FIO_BS="${FIO_BS:-$_bs}"
+      FIO_IODEPTH="${FIO_IODEPTH:-32}"
+      FIO_NUMJOBS="${FIO_NUMJOBS:-1}"
+      FIO_RUNTIME="${FIO_RUNTIME:-999999999}"
+      FIO_DIRECT="${FIO_DIRECT:-1}"
+      FIO_RW="${FIO_RW:-$_rw}"
+      FIO_RWMIXREAD="${FIO_RWMIXREAD:-$_rwmix}"
+
+      mkdir -p "$FIO_DIRECTORY"
+      FIO_FILENAME="${FIO_DIRECTORY}/fio-job.dat"
+
+      echo "Starting fio workload (WORKLOAD_TYPE=$WORKLOAD_TYPE, running forever)"
+      echo "FIO_RW=$FIO_RW | FIO_BS=$FIO_BS | FIO_IODEPTH=$FIO_IODEPTH | FIO_NUMJOBS=$FIO_NUMJOBS"
+      echo "FIO_SIZE=$FIO_SIZE | FIO_RUNTIME=${FIO_RUNTIME}s | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
+      [[ -n "${FIO_CUSTOM_OPTS:-}" ]] && echo "FIO_CUSTOM_OPTS is set: using CUSTOM-OPTS branch for each cycle."
+      echo ""
+
+      cycle=1
+      while true; do
+          if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
+              echo "Cycle $cycle: CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
+              # shellcheck disable=SC2086
+              fio $FIO_CUSTOM_OPTS --time_based --runtime="${FIO_RUNTIME}"
+          else
+              echo "Cycle $cycle: ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
+              fio_args=(
+                  --name="vstorm-fio"
+                  --filename="$FIO_FILENAME"
+                  --rw="$FIO_RW"
+                  --bs="$FIO_BS"
+                  --iodepth="$FIO_IODEPTH"
+                  --numjobs="$FIO_NUMJOBS"
+                  --size="$FIO_SIZE"
+                  --direct="$FIO_DIRECT"
+                  --ioengine=libaio
+                  --time_based
+                  --runtime="$FIO_RUNTIME"
+                  --group_reporting
+              )
+              if [[ "$FIO_RW" == "randrw" || "$FIO_RW" == "rw" ]]; then
+                  fio_args+=(--rwmixread="$FIO_RWMIXREAD")
+              fi
+              fio "${fio_args[@]}"
+          fi
+          ((cycle++))
+      done
+  - path: /etc/default/vstorm-guest-env
+    permissions: '0644'
+    content: |
+      {VSTORM_GUEST_ENV}
+
+  - path: /etc/systemd/system/fio-workload.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=fio storage I/O workload (WORKLOAD_TYPE=randread|randwrite|randrw|seqwrite|seqread)
+      After=network.target
+
+      [Service]
+      Type=simple
+      EnvironmentFile=-/etc/default/vstorm-guest-env
+      EnvironmentFile=-/etc/default/fio-workload
+      ExecStart=/opt/fio_workload.sh
+      Restart=always
+      RestartSec=5
+
+      [Install]
+      WantedBy=multi-user.target
+
+runcmd:
+  - sed -i 's/^#\?PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config
+  - sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
+  - systemctl restart sshd 2>/dev/null || systemctl restart ssh
+  - ["systemctl", "daemon-reload"]
+  - ["systemctl", "enable", "--now", "fio-workload.service"]
