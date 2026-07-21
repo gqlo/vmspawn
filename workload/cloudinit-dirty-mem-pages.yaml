@@ -1,4 +1,5 @@
 #cloud-config
+preserve_hostname: false
 # Dirty-rate guest workload (compile + systemd). vstorm example:
 #   ./vstorm ... --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --env DIRTY_RATE_FRACTION=0.4
 # DIRTY_RATE_FRACTION is a fraction of total physical RAM (0.1–0.9, e.g. 0.9 = 90%); see dirty-mem-pages.c.

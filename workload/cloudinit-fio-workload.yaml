@@ -1,4 +1,5 @@
 #cloud-config
+preserve_hostname: false
 ssh_pwauth: true
 disable_root: false
 chpasswd:
