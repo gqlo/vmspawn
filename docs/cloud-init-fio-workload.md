@@ -10,7 +10,7 @@ Run a configurable fio storage I/O workload inside VMs at boot. For VM CPU and m
 | Mixed random read/write | `vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env WORKLOAD_TYPE=randrw --vms=5` |
 | Sequential write, larger file | `vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env WORKLOAD_TYPE=seqwrite --env FIO_SIZE=4G --vms=5` |
 | Custom block size and queue depth | `vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env FIO_BS=64k --env FIO_IODEPTH=64 --vms=10` |
-| Short cycles for quicker feedback | `vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env FIO_RUNTIME=15 --vms=5` |
+| Short time-based cycles for quicker feedback | `vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env FIO_TIME_BASED=1 --env FIO_RUNTIME=15 --vms=5` |
 | Dry-run to preview | `vstorm -n --cloudinit=workload/cloudinit-fio-workload.yaml --env WORKLOAD_TYPE=randread --vms=5` |
 
 Default preset is **randrw** (no `--env` needed). Combine with any VM sizing.
@@ -65,13 +65,14 @@ Override with `--env KEY=VAL` (repeat as needed):
 | `FIO_DIRECTORY` | Directory for the job file (default `/var/lib/fio`) |
 | `FIO_SIZE` | File size per job (default `1G`) |
 | `FIO_BS` | Block size (overrides preset default) |
-| `FIO_IODEPTH` | Queue depth (default `32`) |
+| `FIO_IODEPTH` | Queue depth (default `16`) |
 | `FIO_NUMJOBS` | Parallel jobs (default `1`) |
-| `FIO_RUNTIME` | Seconds per cycle (default `999999999`, effectively forever) |
+| `FIO_TIME_BASED` | `1` = add `--time_based --runtime`; `0` = no runtime limit (default) |
+| `FIO_RUNTIME` | Seconds per cycle when `FIO_TIME_BASED=1` (default `60`) |
 | `FIO_DIRECT` | `1` = O_DIRECT (default), `0` = buffered |
 | `FIO_RW` | Override `--rw` independently of `WORKLOAD_TYPE` |
 | `FIO_RWMIXREAD` | Read percentage for `randrw`/`rw` (default `50`) |
-| `FIO_CUSTOM_OPTS` | When set, each cycle runs `fio $FIO_CUSTOM_OPTS` plus the same time args as above |
+| `FIO_CUSTOM_OPTS` | When set, each cycle runs `fio $FIO_CUSTOM_OPTS` (plus time args only if `FIO_TIME_BASED=1`) |
 
 ```bash
 # Custom block size and depth
@@ -79,11 +80,11 @@ vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --env FIO_BS=64k --env FIO_IODEPTH=64 \
   --cores=4 --memory=8Gi --vms=10
 
-# Larger working set, shorter cycles
+# Larger working set, time-based short cycles
 vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
-  --env WORKLOAD_TYPE=randrw --env FIO_SIZE=4G --env FIO_RUNTIME=30 --vms=5
+  --env WORKLOAD_TYPE=randrw --env FIO_SIZE=4G --env FIO_TIME_BASED=1 --env FIO_RUNTIME=30 --vms=5
 
-# Custom fio options (script still appends --time_based --runtime)
+# Custom fio options (script appends --time_based --runtime only when FIO_TIME_BASED=1)
 vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --env 'FIO_CUSTOM_OPTS=--name=custom --filename=/var/lib/fio/custom.dat --rw=randread --bs=4k --iodepth=16 --size=512M --direct=1 --ioengine=libaio' \
   --vms=5
@@ -109,8 +110,9 @@ Example output:
 
 ```
 Starting fio workload (WORKLOAD_TYPE=randrw, running forever)
-FIO_RW=randrw | FIO_BS=4k | FIO_IODEPTH=32 | FIO_NUMJOBS=1
-Cycle 1: ACTIVE - Running fio (randrw, bs=4k) for 999999999s...
+FIO_RW=randrw | FIO_BS=4k | FIO_IODEPTH=16 | FIO_NUMJOBS=1
+FIO_SIZE=1G | FIO_TIME_BASED=0 (no runtime limit) | FIO_DIRECT=1 | FIO_DIRECTORY=/var/lib/fio
+Cycle 1: ACTIVE - Running fio (randrw, bs=4k) until size=1G completes...
 ```
 
 ---
@@ -150,7 +152,7 @@ For contributors and users who want to understand or extend the workload.
 
 [workload/cloudinit-fio-workload.yaml](../workload/cloudinit-fio-workload.yaml): script at `/opt/fio_workload.sh`, systemd unit at
 `/etc/systemd/system/fio-workload.service`, env from `--env` in `/etc/default/vstorm-guest-env`.
-Each cycle runs fio with `--time_based --runtime=${FIO_RUNTIME}` (default `999999999`) against a file under `FIO_DIRECTORY` (default `/var/lib/fio`). The outer loop restarts fio if a cycle ends.
+Each cycle runs fio against a file under `FIO_DIRECTORY` (default `/var/lib/fio`). By default (`FIO_TIME_BASED=0`) there is no `--time_based`/`--runtime`; each cycle runs until `--size` completes, then the outer loop restarts fio. Set `FIO_TIME_BASED=1` to add `--time_based --runtime=${FIO_RUNTIME}` (default `60`s).
 **Deployment**: Via `--cloudinit` (recommended), or set env with `--env KEY=VAL`; or copy and run the script standalone inside a VM (`scp` + `ssh`).
 
 ### References

@@ -55,6 +55,7 @@ _extract_fio_script() {
     grep -q '#!/bin/bash' "$script_path"
     grep -q 'WORKLOAD_TYPE' "$script_path"
     grep -q 'FIO_RUNTIME' "$script_path"
+    grep -q 'FIO_TIME_BASED' "$script_path"
     rm -f "$script_path"
 }
 
@@ -88,12 +89,12 @@ _extract_fio_script() {
 @test "FIO: branch ACTIVE default randrw" {
     local script_path
     script_path=$(_extract_fio_script)
-    unset FIO_CUSTOM_OPTS WORKLOAD_TYPE FIO_RW
-    export FIO_RUNTIME=1
+    unset FIO_CUSTOM_OPTS WORKLOAD_TYPE FIO_RW FIO_TIME_BASED
     run timeout 3 bash "$script_path" 2>/dev/null || true
     rm -f "$script_path"
     [[ "$output" == *"WORKLOAD_TYPE=randrw"* ]]
     [[ "$output" == *"ACTIVE - Running fio"* ]]
+    [[ "$output" == *"until size="* ]]
     [[ "$output" == *"randrw"* ]]
 }
 
@@ -134,7 +135,18 @@ _extract_fio_script() {
     local script_path
     script_path=$(_extract_fio_script)
     export FIO_CUSTOM_OPTS="--name=custom --rw=randread --bs=4k --size=1M"
-    export FIO_RUNTIME=1
+    unset FIO_TIME_BASED
+    run timeout 3 bash "$script_path" 2>/dev/null || true
+    rm -f "$script_path"
+    [[ "$output" == *"CUSTOM-OPTS"* ]]
+    [[ "$output" == *"Running fio (no runtime limit)"* ]]
+}
+
+@test "FIO: CUSTOM-OPTS with FIO_TIME_BASED=1 appends runtime" {
+    local script_path
+    script_path=$(_extract_fio_script)
+    export FIO_CUSTOM_OPTS="--name=custom --rw=randread --bs=4k --size=1M"
+    export FIO_TIME_BASED=1 FIO_RUNTIME=1
     run timeout 3 bash "$script_path" 2>/dev/null || true
     rm -f "$script_path"
     [[ "$output" == *"CUSTOM-OPTS"* ]]

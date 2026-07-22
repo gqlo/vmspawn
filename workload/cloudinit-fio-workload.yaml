@@ -18,7 +18,10 @@ write_files:
     content: |
       #!/bin/bash
       # fio storage I/O workload: set WORKLOAD_TYPE=randread|randwrite|randrw|seqwrite|seqread (default: randrw).
-      # Override via env: FIO_DIRECTORY, FIO_SIZE, FIO_BS, FIO_IODEPTH, FIO_NUMJOBS, FIO_RUNTIME, FIO_DIRECT, FIO_RW.
+      # Override via env: FIO_DIRECTORY, FIO_SIZE, FIO_BS, FIO_IODEPTH, FIO_NUMJOBS,
+      #   FIO_TIME_BASED, FIO_RUNTIME, FIO_DIRECT, FIO_RW.
+      # FIO_TIME_BASED=0 (default): no --time_based/--runtime; each cycle runs until --size completes.
+      # FIO_TIME_BASED=1: add --time_based --runtime=$FIO_RUNTIME.
       # Set FIO_CUSTOM_OPTS to run a custom fio command instead of the built-in job (all other tunables still apply for banner/logging).
       # Use /etc/default/fio-workload or systemd Environment= to customize.
 
@@ -58,9 +61,10 @@ write_files:
       FIO_DIRECTORY="${FIO_DIRECTORY:-/var/lib/fio}"
       FIO_SIZE="${FIO_SIZE:-1G}"
       FIO_BS="${FIO_BS:-$_bs}"
-      FIO_IODEPTH="${FIO_IODEPTH:-32}"
+      FIO_IODEPTH="${FIO_IODEPTH:-16}"
       FIO_NUMJOBS="${FIO_NUMJOBS:-1}"
-      FIO_RUNTIME="${FIO_RUNTIME:-999999999}"
+      FIO_TIME_BASED="${FIO_TIME_BASED:-0}"
+      FIO_RUNTIME="${FIO_RUNTIME:-60}"
       FIO_DIRECT="${FIO_DIRECT:-1}"
       FIO_RW="${FIO_RW:-$_rw}"
       FIO_RWMIXREAD="${FIO_RWMIXREAD:-$_rwmix}"
@@ -70,18 +74,32 @@ write_files:
 
       echo "Starting fio workload (WORKLOAD_TYPE=$WORKLOAD_TYPE, running forever)"
       echo "FIO_RW=$FIO_RW | FIO_BS=$FIO_BS | FIO_IODEPTH=$FIO_IODEPTH | FIO_NUMJOBS=$FIO_NUMJOBS"
-      echo "FIO_SIZE=$FIO_SIZE | FIO_RUNTIME=${FIO_RUNTIME}s | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
+      if [[ "$FIO_TIME_BASED" == "1" ]]; then
+          echo "FIO_SIZE=$FIO_SIZE | FIO_TIME_BASED=1 | FIO_RUNTIME=${FIO_RUNTIME}s | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
+      else
+          echo "FIO_SIZE=$FIO_SIZE | FIO_TIME_BASED=0 (no runtime limit) | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
+      fi
       [[ -n "${FIO_CUSTOM_OPTS:-}" ]] && echo "FIO_CUSTOM_OPTS is set: using CUSTOM-OPTS branch for each cycle."
       echo ""
 
       cycle=1
       while true; do
           if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
-              echo "Cycle $cycle: CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
-              # shellcheck disable=SC2086
-              fio $FIO_CUSTOM_OPTS --time_based --runtime="${FIO_RUNTIME}"
+              if [[ "$FIO_TIME_BASED" == "1" ]]; then
+                  echo "Cycle $cycle: CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
+                  # shellcheck disable=SC2086
+                  fio $FIO_CUSTOM_OPTS --time_based --runtime="${FIO_RUNTIME}"
+              else
+                  echo "Cycle $cycle: CUSTOM-OPTS - Running fio (no runtime limit)..."
+                  # shellcheck disable=SC2086
+                  fio $FIO_CUSTOM_OPTS
+              fi
           else
-              echo "Cycle $cycle: ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
+              if [[ "$FIO_TIME_BASED" == "1" ]]; then
+                  echo "Cycle $cycle: ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
+              else
+                  echo "Cycle $cycle: ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) until size=$FIO_SIZE completes..."
+              fi
               fio_args=(
                   --name="vstorm-fio"
                   --filename="$FIO_FILENAME"
@@ -92,10 +110,11 @@ write_files:
                   --size="$FIO_SIZE"
                   --direct="$FIO_DIRECT"
                   --ioengine=libaio
-                  --time_based
-                  --runtime="$FIO_RUNTIME"
                   --group_reporting
               )
+              if [[ "$FIO_TIME_BASED" == "1" ]]; then
+                  fio_args+=(--time_based --runtime="$FIO_RUNTIME")
+              fi
               if [[ "$FIO_RW" == "randrw" || "$FIO_RW" == "rw" ]]; then
                   fio_args+=(--rwmixread="$FIO_RWMIXREAD")
               fi
