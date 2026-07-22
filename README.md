@@ -2,7 +2,7 @@
 
 - Scale up hundreds of VMs across multiple namespaces with one command on OpenShift Virtualization, without writing YAML.
 - Auto-detects storage access modes, clone strategy, and snapshot support so it works with OCS/Ceph, LVMS, NFS, or any block- or filesystem-capable storage class.
-- **Cloud-init** injects workloads at boot (e.g. stress-ng). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
+- **Cloud-init** injects workloads at boot (e.g. stress-ng, fio). For steady dirty anonymous memory, `workload/cloudinit-dirty-mem-pages.yaml` installs a C program, compiles it on first boot, and runs it under systemd; tune the dirty page ratio with `--env DIRTY_RATE_FRACTION` (a fraction of guest physical RAM).
 - **Self-built minimal guests** (high-density VM testing): a stripped x86_64-only kernel and small rootfs, often on the order of ~80 MB per guest, so you can pack many VMs onto finite CPU and RAM and stress scheduling, networking, and storage. Host the disk where the cluster can import it (for example `--dv-url` or your DataSource). Example layout and image live under [`custom-build-images/`](custom-build-images/).
 - **`--profile`**: integrated cluster profiling captures Go runtime pprof data (CPU, heap, mutex, and more) from the KubeVirt control plane during batch runs.
 - **Quality**: 257 `bats` tests, live cluster validation, and CI on every push (as of July 2026).
@@ -17,7 +17,7 @@
 - [Options](#options)
 - [How it works](#how-it-works)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
+- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cloud-init and fio workload](docs/cloud-init-fio-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
 - **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl)
 
 ---
@@ -151,9 +151,12 @@ vstorm --cloudinit=workload/cloudinit-stress-ng-workload.yaml --env WORKLOAD_TYP
 
 # Steady anonymous dirty memory: compiles workload/dirty-mem-pages.c on first boot; DIRTY_RATE_FRACTION is a fraction of total physical RAM (0.1–0.9; default 0.5 if --env omitted)
 vstorm --cores=4 --memory=8Gi --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --dv-url=http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow --env DIRTY_RATE_FRACTION=0.4 --vms=1
+
+# fio storage I/O workload (randrw default); presets and tunables in docs/cloud-init-fio-workload.md
+vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --env FIO_SIZE=2G --vms=5
 ```
 
-See [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) for stress-ng design, flow, and parameters. The dirty-mem workload uses [workload/dirty-mem-pages.c](workload/dirty-mem-pages.c).
+See [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) for stress-ng design, flow, and parameters. See [cloud-init and fio workload](docs/cloud-init-fio-workload.md) for fio presets and `--env` tunables. The dirty-mem workload uses [workload/dirty-mem-pages.c](workload/dirty-mem-pages.c).
 
 ### Custom VM template
 
@@ -304,6 +307,7 @@ tab-completion/
 docs/
   logging.md         # logging, manifests, and logs/ directory structure
   cloud-init-stress-ng-workload.md # cloud-init and stress-ng workload
+  cloud-init-fio-workload.md       # cloud-init and fio storage I/O workload
   testing.md         # how tests work, categories, and CI pipeline
 helpers/
   install-virtctl    # download and install virtctl from the cluster
@@ -312,6 +316,7 @@ helpers/
   cloudinit-default.yaml            # default cloud-init (root password SSH)
 workload/
   cloudinit-stress-ng-workload.yaml  # unified stress-ng workload (WORKLOAD_TYPE, env overrides)
+  cloudinit-fio-workload.yaml        # fio storage I/O workload (WORKLOAD_TYPE, env overrides)
   cloudinit-dirty-mem-pages.yaml     # compile to dirty-mem-pages; --env DIRTY_RATE_FRACTION=0.1-0.9
   dirty-mem-pages.c                  # source for dirty-mem workload (embedded in cloud-init YAML)
 hooks/
