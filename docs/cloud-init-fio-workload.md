@@ -17,15 +17,11 @@ Default preset is **randrw** (no `--env` needed). Combine with any VM sizing.
 
 ## Image requirements and recommendation
 
-**Default image link:** vstorm uses this disk image by default (override with `--dv-url` or `--datasource`):
-
-**<http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow>**
-
-The workload **installs `fio` via the guest's package manager** at first boot. Use vstorm's **default QCOW image** (the URL above) or a **custom QCOW** that has **working DNF/Yum (or APT) repositories** — or has `fio` preinstalled.
+The workload **installs `fio` via the guest's package manager** at first boot. Use a **customized QCOW** (or DataSource) that has **working DNF/Yum (or APT) repositories** — or has `fio` preinstalled. When supplying `--dv-url`, prefer an **HTTPS** source with a **pinned digest or signature**; do not treat unsigned HTTP URLs as a verified default.
 
 **OCP OS images** (DataSources from `openshift-virtualization-os-images`, e.g. `rhel9`) are **minimal**: no enabled repos, no preinstalled `fio`. The workload will fail on them ("There are no enabled repositories" / "failed to install fio").
 
-**We highly recommend using a customized QCOW image**: vstorm's default URL (if that image has repos), or `--dv-url` with your own QCOW2 (repos enabled or fio preinstalled), or a custom DataSource built from such an image. With `--datasource=rhel9` (or similar), the workload will not work unless the image is customized.
+**Recommended:** a custom DataSource or `--dv-url` pointing at an image you control and can verify. Minimal OCP DataSources (`--datasource=rhel9` and similar) will not work unless customized. vstorm's built-in lab HTTP default (if any) is for convenience only and is **not** integrity-verified — override it for integrity-sensitive runs.
 
 Ensure the guest root disk is large enough for `FIO_SIZE` (default `1G`) plus the OS; raise `--storage-size` if needed.
 

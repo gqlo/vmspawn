@@ -84,15 +84,16 @@ write_files:
 
       cycle=1
       while true; do
+          fio_rc=0
           if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
               if [[ "$FIO_TIME_BASED" == "1" ]]; then
                   echo "Cycle $cycle: CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
                   # shellcheck disable=SC2086
-                  fio $FIO_CUSTOM_OPTS --time_based --runtime="${FIO_RUNTIME}"
+                  fio $FIO_CUSTOM_OPTS --time_based --runtime="${FIO_RUNTIME}" || fio_rc=$?
               else
                   echo "Cycle $cycle: CUSTOM-OPTS - Running fio (no runtime limit)..."
                   # shellcheck disable=SC2086
-                  fio $FIO_CUSTOM_OPTS
+                  fio $FIO_CUSTOM_OPTS || fio_rc=$?
               fi
           else
               if [[ "$FIO_TIME_BASED" == "1" ]]; then
@@ -118,7 +119,11 @@ write_files:
               if [[ "$FIO_RW" == "randrw" || "$FIO_RW" == "rw" ]]; then
                   fio_args+=(--rwmixread="$FIO_RWMIXREAD")
               fi
-              fio "${fio_args[@]}"
+              fio "${fio_args[@]}" || fio_rc=$?
+          fi
+          if [[ $fio_rc -ne 0 ]]; then
+              echo "Cycle $cycle: fio exited with status $fio_rc; backing off before retry..."
+              sleep "${FIO_FAILURE_SLEEP:-5}"
           fi
           ((cycle++))
       done
