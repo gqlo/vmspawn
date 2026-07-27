@@ -8,11 +8,12 @@ alwaysApply: true
 
 ## Current Pipeline
 
-Three independent jobs in `.github/workflows/test.yaml`:
+Four independent jobs in `.github/workflows/test.yaml`:
 
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs `bats tests/` (all unit tests) |
+| `test-python` | `unittest` | `monitoring/tests/` after `pip install -r monitoring/tests/requirements.txt` (PyYAML) |
 | `lint-yaml` | `yamllint` | Lints plain YAML under `helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/` |
 | `lint-markdown` | `markdownlint-cli2` | Lints `**/*.md` |
 
@@ -20,7 +21,7 @@ Three independent jobs in `.github/workflows/test.yaml`:
 
 - **Triggers**: push and pull_request to `main`
 - **Runner**: all jobs use `ubuntu-latest`
-- **Tool installation**: Bats via `apt-get`, yamllint via `pip`, markdownlint via `DavidAnson/markdownlint-cli2-action`
+- **Tool installation**: Bats via `apt-get`, PyYAML via `monitoring/tests/requirements.txt`, yamllint via `pip`, markdownlint via `DavidAnson/markdownlint-cli2-action`
 - **Jobs must be independent** and run in parallel -- never add dependencies between lint jobs
 
 ## When Modifying
@@ -28,4 +29,5 @@ Three independent jobs in `.github/workflows/test.yaml`:
 - Adding YAML files outside the lint-yaml globs: update yamllint in `.github/workflows/test.yaml`, `hooks/pre-commit`, and `helpers/run-all-tests.sh`
 - Adding a new linter (e.g. shellcheck): add it as a **new job**, not inline in an existing one
 - Adding new template YAML files in `templates/`: consider extending yamllint scope
+- Adding Python test deps: put them in `monitoring/tests/requirements.txt` (installed by `test-python`)
 - Keep each job focused on one tool for clear failure reporting

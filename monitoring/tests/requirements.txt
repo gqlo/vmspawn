@@ -1,0 +1,2 @@
+# Dependencies for monitoring/tests (unittest discover).
+PyYAML>=6.0

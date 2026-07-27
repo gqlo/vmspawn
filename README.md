@@ -276,7 +276,7 @@ GitHub Actions runs four independent jobs on every push and pull request to `mai
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs all unit tests (`bats tests/`) |
-| `test-python` | `unittest` | Monitoring / workload-result Python tests (`monitoring/tests/`) |
+| `test-python` | `unittest` | Monitoring / workload-result Python tests (`monitoring/tests/`; needs `pip install -r monitoring/tests/requirements.txt`) |
 | `lint-yaml` | `yamllint` | Lints plain YAML (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`) |
 | `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
 

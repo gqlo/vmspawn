@@ -355,7 +355,7 @@ GitHub Actions runs four jobs on every push and PR to `main`:
 | Job | Tool | Scope |
 |---|---|---|
 | `test` | `bats` | All tests in `tests/` |
-| `test-python` | `unittest` | `monitoring/tests/` (workload-result collector, monitoring scripts) |
+| `test-python` | `unittest` | `monitoring/tests/` (workload-result collector, monitoring scripts); installs `monitoring/tests/requirements.txt` |
 | `lint-yaml` | `yamllint` | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` |
 | `lint-markdown` | `markdownlint-cli2` | All `*.md` files |
 

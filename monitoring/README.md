@@ -94,6 +94,7 @@ python3 scripts/migration-stats.py --eviction-counts --start 2026-03-19T10:00:00
 Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling) from repo root:
 
 ```bash
+pip install -r monitoring/tests/requirements.txt   # PyYAML for prom-query tests
 python3 -m unittest discover -s monitoring/tests -v
 ```
 
