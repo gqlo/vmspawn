@@ -12,7 +12,7 @@ Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and
   - **count N** — run N cycles, then idle
   - **forever** — keep cycling until policy is set back to idle
 - After each completed guest cycle, POST structured JSON (metrics + identity) to a collector.
-- Dashboard home: **list of vstorm runs**, each with a **VM status summary** (configured / checked in / idle / running / queued / waiting / error / stale); drill into VMs and payloads; charts; archive/notes/delete.
+- Dashboard home: **list of vstorm batches**, each with a **VM status summary** (created / contacted collector / idle / running / queued / waiting / error / stale); drill into VMs and payloads; charts; archive/notes/delete.
 - From **vstorm on the host**, once per run, POST a **manifest** (inventory + sizing + cmdline); join guest cycles on `batch_id`.
 - Work for **fio first**, but keep the control plane workload-agnostic (`workload_kind` on results; run policy applies to the guest workload service, e.g. `fio-workload.service`).
 
@@ -51,11 +51,11 @@ Status vs this design (as of the current tree).
 | Run control (poll) | Guest polls `GET /v1/policy` before each cycle; default `WORKLOAD_RUN_MODE=idle` when URL is set. |
 | Policy API | `GET /v1/policy`, `PUT .../vms/{vm}/policy`, `POST .../batches/{id}/policy` fan-out; remaining decrements on **result** ingest. |
 | Per-VM + batch dashboard controls | VM page and run page: Run once / Run N / Forever / Idle. |
-| VM status rollups | Home + run detail: configured / checked in / idle / running / queued / waiting / error / stale. |
+| VM status rollups | Home + run detail: created / contacted collector / idle / running / queued / waiting / error / stale. |
 | Host manifest | **vstorm** POSTs `record_type: "manifest"` / `source: "vstorm"` after create (and after `--wait`) when `RESULT_SERVER_URL` is in `--env`; includes `log_path` + truncated `log_text`, plus `cluster` (`api_server`, `oc_version`, `worker_nodes`, `master_nodes`). Same inventory idea as the on-disk `logs/batch-*.manifest`, posted to the collector. |
 | Batch id inject | **vstorm** auto-injects `VSTORM_BATCH_ID` into `{VSTORM_GUEST_ENV}` cloud-inits. |
 | Agent heartbeats | Guest POSTs `record_type: "heartbeat"` while idle / running / on poll errors. |
-| Collector + browse UI | Ingest, SQLite, runs list, run/VM/payload views. |
+| Collector + browse UI | Ingest, SQLite, batches list, batch/VM/payload views. |
 | Transport | Plain HTTP (v1). |
 
 ### Still open / by design
@@ -329,7 +329,7 @@ One Python process: ingest, **policy store**, query, dashboard.
 |----------|---------|
 | `POST /v1/results` | Ingest manifest / result / error / heartbeat |
 | `GET /healthz` | Liveness |
-| `GET /v1/batches` | List runs |
+| `GET /v1/batches` | List batches (`q`, `archived`, `batch_id`, `namespace`, `api_server`, `today=1`, `date=YYYY-MM-DD`, `date_from` / `date_to`); response includes `items` + `facets` |
 | `GET /v1/batches/{id}` | Batch detail + VMs + series |
 | `GET /v1/batches/{id}/results/{result_id}` | One stored payload |
 | `GET /v1/batches/{id}/vms/{vm}` | Per-VM results + **current policy + agent status** |
@@ -355,7 +355,7 @@ Policy GET may accept identity query params if the guest uses a shared results U
 Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, drill into one VM, and **control** workload execution — without SSH into guests.
 
 ```text
-  Home: Runs list (one row per vstorm batch)
+  Home: Batches list (one row per vstorm batch)
       |
       | click batch_id
       v
@@ -373,17 +373,17 @@ Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, dril
   Cycle / payload view
 ```
 
-### 1. Runs list (home)
+### 1. Batches list (home)
 
-The home page is a **list of runs created by vstorm** — one row per `batch_id`. Prefer rows that have a host `record_type: "manifest"` payload; if only guest cycles have arrived, still show an inferred run so nothing is invisible.
+The home page is a **list of batches created by vstorm** — one row per `batch_id`. Prefer rows that have a host `record_type: "manifest"` payload; if only guest cycles have arrived, still show an inferred batch so nothing is invisible.
 
 **Summary strip** (across the current list):
 
 | Summary | Meaning |
 |---------|---------|
-| Runs | Count of listed batches |
-| VMs configured | Sum of `configured` / `total_vms` |
-| Checked in | Guests that have polled or POSTed (not `waiting`) |
+| Batches | Count of listed batches |
+| VMs created | Sum of `configured` / `total_vms` |
+| Contacted collector | Guests that have polled or POSTed (not `waiting`) |
 | Running / idle / waiting / error | From per-batch `vm_summary` (chips also show queued / stale when present) |
 
 **Table columns (as implemented):**
@@ -393,33 +393,33 @@ The home page is a **list of runs created by vstorm** — one row per `batch_id`
 | Batch | `batch_id` (+ archived badge); click → run detail |
 | Basename | vstorm metadata |
 | Started / Stopped | vstorm `started_at` / `stopped_at` |
-| VM status | Chips from `vm_summary` (cfg · in · running / queued / idle / waiting / …) |
+| VM status | Chips from `vm_summary` (created · contacted · running / queued / idle / waiting / …) |
 | Cycles | Cycle POST count |
 | Errors | Error cycle/event count |
 | IOPS avg / BW avg | Aggregate from cycles |
 | Workload | Fingerprint or cloud-init path |
 
-**Filters:** text search on batch id / basename; active / archived / all. Short poll refresh while the page is open.
+**Filters:** date (all / today UTC / specific day), batch id, namespace, API server, text search, active / archived / all. Short poll refresh while the page is open.
 
 ### 2. Run detail
 
 Everything for one vstorm batch on one page.
 
-**Summary (top):** batch id, basename, fingerprint/cloud-init, VM status chips, started/stopped, configured VMs, cycle/error counts, cores/memory, IOPS/BW percentiles.
+**Summary (top):** batch id, basename, fingerprint/cloud-init, VM status chips, started/stopped, created VMs, cycle/error counts, cores/memory, IOPS/BW percentiles.
 
 **VM rollup meanings** (same definitions as the VM table `ui_status`):
 
 | Metric | Meaning |
 |--------|---------|
-| Configured | From vstorm batch `total_vms` / `vms[]` |
-| Checked in | Not `waiting` |
+| Created | From vstorm batch `total_vms` / `vms[]` |
+| Contacted collector | Not `waiting` |
 | Idle | Policy idle (or remaining 0), not running |
 | Running | Agent reports `running` |
 | Queued | Policy `once`/`count`/`forever` but not currently in a cycle |
 | Waiting | Listed in the manifest VM list (or seen empty), never contacted collector |
 | Error / stale | Last status error, or no poll within ~120s |
 
-Example chips: `10 cfg · 8 in · 2 running · 4 idle · 2 waiting`.
+Example chips: `10 created · 8 contacted · 2 running · 4 idle · 2 waiting`.
 
 **Batch-wide controls:** Idle | Run once | Run N… | Forever. Warn mentally if many VMs are still **waiting** (not checking in) — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
 
@@ -469,7 +469,7 @@ Example chips: `10 cfg · 8 in · 2 running · 4 idle · 2 waiting`.
 
 ### Browse UX rules
 
-- Home = **vstorm runs first**, not a flat dump of cycle files.
+- Home = **vstorm batches first**, not a flat dump of cycle files.
 - VM status chips on run detail must match the VM table (same `ui_status` definitions).
 - Every stored result is one click from its **full JSON**.
 - Deep links: `/#/runs/{batch_id}`, `/#/runs/{batch_id}/vms/{vm}`, payload routes.
@@ -501,7 +501,7 @@ For unattended soak without clicking: `--env WORKLOAD_RUN_MODE=forever` (legacy 
 | [`vstorm`](../vstorm) | POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; optional truncated `log_text` |
 | [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Policy poll + cycle runner; capture/POST/spool; status heartbeats; default idle when URL set |
 | `monitoring/workload-result/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
-| `monitoring/workload-result/static/` | Runs list, run/VM/payload views; Idle / Run once / Run N / Forever controls |
+| `monitoring/workload-result/static/` | Batches list, batch/VM/payload views; Idle / Run once / Run N / Forever controls |
 | [`docs/cloud-init-fio-workload.md`](cloud-init-fio-workload.md) | Env table includes `RESULT_SERVER_*` / `WORKLOAD_RUN_*` |
 | `tests/` | `monitoring/tests/test_workload_result.py` — helpers, ingest/record types, policy, queries, HTTP API |
 

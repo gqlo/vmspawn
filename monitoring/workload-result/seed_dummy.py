@@ -62,6 +62,8 @@ def main() -> int:
             ],
             "namespaces": ["vm-a1b2c3-ns-1"],
             "fingerprint": "randrw/1G/4k",
+            "api_server": "https://api.vlan622.rdu2.scalelab.redhat.com:6443",
+            "started_offset": timedelta(hours=1, minutes=15),
         },
         {
             "batch_id": "d4e5f6",
@@ -69,12 +71,14 @@ def main() -> int:
             "vms": ["vm-d4e5f6-ns-1/fedora-d4e5f6-1"],
             "namespaces": ["vm-d4e5f6-ns-1"],
             "fingerprint": "randread/2G/64k",
+            "api_server": "https://api.example.scalelab.redhat.com:6443",
+            "started_offset": timedelta(days=1, hours=3),
         },
     ]
 
     posted = 0
     for i, b in enumerate(batches):
-        started = now - timedelta(hours=2 - i, minutes=15)
+        started = now - b["started_offset"]
         stopped = started + timedelta(minutes=2)
         manifest = {
             "schema_version": 1,
@@ -110,14 +114,14 @@ def main() -> int:
             "log_path": f"logs/{b['batch_id']}-dummy.log",
             "log_text": f"dummy seed for batch {b['batch_id']}\n",
             "cluster": {
-                "api_server": "https://api.example.scalelab.redhat.com:6443",
+                "api_server": b["api_server"],
                 "oc_version": (
                     "Client Version: 4.16.0\n"
                     "Kustomize Version: v5.0.4\n"
                     "Server Version: 4.16.0\n"
                     "Kubernetes Version: v1.29.6+3af9982"
                 ),
-                "worker_nodes": 6,
+                "worker_nodes": 6 if i == 0 else 50,
                 "master_nodes": 3,
             },
         }

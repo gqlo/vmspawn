@@ -58,6 +58,32 @@ def _normalize_record_type(record_type: str) -> str:
     }.get(record_type, record_type)
 
 
+def _day_bounds_utc(day: str) -> tuple[int, int]:
+    """Return [start, end) unix bounds for a YYYY-MM-DD calendar day in UTC."""
+    start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    end = start.timestamp() + 86400
+    return int(start.timestamp()), int(end)
+
+
+def _payload_namespaces(bp: dict[str, Any] | None) -> list[str]:
+    if not bp or not isinstance(bp.get("namespaces"), list):
+        return []
+    return [str(x) for x in bp["namespaces"] if x is not None and str(x).strip()]
+
+
+def _payload_api_server(bp: dict[str, Any] | None) -> str | None:
+    if not bp:
+        return None
+    cluster = bp.get("cluster")
+    if not isinstance(cluster, dict):
+        return None
+    raw = cluster.get("api_server")
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
 def percentile(sorted_vals: list[float], p: float) -> float | None:
     if not sorted_vals:
         return None
@@ -735,41 +761,131 @@ class Store:
         q: str | None = None,
         archived: str | None = None,
         basename: str | None = None,
-    ) -> list[dict[str, Any]]:
+        batch_id: str | None = None,
+        namespace: str | None = None,
+        api_server: str | None = None,
+        today: str | None = None,
+        date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, Any]:
+        """Return filtered batch list plus filter facets from the full inventory."""
         with self._lock:
             rows = self._conn.execute("SELECT * FROM batches").fetchall()
-            out: list[dict[str, Any]] = []
+
+            # Facets (unfiltered inventory) for UI dropdowns.
+            facet_api: set[str] = set()
+            facet_ns: set[str] = set()
+            facet_batch: set[str] = set()
+
+            enriched: list[dict[str, Any]] = []
             for row in rows:
-                if archived == "1" and not row["archived"]:
-                    continue
-                if archived == "0" and row["archived"]:
-                    continue
-                if basename and (row["basename"] or "") != basename:
-                    continue
-                if q:
-                    blob = " ".join(
-                        str(x or "")
-                        for x in (row["batch_id"], row["basename"], row["cloudinit"], row["label"])
-                    ).lower()
-                    if q.lower() not in blob:
-                        continue
+                bp = None
+                if row["batch_result_id"]:
+                    bp = self._load_result_payload(row["batch_result_id"])
+                namespaces = _payload_namespaces(bp)
+                api = _payload_api_server(bp)
+                facet_batch.add(str(row["batch_id"]))
+                if api:
+                    facet_api.add(api)
+                for ns in namespaces:
+                    facet_ns.add(ns)
+
                 stats = self._cycle_stats(row["batch_id"])
                 item = dict(row)
                 item["archived"] = bool(row["archived"])
                 item.update(stats)
-                bp = None
-                if row["batch_result_id"]:
-                    bp = self._load_result_payload(row["batch_result_id"])
+                item["namespaces"] = namespaces
+                item["api_server"] = api
                 vms = self._vms_for_batch(row["batch_id"], bp)
                 item["vm_summary"] = self._vm_summary(vms, row["total_vms"])
-                # Prefer earliest known start for sorting
                 sort_ts = row["started_at"] or stats.get("first_cycle_at") or row["updated_at"] or 0
                 item["_sort"] = sort_ts
+                item["_bp"] = bp
+                enriched.append(item)
+
+            # Date window (UTC calendar days). today=1 wins over date=YYYY-MM-DD.
+            start_bound: int | None = None
+            end_bound: int | None = None
+            today_flag = str(today or "").strip().lower() in ("1", "true", "yes")
+            if today_flag:
+                day = datetime.now(tz=timezone.utc).strftime("%Y-%m-%d")
+                start_bound, end_bound = _day_bounds_utc(day)
+            elif date and str(date).strip():
+                try:
+                    start_bound, end_bound = _day_bounds_utc(str(date).strip())
+                except ValueError:
+                    pass
+            else:
+                if date_from and str(date_from).strip():
+                    try:
+                        start_bound, _ = _day_bounds_utc(str(date_from).strip())
+                    except ValueError:
+                        pass
+                if date_to and str(date_to).strip():
+                    try:
+                        _, end_bound = _day_bounds_utc(str(date_to).strip())
+                    except ValueError:
+                        pass
+
+            out: list[dict[str, Any]] = []
+            for item in enriched:
+                if archived == "1" and not item["archived"]:
+                    continue
+                if archived == "0" and item["archived"]:
+                    continue
+                if basename and (item.get("basename") or "") != basename:
+                    continue
+                if batch_id:
+                    needle = batch_id.lower()
+                    if needle not in str(item.get("batch_id") or "").lower():
+                        continue
+                if namespace:
+                    needle = namespace.lower()
+                    if not any(needle in ns.lower() for ns in item.get("namespaces") or []):
+                        continue
+                if api_server:
+                    needle = api_server.lower()
+                    api = (item.get("api_server") or "").lower()
+                    if needle not in api:
+                        continue
+                if q:
+                    blob = " ".join(
+                        str(x or "")
+                        for x in (
+                            item.get("batch_id"),
+                            item.get("basename"),
+                            item.get("cloudinit"),
+                            item.get("label"),
+                            item.get("api_server"),
+                            " ".join(item.get("namespaces") or []),
+                        )
+                    ).lower()
+                    if q.lower() not in blob:
+                        continue
+                ts = item.get("started_at") or item.get("_sort") or 0
+                try:
+                    ts_i = int(ts)
+                except (TypeError, ValueError):
+                    ts_i = 0
+                if start_bound is not None and ts_i < start_bound:
+                    continue
+                if end_bound is not None and ts_i >= end_bound:
+                    continue
                 out.append(item)
+
             out.sort(key=lambda x: x.get("_sort") or 0, reverse=True)
             for item in out:
                 item.pop("_sort", None)
-            return out
+                item.pop("_bp", None)
+            return {
+                "items": out,
+                "facets": {
+                    "batch_ids": sorted(facet_batch),
+                    "namespaces": sorted(facet_ns),
+                    "api_servers": sorted(facet_api),
+                },
+            }
 
     def _cycle_stats(self, batch_id: str) -> dict[str, Any]:
         cycles = self._conn.execute(
@@ -1386,13 +1502,18 @@ def make_handler(app: App):
             if path == "/v1/batches":
                 self._json(
                     200,
-                    {
-                        "items": app.store.list_batches(
-                            q=(qs.get("q") or [None])[0],
-                            archived=(qs.get("archived") or [None])[0],
-                            basename=(qs.get("basename") or [None])[0],
-                        )
-                    },
+                    app.store.list_batches(
+                        q=(qs.get("q") or [None])[0],
+                        archived=(qs.get("archived") or [None])[0],
+                        basename=(qs.get("basename") or [None])[0],
+                        batch_id=(qs.get("batch_id") or [None])[0],
+                        namespace=(qs.get("namespace") or [None])[0],
+                        api_server=(qs.get("api_server") or [None])[0],
+                        today=(qs.get("today") or [None])[0],
+                        date=(qs.get("date") or [None])[0],
+                        date_from=(qs.get("date_from") or [None])[0],
+                        date_to=(qs.get("date_to") or [None])[0],
+                    ),
                 )
                 return
 

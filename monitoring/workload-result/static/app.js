@@ -3,6 +3,16 @@
 const state = {
   chart: null,
   timer: null,
+  selectedBatches: new Set(),
+  filters: {
+    q: "",
+    archived: "0",
+    datePreset: "all", // all | today | day
+    date: "",
+    batch_id: "",
+    namespace: "",
+    api_server: "",
+  },
 };
 
 function $(sel) {
@@ -50,7 +60,7 @@ function fmtVmChips(s) {
   if (s.waiting) parts.push(`${s.waiting} waiting`);
   if (s.error) parts.push(`${s.error} error`);
   if (s.stale) parts.push(`${s.stale} stale`);
-  const head = `${s.configured ?? "—"} cfg · ${s.checked_in ?? 0} in`;
+  const head = `${s.configured ?? "—"} created · ${s.checked_in ?? 0} contacted`;
   return parts.length ? `${head} · ${parts.join(" · ")}` : head;
 }
 
@@ -142,24 +152,29 @@ async function render() {
     else if (route.name === "payload") await renderPayload(app, route.batchId, route.resultId);
     else await renderRuns(app);
   } catch (err) {
-    setCrumbs([{ label: "Runs", href: "#/runs" }, { label: "Error" }]);
+    setCrumbs([{ label: "Batches", href: "#/runs" }, { label: "Error" }]);
     app.innerHTML = `<div class="error">${escapeHtml(err.message)}</div>`;
   }
 }
 
 async function renderRuns(app) {
-  setCrumbs([{ label: "Runs" }]);
-  const q = ($("#filter-q") && $("#filter-q").value) || "";
-  const archived = ($("#filter-archived") && $("#filter-archived").value) || "0";
+  setCrumbs([{ label: "Batches" }]);
+  const f = state.filters;
   const params = new URLSearchParams();
-  if (q) params.set("q", q);
-  if (archived !== "all") params.set("archived", archived);
+  if (f.q) params.set("q", f.q);
+  if (f.archived !== "all") params.set("archived", f.archived);
+  if (f.datePreset === "today") params.set("today", "1");
+  else if (f.datePreset === "day" && f.date) params.set("date", f.date);
+  if (f.batch_id) params.set("batch_id", f.batch_id);
+  if (f.namespace) params.set("namespace", f.namespace);
+  if (f.api_server) params.set("api_server", f.api_server);
   const data = await api("/v1/batches?" + params.toString());
   const items = data.items || [];
+  const facets = data.facets || {};
   const totals = items.reduce(
     (acc, b) => {
       const s = b.vm_summary || {};
-      acc.runs += 1;
+      acc.batches += 1;
       acc.configured += Number(s.configured || b.total_vms || 0);
       acc.checked_in += Number(s.checked_in || 0);
       acc.running += Number(s.running || 0);
@@ -168,38 +183,94 @@ async function renderRuns(app) {
       acc.error += Number(s.error || 0);
       return acc;
     },
-    { runs: 0, configured: 0, checked_in: 0, running: 0, idle: 0, waiting: 0, error: 0 }
+    { batches: 0, configured: 0, checked_in: 0, running: 0, idle: 0, waiting: 0, error: 0 }
   );
+
+  const opt = (value, label, selected) =>
+    `<option value="${escapeHtml(value)}" ${selected ? "selected" : ""}>${escapeHtml(label)}</option>`;
+  const facetOpts = (values, current, emptyLabel) =>
+    [opt("", emptyLabel, !current)]
+      .concat((values || []).map((v) => opt(v, v, v === current)))
+      .join("");
 
   app.innerHTML = `
     <div class="panel">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div class="muted mono">
-          ${escapeHtml(String(totals.runs))} runs ·
-          ${escapeHtml(String(totals.configured))} VMs configured ·
-          ${escapeHtml(String(totals.checked_in))} checked in ·
+          ${escapeHtml(String(totals.batches))} batches ·
+          ${escapeHtml(String(totals.configured))} VMs created ·
+          ${escapeHtml(String(totals.checked_in))} contacted collector ·
           ${escapeHtml(String(totals.running))} running ·
           ${escapeHtml(String(totals.idle))} idle ·
           ${escapeHtml(String(totals.waiting))} waiting
           ${totals.error ? ` · ${escapeHtml(String(totals.error))} error` : ""}
         </div>
       </div>
-      <div class="row" style="margin-top:0.75rem">
-        <input type="search" id="filter-q" placeholder="Filter batch id / basename…" value="${escapeHtml(q)}" />
-        <select id="filter-archived">
-          <option value="0" ${archived === "0" ? "selected" : ""}>Active</option>
-          <option value="1" ${archived === "1" ? "selected" : ""}>Archived</option>
-          <option value="all" ${archived === "all" ? "selected" : ""}>All</option>
-        </select>
-        <button type="button" class="btn" id="filter-apply">Apply</button>
-      </div>
+      <form id="filter-form" class="filters" autocomplete="off">
+        <label class="filter-field">
+          <span>Search</span>
+          <input type="search" id="filter-q" placeholder="batch / basename / label…" value="${escapeHtml(f.q)}" />
+        </label>
+        <label class="filter-field">
+          <span>Date</span>
+          <select id="filter-date-preset">
+            ${opt("all", "All dates", f.datePreset === "all")}
+            ${opt("today", "Today (UTC)", f.datePreset === "today")}
+            ${opt("day", "Specific day…", f.datePreset === "day")}
+          </select>
+        </label>
+        <label class="filter-field" id="filter-date-wrap" style="${f.datePreset === "day" ? "" : "display:none"}">
+          <span>Day (UTC)</span>
+          <input type="date" id="filter-date" value="${escapeHtml(f.date)}" />
+        </label>
+        <label class="filter-field">
+          <span>Batch</span>
+          <input type="search" id="filter-batch" list="facet-batches" placeholder="batch id…" value="${escapeHtml(f.batch_id)}" />
+          <datalist id="facet-batches">${(facets.batch_ids || []).map((v) => `<option value="${escapeHtml(v)}">`).join("")}</datalist>
+        </label>
+        <label class="filter-field">
+          <span>Namespace</span>
+          <select id="filter-namespace">
+            ${facetOpts(facets.namespaces, f.namespace, "All namespaces")}
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>API server</span>
+          <select id="filter-api-server">
+            ${facetOpts(facets.api_servers, f.api_server, "All API servers")}
+          </select>
+        </label>
+        <label class="filter-field">
+          <span>Status</span>
+          <select id="filter-archived">
+            ${opt("0", "Active", f.archived === "0")}
+            ${opt("1", "Archived", f.archived === "1")}
+            ${opt("all", "All", f.archived === "all")}
+          </select>
+        </label>
+        <div class="filter-actions">
+          <button type="submit" class="btn primary" id="filter-apply">Apply</button>
+          <button type="button" class="btn" id="filter-clear">Clear</button>
+        </div>
+      </form>
       ${
         items.length
-          ? `<div class="table-wrap"><table>
+          ? `<div class="batch-toolbar">
+        <label class="check-all-label"><input type="checkbox" id="batch-check-all" ${
+          items.length && items.every((b) => state.selectedBatches.has(b.batch_id)) ? "checked" : ""
+        } /> Select all</label>
+        <button type="button" class="btn danger" id="btn-delete-selected" ${
+          state.selectedBatches.size ? "" : "disabled"
+        }>Delete selected (${escapeHtml(String(state.selectedBatches.size))})</button>
+      </div>
+      <div class="table-wrap"><table>
         <thead>
           <tr>
+            <th class="col-check"></th>
             <th>Batch</th>
             <th>Basename</th>
+            <th>API server</th>
+            <th>Namespaces</th>
             <th>Started</th>
             <th>Stopped</th>
             <th>VM status</th>
@@ -215,8 +286,19 @@ async function renderRuns(app) {
           ${items
             .map(
               (b) => `<tr class="clickable" data-href="#/runs/${encodeURIComponent(b.batch_id)}">
+              <td class="col-check" onclick="event.stopPropagation()">
+                <input type="checkbox" class="batch-check" data-batch="${escapeHtml(b.batch_id)}" ${
+                  state.selectedBatches.has(b.batch_id) ? "checked" : ""
+                } />
+              </td>
               <td class="mono">${escapeHtml(b.batch_id)}${b.archived ? ' <span class="badge archived">archived</span>' : ""}</td>
               <td>${escapeHtml(b.basename || "—")}</td>
+              <td class="mono" title="${escapeHtml(b.api_server || "")}">${escapeHtml(
+                b.api_server
+                  ? b.api_server.replace(/^https?:\/\//, "").replace(/:6443$/, "")
+                  : "—"
+              )}</td>
+              <td class="mono">${escapeHtml((b.namespaces || []).join(", ") || "—")}</td>
               <td class="mono">${escapeHtml(fmtTs(b.started_at))}</td>
               <td class="mono">${escapeHtml(fmtTs(b.stopped_at))}</td>
               <td class="muted">${escapeHtml(fmtVmChips(b.vm_summary))}</td>
@@ -238,17 +320,117 @@ async function renderRuns(app) {
             .join("")}
         </tbody>
       </table></div>`
-          : `<div class="empty">No runs yet. POST batch/cycle payloads to <span class="mono">/v1/results</span>.</div>`
+          : `<div class="empty">No batches match these filters. POST batch/cycle payloads to <span class="mono">/v1/results</span>.</div>`
       }
     </div>`;
 
-  $("#filter-apply").onclick = () => render();
-  $("#filter-q").onkeydown = (e) => {
-    if (e.key === "Enter") render();
+  const syncFiltersFromForm = () => {
+    state.filters.q = ($("#filter-q") && $("#filter-q").value.trim()) || "";
+    state.filters.archived = ($("#filter-archived") && $("#filter-archived").value) || "0";
+    state.filters.datePreset = ($("#filter-date-preset") && $("#filter-date-preset").value) || "all";
+    state.filters.date = ($("#filter-date") && $("#filter-date").value) || "";
+    state.filters.batch_id = ($("#filter-batch") && $("#filter-batch").value.trim()) || "";
+    state.filters.namespace = ($("#filter-namespace") && $("#filter-namespace").value) || "";
+    state.filters.api_server = ($("#filter-api-server") && $("#filter-api-server").value) || "";
   };
+
+  const applyFilters = () => {
+    syncFiltersFromForm();
+    render();
+  };
+
+  const updateBulkDeleteBtn = () => {
+    const btn = $("#btn-delete-selected");
+    const all = $("#batch-check-all");
+    if (btn) {
+      btn.disabled = state.selectedBatches.size === 0;
+      btn.textContent = `Delete selected (${state.selectedBatches.size})`;
+    }
+    if (all && items.length) {
+      all.checked = items.every((b) => state.selectedBatches.has(b.batch_id));
+      all.indeterminate =
+        !all.checked && items.some((b) => state.selectedBatches.has(b.batch_id));
+    }
+  };
+
+  $("#filter-date-preset").onchange = () => {
+    const wrap = $("#filter-date-wrap");
+    const preset = $("#filter-date-preset").value;
+    wrap.style.display = preset === "day" ? "" : "none";
+    if (preset === "day" && !$("#filter-date").value) {
+      $("#filter-date").value = new Date().toISOString().slice(0, 10);
+    }
+    // For "day", wait until the date input is set; still apply (uses today's date default).
+    applyFilters();
+  };
+  ["filter-namespace", "filter-api-server", "filter-archived", "filter-date"].forEach((id) => {
+    const el = $("#" + id);
+    if (el) el.onchange = applyFilters;
+  });
+  $("#filter-form").onsubmit = (e) => {
+    e.preventDefault();
+    applyFilters();
+  };
+  $("#filter-clear").onclick = () => {
+    clearFilters();
+    render();
+  };
+
+  // Drop selections that are no longer in the current list.
+  const visibleIds = new Set(items.map((b) => b.batch_id));
+  for (const id of [...state.selectedBatches]) {
+    if (!visibleIds.has(id)) state.selectedBatches.delete(id);
+  }
+  updateBulkDeleteBtn();
+
+  const checkAll = $("#batch-check-all");
+  if (checkAll) {
+    checkAll.onchange = () => {
+      if (checkAll.checked) items.forEach((b) => state.selectedBatches.add(b.batch_id));
+      else items.forEach((b) => state.selectedBatches.delete(b.batch_id));
+      app.querySelectorAll(".batch-check").forEach((cb) => {
+        cb.checked = checkAll.checked;
+      });
+      updateBulkDeleteBtn();
+    };
+  }
+  app.querySelectorAll(".batch-check").forEach((cb) => {
+    cb.onchange = () => {
+      const id = cb.getAttribute("data-batch");
+      if (!id) return;
+      if (cb.checked) state.selectedBatches.add(id);
+      else state.selectedBatches.delete(id);
+      updateBulkDeleteBtn();
+    };
+  });
+  const deleteSelected = $("#btn-delete-selected");
+  if (deleteSelected) {
+    deleteSelected.onclick = async () => {
+      const ids = [...state.selectedBatches];
+      if (!ids.length) return;
+      if (
+        !confirm(
+          `Delete ${ids.length} batch${ids.length === 1 ? "" : "es"} (${ids.join(", ")}) and all stored payloads?`
+        )
+      ) {
+        return;
+      }
+      try {
+        for (const id of ids) {
+          await api("/v1/batches/" + encodeURIComponent(id), { method: "DELETE" });
+          state.selectedBatches.delete(id);
+        }
+        render();
+      } catch (err) {
+        alert("Delete failed: " + (err && err.message ? err.message : err));
+        render();
+      }
+    };
+  }
+
   app.querySelectorAll("tr.clickable").forEach((tr) => {
     tr.onclick = (e) => {
-      if (e.target.closest("a, button, .row-actions")) return;
+      if (e.target.closest("a, button, .row-actions, .col-check, input")) return;
       location.hash = tr.dataset.href;
     };
   });
@@ -258,9 +440,10 @@ async function renderRuns(app) {
       e.stopPropagation();
       const id = btn.getAttribute("data-batch");
       if (!id) return;
-      if (!confirm(`Delete run ${id} and all stored payloads?`)) return;
+      if (!confirm(`Delete batch ${id} and all stored payloads?`)) return;
       try {
         await api("/v1/batches/" + encodeURIComponent(id), { method: "DELETE" });
+        state.selectedBatches.delete(id);
         render();
       } catch (err) {
         alert("Delete failed: " + (err && err.message ? err.message : err));
@@ -271,7 +454,7 @@ async function renderRuns(app) {
 
 async function renderRun(app, batchId) {
   setCrumbs([
-    { label: "Runs", href: "#/runs" },
+    { label: "Batches", href: "#/runs" },
     { label: batchId },
   ]);
   const b = await api("/v1/batches/" + encodeURIComponent(batchId));
@@ -301,7 +484,7 @@ async function renderRun(app, batchId) {
         <dl class="kv">
           <dt>Started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
           <dt>Stopped</dt><dd class="mono">${escapeHtml(fmtTs(b.stopped_at))}</dd>
-          <dt>Configured VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
+          <dt>Created VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
           <dt>Cycles</dt><dd>${escapeHtml(String(b.cycle_count ?? 0))} / ${escapeHtml(String(b.vms_reporting ?? 0))} VMs reporting
             ${b.error_count ? ` · <span class="badge err">${escapeHtml(String(b.error_count))} errors</span>` : ""}
             ${b.event_count ? ` · <span class="badge warn">${escapeHtml(String(b.event_count))} events</span>` : ""}
@@ -404,7 +587,7 @@ async function renderRun(app, batchId) {
     }
   };
   $("#btn-delete").onclick = async () => {
-    if (!confirm(`Delete run ${batchId} and all stored payloads?`)) return;
+    if (!confirm(`Delete batch ${batchId} and all stored payloads?`)) return;
     try {
       await api("/v1/batches/" + encodeURIComponent(batchId), { method: "DELETE" });
       location.hash = "#/runs";
@@ -474,7 +657,7 @@ function drawSeriesChart(series) {
 
 async function renderVm(app, batchId, vm) {
   setCrumbs([
-    { label: "Runs", href: "#/runs" },
+    { label: "Batches", href: "#/runs" },
     { label: batchId, href: `#/runs/${encodeURIComponent(batchId)}` },
     { label: vm },
   ]);
@@ -594,7 +777,7 @@ async function renderPayload(app, batchId, resultId) {
   const fio = payload.fio_group_reporting;
 
   setCrumbs([
-    { label: "Runs", href: "#/runs" },
+    { label: "Batches", href: "#/runs" },
     { label: batchId, href: `#/runs/${encodeURIComponent(batchId)}` },
     ...(meta.vm_name
       ? [{ label: meta.vm_name, href: `#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(meta.vm_name)}` }]
@@ -651,6 +834,19 @@ async function renderPayload(app, batchId, resultId) {
   dl.download = `${batchId}-${resultId.slice(0, 8)}.json`;
 }
 
+function clearFilters() {
+  state.filters = {
+    q: "",
+    archived: "0",
+    datePreset: "all",
+    date: "",
+    batch_id: "",
+    namespace: "",
+    api_server: "",
+  };
+  state.selectedBatches.clear();
+}
+
 function setupRefresh() {
   $("#btn-refresh").onclick = () => render();
   const box = $("#auto-refresh");
@@ -662,9 +858,24 @@ function setupRefresh() {
   arm();
 }
 
+function setupBrandHome() {
+  const brand = document.querySelector(".brand a");
+  if (!brand) return;
+  brand.addEventListener("click", (e) => {
+    e.preventDefault();
+    clearFilters();
+    if (location.hash === "#/runs" || location.hash === "#/" || !location.hash) {
+      render();
+    } else {
+      location.hash = "#/runs";
+    }
+  });
+}
+
 window.addEventListener("hashchange", () => render());
 window.addEventListener("DOMContentLoaded", () => {
   if (!location.hash) location.hash = "#/runs";
   setupRefresh();
+  setupBrandHome();
   render();
 });

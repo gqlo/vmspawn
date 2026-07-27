@@ -82,7 +82,7 @@ a:hover { text-decoration: underline; }
   margin-bottom: 0.75rem;
 }
 
-input[type="search"], input[type="text"], select, textarea {
+input[type="search"], input[type="text"], input[type="date"], select, textarea {
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.4rem 0.6rem;
@@ -93,6 +93,48 @@ input[type="search"] {
   flex: 1 1 16rem;
   min-width: 12rem;
   max-width: 32rem;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 0.75rem;
+  align-items: flex-end;
+  margin-top: 0.85rem;
+  margin-bottom: 0.35rem;
+}
+
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  min-width: 9rem;
+  flex: 0 1 auto;
+}
+
+.filter-field > span {
+  font-size: 0.75rem;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.filter-field input,
+.filter-field select {
+  min-width: 10rem;
+  max-width: 22rem;
+}
+
+.filter-field input[type="search"] {
+  flex: none;
+  width: 14rem;
+}
+
+.filter-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+  padding-bottom: 0.05rem;
 }
 
 .btn, button.btn {
@@ -107,6 +149,35 @@ input[type="search"] {
 .btn.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .btn.danger { background: #fff; color: var(--danger); border-color: #ff8182; }
 .btn:hover { filter: brightness(0.97); }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.batch-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  align-items: center;
+  margin: 0.75rem 0 0.5rem;
+}
+
+.check-all-label {
+  display: inline-flex;
+  gap: 0.4rem;
+  align-items: center;
+  color: var(--muted);
+  font-size: 0.9rem;
+  cursor: pointer;
+  user-select: none;
+}
+
+.col-check {
+  width: 2rem;
+  text-align: center;
+  vertical-align: middle;
+}
+
+.col-check input {
+  cursor: pointer;
+}
 
 .row-actions {
   display: flex;

@@ -411,10 +411,47 @@ class TestStoreQueries(unittest.TestCase):
         self._td.cleanup()
 
     def test_list_batches_and_filter(self) -> None:
-        items = self.store.list_batches(q="q1")
+        result = self.store.list_batches(q="q1")
+        items = result["items"]
         self.assertEqual(len(items), 1)
         self.assertEqual(items[0]["cycle_count"], 2)
         self.assertIn("vm_summary", items[0])
+        self.assertIn("facets", result)
+        self.assertIn("q1", result["facets"]["batch_ids"])
+
+    def test_list_batches_filters_by_namespace_api_server_date(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "q2",
+                "basename": "fedora",
+                "total_vms": 1,
+                "vms": ["vm-q2-ns-1/fedora-1"],
+                "namespaces": ["vm-q2-ns-1"],
+                "reported_at": "2026-07-27T12:00:00Z",
+                "started_at": "2026-07-27T11:00:00Z",
+                "stopped_at": "2026-07-27T11:05:00Z",
+                "cluster": {
+                    "api_server": "https://api.vlan622.rdu2.scalelab.redhat.com:6443",
+                    "worker_nodes": 6,
+                    "master_nodes": 3,
+                },
+            }
+        )
+        by_ns = self.store.list_batches(namespace="q2-ns")
+        self.assertEqual([x["batch_id"] for x in by_ns["items"]], ["q2"])
+        by_api = self.store.list_batches(api_server="vlan622")
+        self.assertEqual([x["batch_id"] for x in by_api["items"]], ["q2"])
+        by_batch = self.store.list_batches(batch_id="q1")
+        self.assertEqual([x["batch_id"] for x in by_batch["items"]], ["q1"])
+        by_day = self.store.list_batches(date="2026-07-22")
+        self.assertEqual([x["batch_id"] for x in by_day["items"]], ["q1"])
+        self.assertIn(
+            "https://api.vlan622.rdu2.scalelab.redhat.com:6443",
+            by_ns["facets"]["api_servers"],
+        )
 
     def test_get_vm_includes_policy(self) -> None:
         detail = self.store.get_vm("q1", "vm1")
