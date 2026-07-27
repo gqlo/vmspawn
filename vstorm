@@ -1194,6 +1194,25 @@ print(json.dumps(env))
 	log_text=$(python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(encoding="utf-8", errors="replace"); print(t[:65536])' "$LOG_FILE" 2>/dev/null || true)
     fi
 
+    # Cluster identity (best-effort; never fail the create path).
+    local api_server="" oc_version_text="" worker_nodes="" master_nodes=""
+    api_server=$(oc config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+    oc_version_text=$(oc version 2>/dev/null || true)
+    worker_nodes=$(oc get nodes -l node-role.kubernetes.io/worker --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    master_nodes=$(oc get nodes -l node-role.kubernetes.io/master --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    # Newer clusters may label control-plane without master; take the larger count.
+    local control_plane_nodes=""
+    control_plane_nodes=$(oc get nodes -l node-role.kubernetes.io/control-plane --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    if [[ "$control_plane_nodes" =~ ^[0-9]+$ && "$master_nodes" =~ ^[0-9]+$ ]]; then
+	if (( control_plane_nodes > master_nodes )); then
+	    master_nodes=$control_plane_nodes
+	fi
+    elif [[ "$control_plane_nodes" =~ ^[0-9]+$ ]]; then
+	master_nodes=$control_plane_nodes
+    fi
+    [[ "$worker_nodes" =~ ^[0-9]+$ ]] || worker_nodes=""
+    [[ "$master_nodes" =~ ^[0-9]+$ ]] || master_nodes=""
+
     local payload
     payload=$(
 	BATCH_ID="$BATCH_ID" \
@@ -1214,12 +1233,27 @@ print(json.dumps(env))
 	GUEST_ENV_JSON="$guest_env_json" \
 	CMDLINE_JSON="$cmdline_json" \
 	LOG_TEXT="$log_text" \
+	API_SERVER="$api_server" \
+	OC_VERSION="$oc_version_text" \
+	WORKER_NODES="$worker_nodes" \
+	MASTER_NODES="$master_nodes" \
 	python3 - <<'PY'
 import json, os
 from datetime import datetime, timezone
 
 def fmt_utc(unix):
     return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def opt_int(key):
+    raw = (os.environ.get(key) or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+cluster = {
+    "api_server": (os.environ.get("API_SERVER") or "").strip() or None,
+    "oc_version": (os.environ.get("OC_VERSION") or "").rstrip("\n") or None,
+    "worker_nodes": opt_int("WORKER_NODES"),
+    "master_nodes": opt_int("MASTER_NODES"),
+}
 
 payload = {
     "schema_version": 1,
@@ -1242,6 +1276,7 @@ payload = {
     "volume_mode": os.environ["VOLUME_MODE"],
     "cmdline": json.loads(os.environ["CMDLINE_JSON"]),
     "log_path": os.environ.get("LOG_PATH") or None,
+    "cluster": cluster,
 }
 log_text = os.environ.get("LOG_TEXT") or ""
 if log_text:

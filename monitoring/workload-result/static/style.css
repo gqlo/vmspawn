@@ -15,6 +15,7 @@
 
 body {
   margin: 0;
+  min-height: 100vh;
   font-family: var(--sans);
   color: var(--text);
   background: var(--bg);
@@ -28,7 +29,7 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0.75rem 1.25rem;
+  padding: 0.75rem 1.5rem;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
@@ -44,7 +45,7 @@ a:hover { text-decoration: underline; }
 .auto { font-size: 0.9rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
 
 .crumbs {
-  padding: 0.5rem 1.25rem;
+  padding: 0.5rem 1.5rem;
   font-size: 0.9rem;
   color: var(--muted);
 }
@@ -52,14 +53,25 @@ a:hover { text-decoration: underline; }
 .crumbs a { color: var(--muted); }
 .crumbs span.sep { margin: 0 0.35rem; }
 
-.app { padding: 0 1.25rem 2rem; max-width: 1200px; }
+.app {
+  padding: 0 1.5rem 2rem;
+  width: 100%;
+  max-width: none;
+  box-sizing: border-box;
+}
 
 .panel {
   background: var(--panel);
   border: 1px solid var(--line);
   border-radius: 8px;
-  padding: 1rem;
+  padding: 1rem 1.25rem;
   margin-bottom: 1rem;
+}
+
+.table-wrap {
+  width: 100%;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
 }
 
 .row {
@@ -77,6 +89,12 @@ input[type="search"], input[type="text"], select, textarea {
   font: inherit;
 }
 
+input[type="search"] {
+  flex: 1 1 16rem;
+  min-width: 12rem;
+  max-width: 32rem;
+}
+
 .btn, button.btn {
   border: 1px solid var(--line);
   background: #f6f8fa;
@@ -90,6 +108,15 @@ input[type="search"], input[type="text"], select, textarea {
 .btn.danger { background: #fff; color: var(--danger); border-color: #ff8182; }
 .btn:hover { filter: brightness(0.97); }
 
+.row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+  white-space: nowrap;
+}
+.row-actions .btn { font-size: 0.85rem; padding: 0.25rem 0.55rem; }
+
 table {
   width: 100%;
   border-collapse: collapse;
@@ -98,7 +125,7 @@ table {
 
 th, td {
   text-align: left;
-  padding: 0.55rem 0.45rem;
+  padding: 0.55rem 0.55rem;
   border-bottom: 1px solid var(--line);
   vertical-align: top;
 }
@@ -127,11 +154,12 @@ tr.row-error { background: #fff5f5; }
 .grid-2 {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  gap: 1rem;
+  gap: 1.25rem;
 }
 
-@media (max-width: 800px) {
+@media (max-width: 900px) {
   .grid-2 { grid-template-columns: 1fr; }
+  .app, .top, .crumbs { padding-left: 1rem; padding-right: 1rem; }
 }
 
 .kv { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.75rem; font-size: 0.92rem; }
@@ -144,12 +172,12 @@ pre.payload {
   padding: 1rem;
   border-radius: 8px;
   overflow: auto;
-  max-height: 70vh;
+  max-height: calc(100vh - 12rem);
   font-family: var(--mono);
   font-size: 0.8rem;
 }
 
-.chart-wrap { position: relative; height: 260px; }
+.chart-wrap { position: relative; height: min(42vh, 420px); min-height: 260px; }
 
 .empty {
   padding: 1.5rem;

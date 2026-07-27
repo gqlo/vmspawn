@@ -25,9 +25,11 @@ write_files:
       # FIO_TIME_BASED=1: add --time_based --runtime=$FIO_RUNTIME.
       # Set FIO_CUSTOM_OPTS to run a custom fio command instead of the built-in job (all other tunables still apply for banner/logging).
       # Result sync (optional): RESULT_SERVER_URL, RESULT_SERVER_TOKEN, RESULT_RETRY, RESULT_TIMEOUT,
-      #   VSTORM_BATCH_ID, VSTORM_VM_NAME — see docs/workload-result-sync-and-dashboard.md
+      #   RESULT_MAX_FAILED_POSTS (default 5; 0=unlimited), VSTORM_BATCH_ID, VSTORM_VM_NAME —
+      #   see docs/workload-result-sync-and-dashboard.md
       # Run control (when RESULT_SERVER_URL set): WORKLOAD_RUN_MODE=idle|once|count|forever (default idle),
       #   WORKLOAD_RUN_COUNT (for count), WORKLOAD_POLL_SECONDS (default 5). Guest polls GET /v1/policy.
+      # WORKLOAD_MAX_JOBS: hard ceiling on jobN (e.g. 5 → stop after job5), even if policy is forever.
       # Use /etc/default/fio-workload or systemd Environment= to customize.
 
       # Install fio if not already present
@@ -75,11 +77,17 @@ write_files:
       FIO_RWMIXREAD="${FIO_RWMIXREAD:-$_rwmix}"
       RESULT_RETRY="${RESULT_RETRY:-3}"
       RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
+      # Stop workload after this many consecutive failed cycle result POSTs (0 = unlimited).
+      RESULT_MAX_FAILED_POSTS="${RESULT_MAX_FAILED_POSTS:-5}"
       # When RESULT_SERVER_URL is set, default idle and wait for dashboard policy.
       # Without RESULT_SERVER_URL, the loop still runs forever (legacy soak).
       WORKLOAD_RUN_MODE="${WORKLOAD_RUN_MODE:-idle}"
       WORKLOAD_RUN_COUNT="${WORKLOAD_RUN_COUNT:-0}"
       WORKLOAD_POLL_SECONDS="${WORKLOAD_POLL_SECONDS:-5}"
+      # Optional hard stop on job counter (independent of collector policy).
+      WORKLOAD_MAX_JOBS="${WORKLOAD_MAX_JOBS:-}"
+      _FAILED_POSTS=0
+      _POSTS_DISABLED=0
 
       mkdir -p "$FIO_DIRECTORY/results"
       FIO_FILENAME="${FIO_DIRECTORY}/fio-job.dat"
@@ -128,6 +136,10 @@ write_files:
           local -a cmd_argv=("$@")
 
           [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
+          if (( _POSTS_DISABLED )); then
+              echo "Cycle $cycle_num: result POST disabled after $RESULT_MAX_FAILED_POSTS consecutive failures; skipping POST"
+              return 0
+          fi
           if ! command -v python3 &>/dev/null; then
               echo "Cycle $cycle_num: cannot build result payload (python3 missing)"
               return 0
@@ -238,23 +250,26 @@ write_files:
 
           _post_payload_file() {
               local file="$1" label="$2"
-              local attempt=1 curl_args=() curl_err
-              curl_args=(-sS -f -X POST -H "Content-Type: application/json"
-                         --data-binary @"$file"
-                         --connect-timeout "$RESULT_TIMEOUT"
-                         --max-time "$RESULT_TIMEOUT")
-              if [[ -n "${RESULT_SERVER_TOKEN:-}" ]]; then
-                  curl_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
-              fi
+              local attempt=1 curl_err curl_body http_code
+              local -a auth_args=()
+              [[ -n "${RESULT_SERVER_TOKEN:-}" ]] && auth_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
               while (( attempt <= RESULT_RETRY )); do
                   curl_err=$(mktemp)
-                  if curl "${curl_args[@]}" "$RESULT_SERVER_URL" 2>"$curl_err"; then
-                      rm -f "$curl_err"
+                  curl_body=$(mktemp)
+                  http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
+                      --data-binary @"$file" \
+                      --connect-timeout "$RESULT_TIMEOUT" \
+                      --max-time "$RESULT_TIMEOUT" \
+                      "${auth_args[@]}" \
+                      -o "$curl_body" -w '%{http_code}' \
+                      "$RESULT_SERVER_URL" 2>"$curl_err") || true
+                  if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+                      rm -f "$curl_err" "$curl_body"
                       echo "$label: posted to $RESULT_SERVER_URL"
                       return 0
                   fi
-                  echo "$label: POST failed attempt $attempt/$RESULT_RETRY: $(tr '\n' ' ' <"$curl_err")"
-                  rm -f "$curl_err"
+                  echo "$label: POST failed attempt $attempt/$RESULT_RETRY: HTTP ${http_code:-000} curl=$(tr '\n' ' ' <"$curl_err") body=$(tr '\n' ' ' <"$curl_body" | head -c 500)"
+                  rm -f "$curl_err" "$curl_body"
                   sleep 2
                   ((attempt++)) || true
               done
@@ -275,11 +290,17 @@ write_files:
 
           if _post_payload_file "$payload_file" "Cycle $cycle_num ($status)"; then
               rm -f "${pending_dir}/job${cycle_num}-payload.json"
+              _FAILED_POSTS=0
               return 0
           fi
 
           # Connection / server issue: keep spool for retry; also POST a compact error event if possible
           cp -f "$payload_file" "${pending_dir}/job${cycle_num}-payload.json"
+          ((_FAILED_POSTS++)) || true
+          if [[ "$RESULT_MAX_FAILED_POSTS" =~ ^[1-9][0-9]*$ ]] && (( _FAILED_POSTS >= RESULT_MAX_FAILED_POSTS )); then
+              _POSTS_DISABLED=1
+              echo "RESULT_MAX_FAILED_POSTS=$RESULT_MAX_FAILED_POSTS reached ($_FAILED_POSTS consecutive cycle POST failures); disabling further POSTs and idling"
+          fi
           local conn_err_file="${FIO_DIRECTORY}/results/job${cycle_num}-post-error.json"
           python3 - "$conn_err_file" "$reported_at_unix" "$started_at" "$stopped_at" \
               "$hostname_s" "${VSTORM_BATCH_ID:-}" "$vm_name" "$cycle_num" \
@@ -316,6 +337,7 @@ write_files:
           f.write("\n")
       PY
           # Best-effort: if connectivity flaps, this may still land; otherwise spool it too
+          # Do not count post_error failures toward the cap (already counted the cycle result).
           if ! _post_payload_file "$conn_err_file" "Cycle $cycle_num post_error"; then
               cp -f "$conn_err_file" "${pending_dir}/job${cycle_num}-post-error.json"
               echo "Cycle $cycle_num: collector unreachable; payloads spooled under $pending_dir"
@@ -334,10 +356,12 @@ write_files:
       if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
           echo "RESULT_SERVER_URL=$RESULT_SERVER_URL (post after each cycle; poll policy between cycles)"
           echo "WORKLOAD_RUN_MODE=$WORKLOAD_RUN_MODE WORKLOAD_RUN_COUNT=$WORKLOAD_RUN_COUNT WORKLOAD_POLL_SECONDS=$WORKLOAD_POLL_SECONDS"
+          echo "RESULT_MAX_FAILED_POSTS=$RESULT_MAX_FAILED_POSTS (0=unlimited consecutive cycle POST failures)"
           echo "VSTORM_BATCH_ID=${VSTORM_BATCH_ID:-<unset>} VSTORM_VM_NAME=${VSTORM_VM_NAME:-<hostname>}"
       else
           echo "RESULT_SERVER_URL unset: running forever without policy poll (legacy)"
       fi
+      [[ -n "${WORKLOAD_MAX_JOBS:-}" ]] && echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS (hard stop after job${WORKLOAD_MAX_JOBS})"
       echo "Boot timestamp (first line): $BOOT_TIMESTAMP_UNIX, $BOOT_TIMESTAMP_TEXT ($BOOT_TIMESTAMP_FILE)"
       echo "This service start: $SERVICE_START_UNIX, $SERVICE_START_TEXT"
       echo "Next job name: job${cycle} (counter file: $JOB_COUNTER_FILE)"
@@ -391,8 +415,25 @@ write_files:
           rm -f "$tmp"
       }
 
+      # Local budget so once/count still stop when result POSTs fail (server
+      # only decrements remaining on successful result ingest).
+      _POLICY_REV=""
+      _LOCAL_RUNS=0
+      _LOCAL_BUDGET=0
+
+      _max_jobs_reached() {
+          [[ -n "${WORKLOAD_MAX_JOBS:-}" ]] || return 1
+          [[ "$WORKLOAD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || return 1
+          (( cycle > WORKLOAD_MAX_JOBS ))
+      }
+
       _policy_allows_run() {
           # Returns 0 if guest should run one cycle now.
+          if _max_jobs_reached; then
+              echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS reached (next would be job${cycle}); idling"
+              _post_agent_status "idle"
+              return 1
+          fi
           [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
           [[ -n "${RESULT_BASE:-}" ]] || return 1
           local batch_id="${VSTORM_BATCH_ID:-}"
@@ -421,11 +462,46 @@ write_files:
               _post_agent_status "error"
               return 1
           fi
-          if echo "$body" | python3 -c 'import json,sys; p=json.load(sys.stdin); print(p.get("mode"), "remaining=", p.get("remaining"), "run=", p.get("run")); sys.exit(0 if p.get("run") else 1)'; then
-              return 0
+          local decision
+          decision=$(echo "$body" | python3 -c '
+      import json, sys
+      p = json.load(sys.stdin)
+      mode = str(p.get("mode") or "idle")
+      remaining = int(p.get("remaining") or 0)
+      revision = int(p.get("revision") or 0)
+      run = bool(p.get("run"))
+      print(f"{mode} remaining={remaining} revision={revision} run={run}")
+      # budget: once/count use remaining; forever = -1 (unlimited); idle = 0
+      if mode == "forever":
+          budget = -1
+      elif mode in ("once", "count"):
+          budget = remaining
+      else:
+          budget = 0
+      print(f"META {revision} {budget} {1 if run else 0}")
+      sys.exit(0 if run else 1)
+      ') && _pol_rc=0 || _pol_rc=$?
+          echo "$decision" | grep -v '^META ' || true
+          local meta rev budget runflag
+          meta=$(echo "$decision" | awk '/^META /{print; exit}')
+          read -r _tag rev budget runflag <<<"$meta"
+          if [[ -n "$rev" && "$rev" != "$_POLICY_REV" ]]; then
+              _POLICY_REV="$rev"
+              _LOCAL_RUNS=0
+              _LOCAL_BUDGET="$budget"
+              echo "Policy grant revision=$rev budget=$budget (local runs reset)"
           fi
-          _post_agent_status "idle"
-          return 1
+          if ((_pol_rc != 0)); then
+              _post_agent_status "idle"
+              return 1
+          fi
+          # Stop once/count locally even if collector remaining stuck (failed result POSTs).
+          if [[ "$_LOCAL_BUDGET" =~ ^[0-9]+$ ]] && (( _LOCAL_RUNS >= _LOCAL_BUDGET )); then
+              echo "Local cycle budget exhausted ($_LOCAL_RUNS/$_LOCAL_BUDGET) under revision $_POLICY_REV; idling"
+              _post_agent_status "idle"
+              return 1
+          fi
+          return 0
       }
 
       # On startup, retry any payloads left from prior connection failures
@@ -451,6 +527,18 @@ write_files:
       fi
 
       while true; do
+          if (( _POSTS_DISABLED )); then
+              echo "Result POSTs disabled after $RESULT_MAX_FAILED_POSTS consecutive failures; idling (fix/restart to retry)"
+              _post_agent_status "error"
+              sleep "$WORKLOAD_POLL_SECONDS"
+              continue
+          fi
+          if _max_jobs_reached; then
+              echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS reached (next would be job${cycle}); sleeping"
+              _post_agent_status "idle"
+              sleep "$WORKLOAD_POLL_SECONDS"
+              continue
+          fi
           if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
               if ! _policy_allows_run; then
                   sleep "$WORKLOAD_POLL_SECONDS"
@@ -509,6 +597,8 @@ write_files:
               echo "Cycle $cycle ($job_name): fio exited with status $fio_rc; backing off before retry..."
               sleep "${FIO_FAILURE_SLEEP:-5}"
           fi
+          # Count completed cycles toward local once/count budget (even if POST failed).
+          ((_LOCAL_RUNS++)) || true
           # Persist next job number before increment (survives reboot)
           printf '%s\n' "$((cycle + 1))" > "$JOB_COUNTER_FILE"
           ((cycle++))

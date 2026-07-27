@@ -52,7 +52,7 @@ Status vs this design (as of the current tree).
 | Policy API | `GET /v1/policy`, `PUT .../vms/{vm}/policy`, `POST .../batches/{id}/policy` fan-out; remaining decrements on **result** ingest. |
 | Per-VM + batch dashboard controls | VM page and run page: Run once / Run N / Forever / Idle. |
 | VM status rollups | Home + run detail: configured / checked in / idle / running / queued / waiting / error / stale. |
-| Host manifest | **vstorm** POSTs `record_type: "manifest"` / `source: "vstorm"` after create (and after `--wait`) when `RESULT_SERVER_URL` is in `--env`; includes `log_path` + truncated `log_text`. Same inventory idea as the on-disk `logs/batch-*.manifest`, posted to the collector. |
+| Host manifest | **vstorm** POSTs `record_type: "manifest"` / `source: "vstorm"` after create (and after `--wait`) when `RESULT_SERVER_URL` is in `--env`; includes `log_path` + truncated `log_text`, plus `cluster` (`api_server`, `oc_version`, `worker_nodes`, `master_nodes`). Same inventory idea as the on-disk `logs/batch-*.manifest`, posted to the collector. |
 | Batch id inject | **vstorm** auto-injects `VSTORM_BATCH_ID` into `{VSTORM_GUEST_ENV}` cloud-inits. |
 | Agent heartbeats | Guest POSTs `record_type: "heartbeat"` while idle / running / on poll errors. |
 | Collector + browse UI | Ingest, SQLite, runs list, run/VM/payload views. |
@@ -97,7 +97,7 @@ Guests never need inbound ports. The dashboard never talks to the VM directly.
 5. User sets policy from dashboard (e.g. “run 3 cycles” on one VM, “forever” on all).
 6. Agent runs cycles according to policy; after each cycle, POSTs a **result** JSON. Collector decrements `remaining` on result ingest (for `count` / `once`).
 7. When policy is satisfied (`once`/`count` done) or user sets **idle**, agent idles and keeps polling (heartbeats).
-8. Failed POSTs spool locally and retry; guest may also POST an **error** record (`post_error`).
+8. Failed POSTs spool locally and retry; guest may also POST an **error** record (`post_error`). After `RESULT_MAX_FAILED_POSTS` consecutive failed cycle POSTs (default 5; `0` = unlimited), further POSTs are disabled and the guest idles.
 
 ## Run policy (control plane)
 
@@ -210,7 +210,13 @@ One `record_type: "manifest"` / `source: "vstorm"` POST after successful create 
   "volume_mode": "Block",
   "cmdline": ["vstorm", "--cloudinit=workload/cloudinit-fio-workload.yaml", "--cores=4", "--memory=8Gi", "--vms=10"],
   "log_path": "logs/8a494b-2026-07-22T05:48:20.log",
-  "log_text": "…truncated host log (up to 64 KiB)…"
+  "log_text": "…truncated host log (up to 64 KiB)…",
+  "cluster": {
+    "api_server": "https://api.vlan622.rdu2.scalelab.redhat.com:6443",
+    "oc_version": "Client Version: 4.16.0\nKustomize Version: v5.0.4-0.20230601165947-6ce0bf390ce3\nServer Version: 4.16.0\nKubernetes Version: v1.29.6+3af9982",
+    "worker_nodes": 50,
+    "master_nodes": 3
+  }
 }
 ```
 
@@ -417,7 +423,7 @@ Example chips: `10 cfg · 8 in · 2 running · 4 idle · 2 waiting`.
 
 **Batch-wide controls:** Idle | Run once | Run N… | Forever. Warn mentally if many VMs are still **waiting** (not checking in) — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
 
-**vstorm metadata panel:** namespaces, cmdline, guest_env, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
+**vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, guest_env, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
 
 **VMs table:**
 

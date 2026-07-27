@@ -195,7 +195,7 @@ async function renderRuns(app) {
       </div>
       ${
         items.length
-          ? `<table>
+          ? `<div class="table-wrap"><table>
         <thead>
           <tr>
             <th>Batch</th>
@@ -229,12 +229,15 @@ async function renderRuns(app) {
               <td>${escapeHtml(fmtNum(b.iops_avg, 0))}</td>
               <td>${escapeHtml(fmtBw(b.bw_avg))}</td>
               <td class="mono">${escapeHtml(b.fingerprint || b.cloudinit || "—")}</td>
-              <td><a href="#/runs/${encodeURIComponent(b.batch_id)}">Open</a></td>
+              <td class="row-actions" onclick="event.stopPropagation()">
+                <a class="btn" href="#/runs/${encodeURIComponent(b.batch_id)}">Open</a>
+                <button type="button" class="btn danger btn-delete-batch" data-batch="${escapeHtml(b.batch_id)}">Delete</button>
+              </td>
             </tr>`
             )
             .join("")}
         </tbody>
-      </table>`
+      </table></div>`
           : `<div class="empty">No runs yet. POST batch/cycle payloads to <span class="mono">/v1/results</span>.</div>`
       }
     </div>`;
@@ -245,8 +248,23 @@ async function renderRuns(app) {
   };
   app.querySelectorAll("tr.clickable").forEach((tr) => {
     tr.onclick = (e) => {
-      if (e.target.closest("a")) return;
+      if (e.target.closest("a, button, .row-actions")) return;
       location.hash = tr.dataset.href;
+    };
+  });
+  app.querySelectorAll(".btn-delete-batch").forEach((btn) => {
+    btn.onclick = async (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const id = btn.getAttribute("data-batch");
+      if (!id) return;
+      if (!confirm(`Delete run ${id} and all stored payloads?`)) return;
+      try {
+        await api("/v1/batches/" + encodeURIComponent(id), { method: "DELETE" });
+        render();
+      } catch (err) {
+        alert("Delete failed: " + (err && err.message ? err.message : err));
+      }
     };
   });
 }
@@ -295,6 +313,13 @@ async function renderRun(app, batchId) {
         <div>
           <h3 style="margin-top:0">vstorm metadata</h3>
           <dl class="kv">
+            <dt>API server</dt><dd class="mono">${escapeHtml((bp.cluster && bp.cluster.api_server) || "—")}</dd>
+            <dt>Nodes</dt><dd>${escapeHtml(
+              bp.cluster && (bp.cluster.worker_nodes != null || bp.cluster.master_nodes != null)
+                ? `${bp.cluster.worker_nodes ?? "—"} worker / ${bp.cluster.master_nodes ?? "—"} master`
+                : "—"
+            )}</dd>
+            <dt>oc version</dt><dd class="mono" style="white-space:pre-wrap">${escapeHtml((bp.cluster && bp.cluster.oc_version) || "—")}</dd>
             <dt>Namespaces</dt><dd class="mono">${escapeHtml((bp.namespaces || []).join(", ") || "—")}</dd>
             <dt>Storage</dt><dd>${escapeHtml(bp.storage_class || "—")} / ${escapeHtml(bp.volume_mode || "—")}</dd>
             <dt>Cmdline</dt><dd class="mono">${escapeHtml((bp.cmdline || []).join(" ") || "—")}</dd>
@@ -316,7 +341,7 @@ async function renderRun(app, batchId) {
       <h3 style="margin-top:0">VMs</h3>
       ${
         (b.vms || []).length
-          ? `<table>
+          ? `<div class="table-wrap"><table>
         <thead><tr><th>VM</th><th>Status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Latest IOPS</th><th>Latest BW</th><th>Boot</th></tr></thead>
         <tbody>
           ${(b.vms || [])
@@ -337,7 +362,7 @@ async function renderRun(app, batchId) {
             )
             .join("")}
         </tbody>
-      </table>`
+      </table></div>`
           : `<div class="empty">No VMs listed yet.</div>`
       }
     </div>`;
@@ -368,16 +393,24 @@ async function renderRun(app, batchId) {
   $("#btn-batch-idle").onclick = () => setBatchPolicy("idle");
 
   $("#btn-archive").onclick = async () => {
-    await api("/v1/batches/" + encodeURIComponent(batchId), {
-      method: "PATCH",
-      body: JSON.stringify({ archived: !b.archived }),
-    });
-    render();
+    try {
+      await api("/v1/batches/" + encodeURIComponent(batchId), {
+        method: "PATCH",
+        body: JSON.stringify({ archived: !b.archived }),
+      });
+      render();
+    } catch (err) {
+      alert("Archive failed: " + (err && err.message ? err.message : err));
+    }
   };
   $("#btn-delete").onclick = async () => {
     if (!confirm(`Delete run ${batchId} and all stored payloads?`)) return;
-    await api("/v1/batches/" + encodeURIComponent(batchId), { method: "DELETE" });
-    location.hash = "#/runs";
+    try {
+      await api("/v1/batches/" + encodeURIComponent(batchId), { method: "DELETE" });
+      location.hash = "#/runs";
+    } catch (err) {
+      alert("Delete failed: " + (err && err.message ? err.message : err));
+    }
   };
   $("#btn-save-meta").onclick = async () => {
     await api("/v1/batches/" + encodeURIComponent(batchId), {
@@ -483,7 +516,7 @@ async function renderVm(app, batchId, vm) {
       <h3 style="margin-top:0">Cycles</h3>
       ${
         cycles.length
-          ? `<table>
+          ? `<div class="table-wrap"><table>
         <thead><tr><th>Cycle</th><th>Type</th><th>Status</th><th>fio start</th><th>fio stop</th><th>Duration</th><th>fio_rc</th><th>IOPS</th><th>BW</th><th>Error</th><th></th></tr></thead>
         <tbody>
           ${cycles
@@ -507,7 +540,7 @@ async function renderVm(app, batchId, vm) {
             })
             .join("")}
         </tbody>
-      </table>`
+      </table></div>`
           : `<div class="empty">Waiting for guest results.</div>`
       }
     </div>`;

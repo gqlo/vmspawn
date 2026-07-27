@@ -74,10 +74,12 @@ Override with `--env KEY=VAL` (repeat as needed):
 | `RESULT_SERVER_URL` | Collector results URL (e.g. `http://host:8080/v1/results`). Enables POST after each cycle + policy poll between cycles |
 | `RESULT_SERVER_TOKEN` | Optional bearer token for collector auth |
 | `RESULT_RETRY` / `RESULT_TIMEOUT` | POST retry count / curl timeouts (see script defaults) |
+| `RESULT_MAX_FAILED_POSTS` | Stop POSTs + idle after N consecutive failed cycle result POSTs (default `5`; `0` = unlimited) |
 | `VSTORM_BATCH_ID` | Batch id for policy + result join (auto-injected by vstorm when creating VMs) |
 | `VSTORM_VM_NAME` | Optional; defaults to guest hostname |
 | `WORKLOAD_RUN_MODE` | Initial policy when the collector has none yet: `idle` (default when URL set), `once`, `count`, `forever` |
 | `WORKLOAD_RUN_COUNT` | Initial N when mode is `count` |
+| `WORKLOAD_MAX_JOBS` | Optional hard ceiling on `jobN` (e.g. `5` → never start job6), even if policy is `forever` |
 | `WORKLOAD_POLL_SECONDS` | Idle/policy poll interval (default `5`) |
 
 ```bash
@@ -100,6 +102,13 @@ vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
   --env WORKLOAD_RUN_MODE=idle \
   --cores=4 --memory=8Gi --vms=10 --wait
+
+# Cap at 5 jobs (count policy + hard ceiling)
+vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
+  --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
+  --env WORKLOAD_RUN_MODE=count --env WORKLOAD_RUN_COUNT=5 \
+  --env WORKLOAD_MAX_JOBS=5 \
+  --cores=4 --memory=8Gi --vms=1 --wait
 ```
 
 ## Monitoring
