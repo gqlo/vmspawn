@@ -279,6 +279,9 @@ _fio_args() {
     [[ "$args" != *"--time_based"* ]]
 }
 
+# ---------------------------------------------------------------
+# FIO-12: Persistent jobN naming from job.counter
+# ---------------------------------------------------------------
 @test "FIO: persistent jobN naming and counter file" {
     local script_path args counter
     script_path=$(_extract_fio_script)
@@ -297,14 +300,19 @@ _fio_args() {
     [[ "$counter" -gt 5 ]]
 }
 
+# ---------------------------------------------------------------
+# FIO-13: Timestamp file appends a line on each service start
+# ---------------------------------------------------------------
 @test "FIO: timestamp file appends on second start" {
     local script_path lines
     script_path=$(_extract_fio_script)
     unset FIO_CUSTOM_OPTS RESULT_SERVER_URL
     export FIO_SIZE=16M
+    : > "$RESULT_TIMESTAMP_FILE"
     run timeout 2 bash "$script_path" 2>/dev/null || true
     run timeout 2 bash "$script_path" 2>/dev/null || true
     rm -f "$script_path"
-    lines=$(wc -l < "$RESULT_TIMESTAMP_FILE")
+    # grep -c counts lines even when the final entry lacks a trailing newline
+    lines=$(grep -c . "$RESULT_TIMESTAMP_FILE" || true)
     [[ "$lines" -ge 2 ]]
 }

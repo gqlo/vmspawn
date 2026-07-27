@@ -3,6 +3,7 @@
 const state = {
   chart: null,
   timer: null,
+  downloadUrl: null,
   selectedBatches: new Set(),
   filters: {
     q: "",
@@ -14,6 +15,63 @@ const state = {
     api_server: "",
   },
 };
+
+const TOKEN_KEY = "workload-result-token";
+
+function getStoredToken() {
+  try {
+    return localStorage.getItem(TOKEN_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function setStoredToken(token) {
+  try {
+    if (token) localStorage.setItem(TOKEN_KEY, token);
+    else localStorage.removeItem(TOKEN_KEY);
+  } catch {
+    /* ignore quota / private mode */
+  }
+}
+
+async function api(path, opts = {}) {
+  const headers = {
+    Accept: "application/json",
+    ...(opts.body ? { "Content-Type": "application/json" } : {}),
+    ...(opts.headers || {}),
+  };
+  const token = getStoredToken();
+  if (token && !headers.Authorization) {
+    headers.Authorization = `Bearer ${token}`;
+  }
+
+  const doFetch = async (hdrs) => {
+    const res = await fetch(path, { ...opts, headers: hdrs });
+    const text = await res.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch {
+      data = { error: text };
+    }
+    return { res, data };
+  };
+
+  let { res, data } = await doFetch(headers);
+  if (res.status === 401) {
+    const entered = window.prompt("Collector requires a bearer token. Enter token:");
+    if (entered != null && entered.trim()) {
+      setStoredToken(entered.trim());
+      headers.Authorization = `Bearer ${entered.trim()}`;
+      ({ res, data } = await doFetch(headers));
+    }
+  }
+  if (!res.ok) {
+    throw new Error((data && data.error) || res.statusText || "request failed");
+  }
+  return data;
+}
 
 function $(sel) {
   return document.querySelector(sel);
@@ -64,24 +122,6 @@ function fmtVmChips(s) {
   return parts.length ? `${head} · ${parts.join(" · ")}` : head;
 }
 
-async function api(path, opts = {}) {
-  const res = await fetch(path, {
-    headers: { Accept: "application/json", ...(opts.body ? { "Content-Type": "application/json" } : {}), ...(opts.headers || {}) },
-    ...opts,
-  });
-  const text = await res.text();
-  let data = null;
-  try {
-    data = text ? JSON.parse(text) : null;
-  } catch {
-    data = { error: text };
-  }
-  if (!res.ok) {
-    throw new Error((data && data.error) || res.statusText || "request failed");
-  }
-  return data;
-}
-
 function parseRoute() {
   const h = (location.hash || "#/runs").replace(/^#/, "");
   const parts = h.split("/").filter(Boolean);
@@ -112,7 +152,7 @@ function setCrumbs(items) {
   el.innerHTML = items
     .map((it, i) => {
       const sep = i ? '<span class="sep">/</span>' : "";
-      if (it.href) return `${sep}<a href="${it.href}">${escapeHtml(it.label)}</a>`;
+      if (it.href) return `${sep}<a href="${escapeHtml(it.href)}">${escapeHtml(it.label)}</a>`;
       return `${sep}<span>${escapeHtml(it.label)}</span>`;
     })
     .join("");
@@ -137,6 +177,10 @@ function destroyChart() {
   if (state.chart) {
     state.chart.destroy();
     state.chart = null;
+  }
+  if (state.downloadUrl) {
+    URL.revokeObjectURL(state.downloadUrl);
+    state.downloadUrl = null;
   }
 }
 
@@ -827,8 +871,13 @@ async function renderPayload(app, batchId, resultId) {
     $("#btn-copy").textContent = "Copied";
     setTimeout(() => ($("#btn-copy").textContent = "Copy JSON"), 1200);
   };
+  if (state.downloadUrl) {
+    URL.revokeObjectURL(state.downloadUrl);
+    state.downloadUrl = null;
+  }
   const blob = new Blob([raw], { type: "application/json" });
   const url = URL.createObjectURL(blob);
+  state.downloadUrl = url;
   const dl = $("#btn-download");
   dl.href = url;
   dl.download = `${batchId}-${resultId.slice(0, 8)}.json`;
@@ -852,7 +901,15 @@ function setupRefresh() {
   const box = $("#auto-refresh");
   const arm = () => {
     if (state.timer) clearInterval(state.timer);
-    if (box.checked) state.timer = setInterval(() => render(), 5000);
+    if (box.checked) {
+      state.timer = setInterval(() => {
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT" || ae.tagName === "TEXTAREA")) {
+          return;
+        }
+        render();
+      }, 5000);
+    }
   };
   box.onchange = arm;
   arm();

@@ -23,6 +23,8 @@ python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./w
 # Ingest:    POST http://<host>:8080/v1/results
 ```
 
+Binding to `0.0.0.0` serves plain HTTP and exposes unauthenticated ingest/control APIs — use only on trusted or lab networks. Pass `--token SECRET` (and the matching `RESULT_SERVER_TOKEN` / dashboard Bearer token) when authentication is required.
+
 ## Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)
 
 Use the **provisioning script** below to persist dashboard JSON across pod restarts, or skip to [Prerequisites](#prerequisites) in the appendix for **manual** setup and troubleshooting.

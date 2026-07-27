@@ -270,10 +270,24 @@ write_files:
                   fi
                   echo "$label: POST failed attempt $attempt/$RESULT_RETRY: HTTP ${http_code:-000} curl=$(tr '\n' ' ' <"$curl_err") body=$(tr '\n' ' ' <"$curl_body" | head -c 500)"
                   rm -f "$curl_err" "$curl_body"
-                  sleep 2
+                  sleep $((attempt < 4 ? attempt * 2 : 8))
                   ((attempt++)) || true
               done
               return 1
+          }
+
+          # Drop oldest successful cycle artifacts; keep pending/ for retries.
+          _prune_posted_artifacts() {
+              local keep=20 dir="${FIO_DIRECTORY}/results"
+              [[ -d "$dir" ]] || return 0
+              # shellcheck disable=SC2012
+              ls -1t "$dir"/job*-payload.json 2>/dev/null | tail -n +"$((keep + 1))" | while read -r f; do
+                  rm -f "$f"
+              done
+              # shellcheck disable=SC2012
+              ls -1t "$dir"/job*.json 2>/dev/null | grep -v -- '-payload\.json$' | grep -v -- '-post-error\.json$' | tail -n +"$((keep + 1))" | while read -r f; do
+                  rm -f "$f"
+              done
           }
 
           # Flush any previously failed posts first
@@ -289,7 +303,8 @@ write_files:
           shopt -u nullglob
 
           if _post_payload_file "$payload_file" "Cycle $cycle_num ($status)"; then
-              rm -f "${pending_dir}/job${cycle_num}-payload.json"
+              rm -f "${pending_dir}/job${cycle_num}-payload.json" "$payload_file"
+              _prune_posted_artifacts
               _FAILED_POSTS=0
               return 0
           fi

@@ -235,7 +235,7 @@ tr.row-error { background: #fff5f5; }
 
 .kv { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.75rem; font-size: 0.92rem; }
 .kv dt { color: var(--muted); }
-.kv dd { margin: 0; word-break: break-word; }
+.kv dd { margin: 0; overflow-wrap: anywhere; }
 
 pre.payload {
   background: #0d1117;

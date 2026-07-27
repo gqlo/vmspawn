@@ -4,3 +4,5 @@ rh-internal-doc/
 # Cursor/app debug logs (e.g. debug-b8567b.log); project logs go in logs/
 .cursor/debug*.log
 monitoring/csv-data/
+# Default data-dir when serve.py is started from the repo root
+workload-result-data/

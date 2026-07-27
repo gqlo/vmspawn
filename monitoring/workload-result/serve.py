@@ -15,6 +15,7 @@ import re
 import shutil
 import sqlite3
 import statistics
+import sys
 import threading
 import time
 import uuid
@@ -716,13 +717,13 @@ class Store:
             batch_row = self._conn.execute(
                 "SELECT batch_result_id FROM batches WHERE batch_id = ?", (batch_id,)
             ).fetchone()
-        if batch_row and batch_row["batch_result_id"]:
-            bp = self._load_result_payload(batch_row["batch_result_id"])
-            if bp and isinstance(bp.get("vms"), list):
-                for entry in bp["vms"]:
-                    entry_s = str(entry)
-                    _, _, name = entry_s.partition("/")
-                    names.add(name or entry_s)
+            if batch_row and batch_row["batch_result_id"]:
+                bp = self._load_result_payload(batch_row["batch_result_id"])
+                if bp and isinstance(bp.get("vms"), list):
+                    for entry in bp["vms"]:
+                        entry_s = str(entry)
+                        _, _, name = entry_s.partition("/")
+                        names.add(name or entry_s)
         if not names:
             raise ValueError("no VMs known for this batch yet")
         items = [
@@ -1100,7 +1101,7 @@ class Store:
                 cur["policy_remaining"] = None
                 cur["agent_state"] = None
                 cur["last_poll_at"] = None
-                cur["ui_status"] = "waiting" if cur.get("from_metadata") else "waiting"
+                cur["ui_status"] = "waiting"
 
         return sorted(named.values(), key=lambda x: x["vm_name"])
 
@@ -1338,8 +1339,7 @@ def make_handler(app: App):
         protocol_version = "HTTP/1.1"
 
         def log_message(self, fmt: str, *args: Any) -> None:
-            sys_stderr = __import__("sys").stderr
-            sys_stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
+            sys.stderr.write("%s - %s\n" % (self.address_string(), fmt % args))
 
         def _check_auth(self) -> bool:
             if not app.token:
@@ -1482,6 +1482,8 @@ def make_handler(app: App):
                 self._json(400, {"error": str(exc)})
             except json.JSONDecodeError as exc:
                 self._json(400, {"error": f"invalid JSON: {exc}"})
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"error": str(exc)})
 
         def do_DELETE(self) -> None:  # noqa: N802
             if not self._check_auth():
@@ -1492,11 +1494,14 @@ def make_handler(app: App):
             if not m:
                 self._json(404, {"error": "not found"})
                 return
-            ok = app.store.delete_batch(m.group(1))
-            if not ok:
-                self._json(404, {"error": "batch not found"})
-                return
-            self._json(200, {"deleted": True, "batch_id": m.group(1)})
+            try:
+                ok = app.store.delete_batch(m.group(1))
+                if not ok:
+                    self._json(404, {"error": "batch not found"})
+                    return
+                self._json(200, {"deleted": True, "batch_id": m.group(1)})
+            except Exception as exc:  # noqa: BLE001
+                self._json(500, {"error": str(exc)})
 
         def _handle_api_get(self, path: str, qs: dict[str, list[str]]) -> None:
             if path == "/v1/batches":
@@ -1594,10 +1599,13 @@ def make_handler(app: App):
         def _serve_static(self, path: str) -> None:
             if path in ("/", ""):
                 path = "/index.html"
-            # prevent path traversal
+            # prevent path traversal (path-aware: avoid prefix false positives like static-extra)
             rel = path.lstrip("/")
+            static_root = STATIC_DIR.resolve()
             target = (STATIC_DIR / rel).resolve()
-            if not str(target).startswith(str(STATIC_DIR.resolve())):
+            try:
+                target.relative_to(static_root)
+            except ValueError:
                 self._json(403, {"error": "forbidden"})
                 return
             if not target.is_file():

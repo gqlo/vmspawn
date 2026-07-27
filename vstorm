@@ -1136,11 +1136,11 @@ post_batch_result_metadata() {
 	esac
     done
     [[ -n "$url" ]] || return 0
-    if ! command -v curl &>/dev/null; then
+    if [[ -z "$(type -t curl)" ]]; then
 	log_message "${C_WARN}RESULT_SERVER_URL set but curl missing; skip manifest POST${C_RST}"
 	return 0
     fi
-    if ! command -v python3 &>/dev/null; then
+    if [[ -z "$(type -t python3)" ]]; then
 	log_message "${C_WARN}RESULT_SERVER_URL set but python3 missing; skip manifest POST${C_RST}"
 	return 0
     fi
@@ -1394,9 +1394,10 @@ firmware:
 	if [[ "$cloudinit_content" == *"{VSTORM_GUEST_ENV}"* ]]; then
 	    _guest_env_branch=true
 	    # Count user --env before auto-inject so we can keep the “no --env” marker.
-	    _user_env_count=${#GUEST_ENV_ARR[@]}
+	    local -i _user_env_count=${#GUEST_ENV_ARR[@]}
 	    # Always inject batch id for result sync / policy poll (no-op if already set).
-	    _has_vstorm_batch=0
+	    local -i _has_vstorm_batch=0
+	    local _ge
 	    for _ge in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
 		if [[ "$_ge" == VSTORM_BATCH_ID=* ]]; then
 		    _has_vstorm_batch=1
