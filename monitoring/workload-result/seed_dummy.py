@@ -59,6 +59,12 @@ def main() -> int:
             "vms": [
                 "vm-a1b2c3-ns-1/rhel9-a1b2c3-1",
                 "vm-a1b2c3-ns-1/rhel9-a1b2c3-2",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-3",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-4",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-5",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-6",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-7",
+                "vm-a1b2c3-ns-1/rhel9-a1b2c3-8",
             ],
             "namespaces": ["vm-a1b2c3-ns-1"],
             "fingerprint": "randrw/1G/4k",
@@ -128,9 +134,14 @@ def main() -> int:
         print("manifest", b["batch_id"], post(args.url, manifest, args.token))
         posted += 1
 
+        # Staggered guest boot times (seconds after batch create start) for histogram demos.
+        boot_offsets_s = (45, 58, 62, 75, 88, 95, 110, 140)
         for vi, vm_path in enumerate(b["vms"]):
             vm = vm_path.split("/", 1)[-1]
-            boot = started + timedelta(minutes=1)
+            offset_s = boot_offsets_s[vi % len(boot_offsets_s)]
+            if i == 1:
+                offset_s = 70 + vi * 15
+            boot = started + timedelta(seconds=offset_s)
             # heartbeats
             for state in ("idle", "running", "idle"):
                 hb = {
@@ -142,8 +153,9 @@ def main() -> int:
                     "vm_name": vm,
                     "hostname": vm,
                     "agent_state": state,
+                    "vmi_phase": "Running",
                     "policy_mode": "idle",
-                    "reported_at": utc(now - timedelta(minutes=5 - vi)),
+                    "reported_at": utc(now - timedelta(minutes=5 - min(vi, 4))),
                 }
                 post(args.url, hb, args.token)
                 posted += 1

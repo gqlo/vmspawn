@@ -7,10 +7,10 @@ vstorm produces two types of output files in the `logs/` directory: **log files*
 Every live run (non-dry-run) writes a timestamped log file:
 
 ```
-logs/{BATCH_ID}-{YYYY}-{MM}-{DD}T{HH}:{MM}:{SS}.log
+logs/{BATCH_ID}-{YYYY}-{MM}-{DD}T{HH}:{MM}:{SS}Z.log
 ```
 
-For example: `logs/a3f7b2-2026-02-11T14:30:05.log`
+For example: `logs/a3f7b2-2026-02-11T14:30:05Z.log`
 
 The batch ID is prepended so you can easily find the log for a specific batch:
 
@@ -24,7 +24,7 @@ ls -lt logs/*.log
 
 ### What gets logged
 
-Each log entry is prefixed with a `YYYY-MM-DD HH:MM:SS` timestamp. The log captures the full lifecycle:
+Each log entry is prefixed with a UTC `YYYY-MM-DDTHH:MM:SSZ` timestamp. The log captures the full lifecycle:
 
 1. **Configuration** -- batch ID, VM count, namespaces, storage class, snapshot mode, CPU/memory, cloud-init
 2. **Prerequisite checks** -- oc CLI, OpenShift Virtualization, storage class validation
@@ -42,31 +42,31 @@ Log messages are written to both the terminal (stdout) and the log file simultan
 ### Example log output
 
 ```
-2026-02-11 14:30:05 Log file created: logs/a3f7b2-2026-02-11T14:30:05.log
-2026-02-11 14:30:05 Prerequisites OK: oc CLI, OpenShift Virtualization, storage class 'ocs-storagecluster-ceph-rbd-virtualization', snapshot class 'ocs-storagecluster-rbdplugin-snapclass'
-2026-02-11 14:30:05 Starting resource creation process...
-2026-02-11 14:30:05 Batch ID:      a3f7b2
-2026-02-11 14:30:05 Configuration: 10 VMs across 2 namespaces
-2026-02-11 14:30:05 DataSource:    rhel9 (from openshift-virtualization-os-images)
-2026-02-11 14:30:05 Storage class: ocs-storagecluster-ceph-rbd-virtualization
-2026-02-11 14:30:05 Snapshot mode: enabled (class: ocs-storagecluster-rbdplugin-snapclass)
-2026-02-11 14:30:05 VM CPU cores:  4
-2026-02-11 14:30:05 VM memory:     8Gi
-2026-02-11 14:30:05 Cloud-init:    helpers/cloudinit-default.yaml
-2026-02-11 14:30:05 Run strategy:  Always
-2026-02-11 14:30:05 Creating namespaces...
-2026-02-11 14:30:06 Creating namespace: vm-a3f7b2-ns-1
-2026-02-11 14:30:06 Creating namespace: vm-a3f7b2-ns-2
-2026-02-11 14:30:06 Creating DataVolumes...
+2026-02-11T14:30:05Z Log file created: logs/a3f7b2-2026-02-11T14:30:05Z.log
+2026-02-11T14:30:05Z Prerequisites OK: oc CLI, OpenShift Virtualization, storage class 'ocs-storagecluster-ceph-rbd-virtualization', snapshot class 'ocs-storagecluster-rbdplugin-snapclass'
+2026-02-11T14:30:05Z Starting resource creation process...
+2026-02-11T14:30:05Z Batch ID:      a3f7b2
+2026-02-11T14:30:05Z Configuration: 10 VMs across 2 namespaces
+2026-02-11T14:30:05Z DataSource:    rhel9 (from openshift-virtualization-os-images)
+2026-02-11T14:30:05Z Storage class: ocs-storagecluster-ceph-rbd-virtualization
+2026-02-11T14:30:05Z Snapshot mode: enabled (class: ocs-storagecluster-rbdplugin-snapclass)
+2026-02-11T14:30:05Z VM CPU cores:  4
+2026-02-11T14:30:05Z VM memory:     8Gi
+2026-02-11T14:30:05Z Cloud-init:    helpers/cloudinit-default.yaml
+2026-02-11T14:30:05Z Run strategy:  Always
+2026-02-11T14:30:05Z Creating namespaces...
+2026-02-11T14:30:06Z Creating namespace: vm-a3f7b2-ns-1
+2026-02-11T14:30:06Z Creating namespace: vm-a3f7b2-ns-2
+2026-02-11T14:30:06Z Creating DataVolumes...
 ...
-2026-02-11 14:31:20 All DataVolumes are completed successfully!
-2026-02-11 14:31:20 Creating VolumeSnapshots...
+2026-02-11T14:31:20Z All DataVolumes are completed successfully!
+2026-02-11T14:31:20Z Creating VolumeSnapshots...
 ...
-2026-02-11 14:31:45 Creating VirtualMachines...
-2026-02-11 14:31:45 Creating VirtualMachine 1 for namespace: vm-a3f7b2-ns-1
+2026-02-11T14:31:45Z Creating VirtualMachines...
+2026-02-11T14:31:45Z Creating VirtualMachine 1 for namespace: vm-a3f7b2-ns-1
 ...
-2026-02-11 14:31:50 Resource creation completed successfully!
-2026-02-11 14:31:50 Created 2 namespaces, 2 DataVolumes, 2 VolumeSnapshots, and 10 total VirtualMachines
+2026-02-11T14:31:50Z Resource creation completed successfully!
+2026-02-11T14:31:50Z Created 2 namespaces, 2 DataVolumes, 2 VolumeSnapshots, and 10 total VirtualMachines
 ```
 
 ## Manifest files
@@ -83,7 +83,7 @@ The manifest is a YAML-like summary of what was created:
 
 ```yaml
 batch-id: a3f7b2
-created: 2026-02-11T14:30:05
+created: 2026-02-11T14:30:05Z
 basename: rhel9
 total-vms: 10
 total-namespaces: 2

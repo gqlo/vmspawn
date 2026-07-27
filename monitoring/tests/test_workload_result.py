@@ -195,6 +195,9 @@ class TestStoreIngest(unittest.TestCase):
         assert batch is not None
         self.assertEqual(batch["cycle_count"], 1)
         self.assertAlmostEqual(batch["iops_avg"], 1000.0)
+        vms = {v["vm_name"]: v for v in batch["vms"]}
+        # ISO boot_timestamp must be indexed (not only boot_timestamp_unix)
+        self.assertEqual(vms["vm1"]["boot_timestamp_unix"], 1784699425)
 
     def test_legacy_cycle_event_status_normalized(self) -> None:
         cases = [
@@ -334,6 +337,56 @@ class TestStorePolicy(unittest.TestCase):
         p = self.store.get_policy("p1", "vm1")
         self.assertEqual(p["remaining"], 2)
         self.assertEqual(p["agent_state"], "running")
+
+    def test_heartbeat_vmi_phase_in_summary(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "vmi1",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "vms": ["ns/vm-a", "ns/vm-b"],
+                "reported_at": "2026-07-22T05:50:00Z",
+                "started_at": "2026-07-22T05:48:20Z",
+                "stopped_at": "2026-07-22T05:50:00Z",
+            }
+        )
+        detail = self.store.get_batch("vmi1")
+        self.assertIsNone(detail["vm_summary"]["vmi_running"])
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "vstorm",
+                "workload_kind": "fio",
+                "batch_id": "vmi1",
+                "vm_name": "vm-a",
+                "agent_state": "idle",
+                "vmi_phase": "Running",
+                "reported_at": "2026-07-22T05:52:03Z",
+            }
+        )
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "vstorm",
+                "workload_kind": "fio",
+                "batch_id": "vmi1",
+                "vm_name": "vm-b",
+                "agent_state": "idle",
+                "vmi_phase": "Pending",
+                "reported_at": "2026-07-22T05:52:04Z",
+            }
+        )
+        detail = self.store.get_batch("vmi1")
+        self.assertEqual(detail["vm_summary"]["vmi_running"], 1)
+        self.assertEqual(detail["vm_summary"]["running"], 0)
+        vms = {v["vm_name"]: v for v in detail["vms"]}
+        self.assertEqual(vms["vm-a"]["vmi_phase"], "Running")
+        self.assertEqual(vms["vm-b"]["vmi_phase"], "Pending")
 
     def test_forever_not_decremented(self) -> None:
         self.store.set_policy("p1", "vm1", mode="forever")

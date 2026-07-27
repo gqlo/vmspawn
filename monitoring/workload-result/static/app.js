@@ -78,8 +78,21 @@ function $(sel) {
 }
 
 function fmtTs(ts) {
+  // Always render as UTC ISO-8601 with Z (API stores unix UTC epoch seconds).
   if (ts == null) return "—";
-  if (typeof ts === "string" && ts.trim()) return ts.trim();
+  if (typeof ts === "string" && ts.trim()) {
+    const s = ts.trim();
+    const n = Number(s);
+    if (Number.isFinite(n) && String(n) === s) {
+      const d = new Date(n * 1000);
+      if (!Number.isNaN(d.getTime())) return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+    }
+    // Prefer showing the string as-is when it already has a timezone; else parse as UTC.
+    if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) return s.endsWith("Z") || s.endsWith("z") ? s.replace(/z$/i, "Z") : s;
+    const d = new Date(s.includes("T") ? s + "Z" : s + "T00:00:00Z");
+    if (!Number.isNaN(d.getTime())) return d.toISOString().replace(/\.\d{3}Z$/, "Z");
+    return s;
+  }
   const d = new Date(Number(ts) * 1000);
   if (Number.isNaN(d.getTime())) return String(ts);
   return d.toISOString().replace(/\.\d{3}Z$/, "Z");
@@ -109,17 +122,17 @@ function fmtBw(bps) {
   return fmtNum(bps, 1) + " B/s";
 }
 
-function fmtVmChips(s) {
+function fmtWorkloadStatus(uiStatus) {
+  return uiStatus === "running" ? "running" : "idle";
+}
+
+/** Batches-list Workload status column: running / idle only. */
+function fmtWorkloadColumn(s) {
   if (!s) return "—";
-  const parts = [];
-  if (s.running) parts.push(`${s.running} running`);
-  if (s.queued) parts.push(`${s.queued} queued`);
-  if (s.idle) parts.push(`${s.idle} idle`);
-  if (s.waiting) parts.push(`${s.waiting} waiting`);
-  if (s.error) parts.push(`${s.error} error`);
-  if (s.stale) parts.push(`${s.stale} stale`);
-  const head = `${s.configured ?? "—"} created · ${s.checked_in ?? 0} contacted`;
-  return parts.length ? `${head} · ${parts.join(" · ")}` : head;
+  const running = Number(s.running || 0);
+  const total = Number(s.configured ?? 0);
+  const idle = total > 0 ? Math.max(0, total - running) : Number(s.idle || 0);
+  return `${running} running · ${idle} idle`;
 }
 
 function parseRoute() {
@@ -221,13 +234,27 @@ async function renderRuns(app) {
       acc.batches += 1;
       acc.configured += Number(s.configured || b.total_vms || 0);
       acc.checked_in += Number(s.checked_in || 0);
+      if (s.vmi_running != null) {
+        acc.vmi_running += Number(s.vmi_running || 0);
+        acc.vmi_known = true;
+      }
       acc.running += Number(s.running || 0);
       acc.idle += Number(s.idle || 0);
       acc.waiting += Number(s.waiting || 0);
       acc.error += Number(s.error || 0);
       return acc;
     },
-    { batches: 0, configured: 0, checked_in: 0, running: 0, idle: 0, waiting: 0, error: 0 }
+    {
+      batches: 0,
+      configured: 0,
+      checked_in: 0,
+      vmi_running: 0,
+      vmi_known: false,
+      running: 0,
+      idle: 0,
+      waiting: 0,
+      error: 0,
+    }
   );
 
   const opt = (value, label, selected) =>
@@ -244,9 +271,10 @@ async function renderRuns(app) {
           ${escapeHtml(String(totals.batches))} batches ·
           ${escapeHtml(String(totals.configured))} VMs created ·
           ${escapeHtml(String(totals.checked_in))} contacted collector ·
-          ${escapeHtml(String(totals.running))} running ·
+          ${escapeHtml(totals.vmi_known ? String(totals.vmi_running) : "—")} VMI running ·
+          ${escapeHtml(String(totals.running))} workload running ·
           ${escapeHtml(String(totals.idle))} idle ·
-          ${escapeHtml(String(totals.waiting))} waiting
+          ${escapeHtml(String(totals.waiting))} not contacted
           ${totals.error ? ` · ${escapeHtml(String(totals.error))} error` : ""}
         </div>
       </div>
@@ -317,7 +345,7 @@ async function renderRuns(app) {
             <th>Namespaces</th>
             <th>Started</th>
             <th>Stopped</th>
-            <th>VM status</th>
+            <th>Workload status</th>
             <th>Cycles</th>
             <th>Errors</th>
             <th>IOPS avg</th>
@@ -345,7 +373,7 @@ async function renderRuns(app) {
               <td class="mono">${escapeHtml((b.namespaces || []).join(", ") || "—")}</td>
               <td class="mono">${escapeHtml(fmtTs(b.started_at))}</td>
               <td class="mono">${escapeHtml(fmtTs(b.stopped_at))}</td>
-              <td class="muted">${escapeHtml(fmtVmChips(b.vm_summary))}</td>
+              <td class="muted">${escapeHtml(fmtWorkloadColumn(b.vm_summary))}</td>
               <td>${escapeHtml(String(b.cycle_count ?? 0))}</td>
               <td>${
                 b.error_count
@@ -505,6 +533,7 @@ async function renderRun(app, batchId) {
   const bp = b.batch_payload || {};
   const batchResultId = b.batch_result_id;
   const vs = b.vm_summary || {};
+  const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at);
 
   app.innerHTML = `
     <div class="panel">
@@ -512,7 +541,11 @@ async function renderRun(app, batchId) {
         <div>
           <h2 style="margin:0">${escapeHtml(batchId)} ${b.archived ? '<span class="badge archived">archived</span>' : ""}</h2>
           <div class="muted">${escapeHtml(b.basename || "")} · ${escapeHtml(b.fingerprint || b.cloudinit || "")}</div>
-          <div class="muted" style="margin-top:0.35rem">${escapeHtml(fmtVmChips(vs))}</div>
+          <div class="muted" style="margin-top:0.35rem">${escapeHtml(fmtWorkloadColumn(vs))}</div>
+          <div class="muted mono" style="margin-top:0.35rem">
+            ${escapeHtml(bootSummary)}
+            · <a href="#" id="btn-boot-csv">Download boot times CSV</a>
+          </div>
         </div>
         <div class="actions">
           ${batchResultId ? `<a class="btn" href="#/runs/${encodeURIComponent(batchId)}/payload/${encodeURIComponent(batchResultId)}">View manifest</a>` : ""}
@@ -534,8 +567,6 @@ async function renderRun(app, batchId) {
             ${b.event_count ? ` · <span class="badge warn">${escapeHtml(String(b.event_count))} events</span>` : ""}
           </dd>
           <dt>Cores / Mem</dt><dd>${escapeHtml(String(b.cores ?? "—"))} / ${escapeHtml(String(b.memory ?? "—"))}</dd>
-          <dt>IOPS p50/p99</dt><dd>${escapeHtml(fmtNum(b.iops_p50, 0))} / ${escapeHtml(fmtNum(b.iops_p99, 0))}</dd>
-          <dt>BW p50/p99</dt><dd>${escapeHtml(fmtBw(b.bw_p50))} / ${escapeHtml(fmtBw(b.bw_p99))}</dd>
         </dl>
         <div>
           <h3 style="margin-top:0">vstorm metadata</h3>
@@ -560,8 +591,13 @@ async function renderRun(app, batchId) {
     </div>
 
     <div class="panel">
-      <h3 style="margin-top:0">Charts</h3>
-      <div class="chart-wrap"><canvas id="metrics-chart"></canvas></div>
+      <h3 style="margin-top:0">VM creation → guest boot</h3>
+      <p class="muted" style="margin-top:0">
+        Seconds from batch create start (DV / VM create, UTC) to the guest boot timestamp (UTC).
+      </p>
+      <div class="chart-wrap"><canvas id="boot-chart"></canvas></div>
+      <div id="boot-chart-empty" class="empty" style="display:none">No boot timestamps yet.</div>
+      <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
     </div>
 
     <div class="panel">
@@ -569,21 +605,19 @@ async function renderRun(app, batchId) {
       ${
         (b.vms || []).length
           ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Latest IOPS</th><th>Latest BW</th><th>Boot</th></tr></thead>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
         <tbody>
           ${(b.vms || [])
             .map(
               (v) => `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
-              <td>${escapeHtml(v.ui_status || "—")}</td>
+              <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
                 v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
               }</td>
               <td class="mono">${escapeHtml(v.namespace || "—")}</td>
               <td>${escapeHtml(String(v.cycle_count || 0))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.last_stopped_at))}</td>
-              <td>${escapeHtml(fmtNum(v.latest_iops, 0))}</td>
-              <td>${escapeHtml(fmtBw(v.latest_bw_bytes))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
             </tr>`
             )
@@ -594,7 +628,16 @@ async function renderRun(app, batchId) {
       }
     </div>`;
 
-  drawSeriesChart(b.series || []);
+  drawBootHistogram(b.vms || [], b.started_at);
+
+  const bootCsvBtn = $("#btn-boot-csv");
+  if (bootCsvBtn) {
+    bootCsvBtn.onclick = (e) => {
+      e.preventDefault();
+      const csv = buildBootTimesCsv(batchId, b.vms || [], b.started_at);
+      downloadTextFile(`${batchId}-boot-times.csv`, csv, "text/csv;charset=utf-8");
+    };
+  }
 
   async function setBatchPolicy(mode, remaining) {
     const body = { mode };
@@ -657,42 +700,182 @@ async function renderRun(app, batchId) {
   });
 }
 
-function drawSeriesChart(series) {
-  const canvas = $("#metrics-chart");
+function bootDurationsSeconds(vms, startedAt) {
+  if (startedAt == null) return [];
+  const out = [];
+  for (const v of vms || []) {
+    const boot = v.boot_timestamp_unix;
+    if (boot == null) continue;
+    const s = Number(boot) - Number(startedAt);
+    if (!Number.isFinite(s) || s < 0) continue;
+    out.push({ vm_name: v.vm_name, seconds: s });
+  }
+  return out;
+}
+
+function fmtBootTimeSummary(vms, startedAt) {
+  const samples = bootDurationsSeconds(vms, startedAt);
+  if (!samples.length) return "Boot time —";
+  const seconds = samples.map((s) => s.seconds);
+  const min = Math.min(...seconds);
+  const max = Math.max(...seconds);
+  const avg = seconds.reduce((a, b) => a + b, 0) / seconds.length;
+  return `Boot time avg ${Math.round(avg)}s · min ${Math.round(min)}s · max ${Math.round(max)}s`;
+}
+
+function csvEscape(val) {
+  const s = val == null ? "" : String(val);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+
+function buildBootTimesCsv(batchId, vms, startedAt) {
+  const header = [
+    "batch_id",
+    "vm_name",
+    "namespace",
+    "batch_started_at_utc",
+    "boot_timestamp_utc",
+    "boot_duration_s",
+  ];
+  const startedIso = fmtTs(startedAt);
+  const rows = [header.join(",")];
+  for (const v of vms || []) {
+    const boot = v.boot_timestamp_unix;
+    let duration = "";
+    if (boot != null && startedAt != null) {
+      const s = Number(boot) - Number(startedAt);
+      if (Number.isFinite(s) && s >= 0) duration = String(Math.round(s));
+    }
+    rows.push(
+      [
+        csvEscape(batchId),
+        csvEscape(v.vm_name),
+        csvEscape(v.namespace || ""),
+        csvEscape(startedIso === "—" ? "" : startedIso),
+        csvEscape(boot != null ? fmtTs(boot) : ""),
+        csvEscape(duration),
+      ].join(",")
+    );
+  }
+  return rows.join("\n") + "\n";
+}
+
+function downloadTextFile(filename, text, mime) {
+  if (state.downloadUrl) {
+    URL.revokeObjectURL(state.downloadUrl);
+    state.downloadUrl = null;
+  }
+  const blob = new Blob([text], { type: mime || "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  state.downloadUrl = url;
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
+function histogramBins(values, { maxBins = 12, minWidth = 5 } = {}) {
+  if (!values.length) return { labels: [], counts: [], edges: [] };
+  const sorted = [...values].sort((a, b) => a - b);
+  const lo = sorted[0];
+  const hi = sorted[sorted.length - 1];
+  if (hi === lo) {
+    const label = `${Math.round(lo)}s`;
+    return { labels: [label], counts: [values.length], edges: [lo, lo + minWidth] };
+  }
+  const n = Math.min(maxBins, Math.max(3, Math.ceil(Math.sqrt(values.length))));
+  let width = (hi - lo) / n;
+  if (width < minWidth) width = minWidth;
+  const binCount = Math.max(1, Math.ceil((hi - lo) / width));
+  const edges = [];
+  for (let i = 0; i <= binCount; i++) edges.push(lo + i * width);
+  edges[edges.length - 1] = Math.max(edges[edges.length - 1], hi);
+  const counts = new Array(binCount).fill(0);
+  for (const v of values) {
+    let idx = Math.floor((v - lo) / width);
+    if (idx >= binCount) idx = binCount - 1;
+    if (idx < 0) idx = 0;
+    counts[idx] += 1;
+  }
+  const labels = [];
+  for (let i = 0; i < binCount; i++) {
+    const a = Math.round(edges[i]);
+    const b = Math.round(edges[i + 1]);
+    labels.push(`${a}–${b}s`);
+  }
+  return { labels, counts, edges };
+}
+
+function drawBootHistogram(vms, startedAt) {
+  const canvas = $("#boot-chart");
+  const emptyEl = $("#boot-chart-empty");
+  const statsEl = $("#boot-chart-stats");
   if (!canvas || typeof Chart === "undefined") return;
-  const labels = series.map((s, i) => s.cycle != null ? `${s.vm_name || "?"}#${s.cycle}` : String(i + 1));
+
+  const samples = bootDurationsSeconds(vms, startedAt);
+  if (!samples.length) {
+    canvas.style.display = "none";
+    if (emptyEl) emptyEl.style.display = "";
+    if (statsEl) statsEl.textContent = "";
+    return;
+  }
+  canvas.style.display = "";
+  if (emptyEl) emptyEl.style.display = "none";
+
+  const seconds = samples.map((s) => s.seconds);
+  const { labels, counts, edges } = histogramBins(seconds);
+  const sorted = [...seconds].sort((a, b) => a - b);
+  const avg = seconds.reduce((a, b) => a + b, 0) / seconds.length;
+  if (statsEl) {
+    statsEl.textContent =
+      `${samples.length} VMs · min ${Math.round(sorted[0])}s · ` +
+      `avg ${Math.round(avg)}s · max ${Math.round(sorted[sorted.length - 1])}s`;
+  }
+
   state.chart = new Chart(canvas, {
-    type: "line",
+    type: "bar",
     data: {
       labels,
       datasets: [
         {
-          label: "IOPS",
-          data: series.map((s) => s.iops),
+          label: "VMs",
+          data: counts,
+          backgroundColor: "rgba(9, 105, 218, 0.65)",
           borderColor: "#0969da",
-          tension: 0.2,
-          yAxisID: "y",
-        },
-        {
-          label: "BW bytes/s",
-          data: series.map((s) => s.bw_bytes),
-          borderColor: "#1a7f37",
-          tension: 0.2,
-          yAxisID: "y1",
+          borderWidth: 1,
         },
       ],
     },
     options: {
       responsive: true,
       maintainAspectRatio: false,
-      interaction: { mode: "index", intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            afterBody(items) {
+              if (!items.length) return "";
+              const idx = items[0].dataIndex;
+              const a = edges[idx];
+              const b = edges[idx + 1];
+              const last = idx === counts.length - 1;
+              const names = samples
+                .filter((s) => s.seconds >= a && (last ? s.seconds <= b : s.seconds < b))
+                .map((s) => s.vm_name);
+              return names.length ? names.slice(0, 8).join("\n") + (names.length > 8 ? "\n…" : "") : "";
+            },
+          },
+        },
+      },
       scales: {
-        y: { type: "linear", position: "left", title: { display: true, text: "IOPS" } },
-        y1: {
-          type: "linear",
-          position: "right",
-          grid: { drawOnChartArea: false },
-          title: { display: true, text: "BW B/s" },
+        x: { title: { display: true, text: "Create → guest boot (seconds)" } },
+        y: {
+          beginAtZero: true,
+          ticks: { stepSize: 1, precision: 0 },
+          title: { display: true, text: "VM count" },
         },
       },
     },

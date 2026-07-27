@@ -93,9 +93,9 @@ write_files:
       FIO_FILENAME="${FIO_DIRECTORY}/fio-job.dat"
       JOB_COUNTER_FILE="${FIO_DIRECTORY}/job.counter"
 
-      # Timestamp log: create on first start, append on later service starts / reboots
-      _ts_unix=$(date +%s)
-      _ts_human=$(date '+%Y-%m-%d %H:%M:%S')
+      # Timestamp log: create on first start, append on later service starts / reboots (UTC)
+      _ts_unix=$(date -u +%s)
+      _ts_human=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
       BOOT_TIMESTAMP_FILE="${RESULT_TIMESTAMP_FILE:-/root/timestamp.txt}"
       if ! mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")" 2>/dev/null; then
           BOOT_TIMESTAMP_FILE="${FIO_DIRECTORY}/timestamp.txt"
@@ -170,7 +170,7 @@ write_files:
           local cpu_count mem_total_kb reported_at_unix cmd_json
           cpu_count=$(nproc 2>/dev/null || echo 0)
           mem_total_kb=$(awk '/MemTotal:/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-          reported_at_unix=$(date +%s)
+          reported_at_unix=$(date -u +%s)
           cmd_json=$(printf '%s\n' "${cmd_argv[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin]))')
 
           RESULT_CMD_JSON="$cmd_json" RESULT_STATUS="$status" RESULT_ERROR_MESSAGE="$error_message" \
@@ -565,7 +565,7 @@ write_files:
           fio_rc=0
           job_name="job${cycle}"
           fio_json="${FIO_DIRECTORY}/results/${job_name}.json"
-          started_at=$(date +%s)
+          started_at=$(date -u +%s)
           if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
               if [[ "$FIO_TIME_BASED" == "1" ]]; then
                   echo "Cycle $cycle ($job_name): CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
@@ -577,7 +577,7 @@ write_files:
                   fio $FIO_CUSTOM_OPTS --name="$job_name" --output-format=json --output="$fio_json" || fio_rc=$?
               fi
               # shellcheck disable=SC2086
-              report_cycle "$cycle" "$fio_rc" "$started_at" "$(date +%s)" "$fio_json" fio $FIO_CUSTOM_OPTS --name="$job_name"
+              report_cycle "$cycle" "$fio_rc" "$started_at" "$(date -u +%s)" "$fio_json" fio $FIO_CUSTOM_OPTS --name="$job_name"
           else
               if [[ "$FIO_TIME_BASED" == "1" ]]; then
                   echo "Cycle $cycle ($job_name): ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
@@ -605,7 +605,7 @@ write_files:
                   fio_args+=(--rwmixread="$FIO_RWMIXREAD")
               fi
               fio "${fio_args[@]}" || fio_rc=$?
-              stopped_at=$(date +%s)
+              stopped_at=$(date -u +%s)
               report_cycle "$cycle" "$fio_rc" "$started_at" "$stopped_at" "$fio_json" fio "${fio_args[@]}"
           fi
           if [[ $fio_rc -ne 0 ]]; then

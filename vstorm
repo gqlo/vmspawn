@@ -456,14 +456,14 @@ _log_message() {
 	local line
 	while IFS= read -r line ; do
 	    if ((wet_run)) ; then
-		printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$line"
+		TZ=UTC printf "%(%Y-%m-%dT%H:%M:%S)TZ %s\n" -1 "$line"
 	    else
 		echo "$line"
 	    fi
 	done
     else
 	if ((wet_run)) ; then
-	    printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$*"
+	    TZ=UTC printf "%(%Y-%m-%dT%H:%M:%S)TZ %s\n" -1 "$*"
 	else
 	    echo "$*"
 	fi
@@ -479,8 +479,8 @@ log_message() {
 }
 
 setup_logging() {
-    STARTED_AT=$(date +%s)
-    LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
+    STARTED_AT=$(date -u +%s)
+    LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date -u +%Y-%m-%dT%H:%M:%SZ).log"
     if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
 	    mkdir -p "$LOG_DIR"
@@ -1146,7 +1146,7 @@ post_batch_result_metadata() {
     fi
 
     local stopped_at reported_at
-    stopped_at=$(date +%s)
+    stopped_at=$(date -u +%s)
     reported_at=$stopped_at
     local started_at="${STARTED_AT:-$stopped_at}"
 
@@ -1953,7 +1953,7 @@ main() {
 	done
 	cat > "$manifest_file" <<-MANIFEST
 	batch-id: $BATCH_ID
-	created: $(date +%Y-%m-%dT%H:%M:%S)
+	created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 	basename: $VM_BASENAME
 	total-vms: $NUM_VMS
 	total-namespaces: $NUM_NAMESPACES

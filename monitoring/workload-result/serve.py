@@ -302,6 +302,8 @@ class Store:
             self._conn.execute("ALTER TABLE vm_policies ADD COLUMN agent_state TEXT")
         if "last_status_at" not in pol_cols:
             self._conn.execute("ALTER TABLE vm_policies ADD COLUMN last_status_at INTEGER")
+        if "vmi_phase" not in pol_cols:
+            self._conn.execute("ALTER TABLE vm_policies ADD COLUMN vmi_phase TEXT")
         self._conn.commit()
 
     def close(self) -> None:
@@ -416,9 +418,7 @@ class Store:
                     started_at,
                     stopped_at,
                     reported_at,
-                    int(payload["boot_timestamp_unix"])
-                    if payload.get("boot_timestamp_unix") is not None
-                    else None,
+                    boot_ts,
                     int(payload["cpu_count"]) if payload.get("cpu_count") is not None else None,
                     int(payload["mem_total_kb"])
                     if payload.get("mem_total_kb") is not None
@@ -501,8 +501,12 @@ class Store:
         elif _is_heartbeat(record_type):
             vm_for_policy = str(payload.get("vm_name") or payload.get("hostname") or "")
             agent_state = str(payload.get("agent_state") or payload.get("status") or "idle")
+            vmi_phase = payload.get("vmi_phase")
+            vmi_phase_s = str(vmi_phase).strip() if vmi_phase is not None else None
             if vm_for_policy:
-                self._touch_agent_status(batch_id, vm_for_policy, agent_state)
+                self._touch_agent_status(
+                    batch_id, vm_for_policy, agent_state, vmi_phase=vmi_phase_s
+                )
 
         return {"result_id": result_id, "batch_id": batch_id, "file_path": rel_path}
 
@@ -519,6 +523,7 @@ class Store:
                 "agent_state": None,
                 "last_poll_at": None,
                 "last_status_at": None,
+                "vmi_phase": None,
             }
         mode = str(row["mode"] or "idle")
         remaining = int(row["remaining"] or 0)
@@ -535,6 +540,7 @@ class Store:
             "agent_state": row["agent_state"] if "agent_state" in keys else None,
             "last_poll_at": row["last_poll_at"] if "last_poll_at" in keys else None,
             "last_status_at": row["last_status_at"] if "last_status_at" in keys else None,
+            "vmi_phase": row["vmi_phase"] if "vmi_phase" in keys else None,
         }
 
     def get_policy(
@@ -601,7 +607,14 @@ class Store:
                 ).fetchone()
             return self._policy_row_to_dict(row, batch_id, vm_name)
 
-    def _touch_agent_status(self, batch_id: str, vm_name: str, agent_state: str) -> None:
+    def _touch_agent_status(
+        self,
+        batch_id: str,
+        vm_name: str,
+        agent_state: str,
+        *,
+        vmi_phase: str | None = None,
+    ) -> None:
         now = int(time.time())
         with self._lock:
             row = self._conn.execute(
@@ -613,10 +626,19 @@ class Store:
                     """
                     INSERT INTO vm_policies (
                         batch_id, vm_name, mode, remaining, revision, updated_at,
-                        agent_state, last_status_at, last_poll_at
-                    ) VALUES (?, ?, 'idle', 0, 1, ?, ?, ?, ?)
+                        agent_state, last_status_at, last_poll_at, vmi_phase
+                    ) VALUES (?, ?, 'idle', 0, 1, ?, ?, ?, ?, ?)
                     """,
-                    (batch_id, vm_name, now, agent_state, now, now),
+                    (batch_id, vm_name, now, agent_state, now, now, vmi_phase),
+                )
+            elif vmi_phase is not None:
+                self._conn.execute(
+                    """
+                    UPDATE vm_policies
+                    SET agent_state = ?, last_status_at = ?, last_poll_at = ?, vmi_phase = ?
+                    WHERE batch_id = ? AND vm_name = ?
+                    """,
+                    (agent_state, now, now, vmi_phase, batch_id, vm_name),
                 )
             else:
                 self._conn.execute(
@@ -1085,6 +1107,7 @@ class Store:
                 cur["policy_remaining"] = p["remaining"]
                 cur["agent_state"] = p.get("agent_state")
                 cur["last_poll_at"] = p.get("last_poll_at")
+                cur["vmi_phase"] = p.get("vmi_phase")
                 last = p.get("last_poll_at") or p.get("last_status_at")
                 if p.get("agent_state") == "running":
                     cur["ui_status"] = "running"
@@ -1101,6 +1124,7 @@ class Store:
                 cur["policy_remaining"] = None
                 cur["agent_state"] = None
                 cur["last_poll_at"] = None
+                cur["vmi_phase"] = None
                 cur["ui_status"] = "waiting"
 
         return sorted(named.values(), key=lambda x: x["vm_name"])
@@ -1115,13 +1139,23 @@ class Store:
             "waiting": 0,
             "error": 0,
             "stale": 0,
+            "vmi_running": None,
         }
+        vmi_known = 0
+        vmi_running = 0
         for v in vms:
             st = v.get("ui_status") or "waiting"
             if st in counts:
                 counts[st] += 1
             if st != "waiting":
                 counts["checked_in"] += 1
+            phase = v.get("vmi_phase")
+            if phase:
+                vmi_known += 1
+                if str(phase).strip().lower() == "running":
+                    vmi_running += 1
+        if vmi_known:
+            counts["vmi_running"] = vmi_running
         return counts
 
     def get_vm(self, batch_id: str, vm_name: str) -> dict[str, Any] | None:

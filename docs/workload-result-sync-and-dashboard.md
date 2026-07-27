@@ -12,7 +12,7 @@ Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and
   - **count N** — run N cycles, then idle
   - **forever** — keep cycling until policy is set back to idle
 - After each completed guest cycle, POST structured JSON (metrics + identity) to a collector.
-- Dashboard home: **list of vstorm batches**, each with a **VM status summary** (created / contacted collector / idle / running / queued / waiting / error / stale); drill into VMs and payloads; charts; archive/notes/delete.
+- Dashboard home: **list of vstorm batches**, each with a **VM status summary** (created / contacted collector / VMI running / workload running / idle / queued / not contacted / error / stale); drill into VMs and payloads; create→boot histogram; archive/notes/delete.
 - From **vstorm on the host**, once per run, POST a **manifest** (inventory + sizing + cmdline); join guest cycles on `batch_id`.
 - Work for **fio first**, but keep the control plane workload-agnostic (`workload_kind` on results; run policy applies to the guest workload service, e.g. `fio-workload.service`).
 
@@ -51,7 +51,7 @@ Status vs this design (as of the current tree).
 | Run control (poll) | Guest polls `GET /v1/policy` before each cycle; default `WORKLOAD_RUN_MODE=idle` when URL is set. |
 | Policy API | `GET /v1/policy`, `PUT .../vms/{vm}/policy`, `POST .../batches/{id}/policy` fan-out; remaining decrements on **result** ingest. |
 | Per-VM + batch dashboard controls | VM page and run page: Run once / Run N / Forever / Idle. |
-| VM status rollups | Home + run detail: created / contacted collector / idle / running / queued / waiting / error / stale. |
+| VM status rollups | Home + run detail: created / contacted collector / VMI running / workload running / idle / queued / not contacted / error / stale. |
 | Host manifest | **vstorm** POSTs `record_type: "manifest"` / `source: "vstorm"` after create (and after `--wait`) when `RESULT_SERVER_URL` is in `--env`; includes `log_path` + truncated `log_text`, plus `cluster` (`api_server`, `oc_version`, `worker_nodes`, `master_nodes`). Same inventory idea as the on-disk `logs/batch-*.manifest`, posted to the collector. |
 | Batch id inject | **vstorm** auto-injects `VSTORM_BATCH_ID` into `{VSTORM_GUEST_ENV}` cloud-inits. |
 | Agent heartbeats | Guest POSTs `record_type: "heartbeat"` while idle / running / on poll errors. |
@@ -172,7 +172,7 @@ All payload timestamps are **UTC**, written as ISO-8601 with an explicit timezon
 
 ### Boot timestamp
 
-Unchanged: `/root/timestamp.txt` (or under `$FIO_DIRECTORY`); first line = boot; append on later service starts.
+Unchanged path: `/root/timestamp.txt` (or under `$FIO_DIRECTORY`); first line = boot; append on later service starts. Each line is `unix_utc, YYYY-MM-DDTHH:MM:SSZ` (UTC). Payload fields use the same UTC epoch via ISO-8601 `…Z`.
 
 ## Host-side manifest (vstorm)
 
@@ -301,7 +301,7 @@ Compact guest incident when something fails around reporting (not a metrics samp
 
 ### Heartbeat payload
 
-Lightweight so the dashboard can show idle / running / error without waiting for the next result:
+Lightweight so the dashboard can show idle / workload running / error without waiting for the next result:
 
 ```json
 {
@@ -313,12 +313,14 @@ Lightweight so the dashboard can show idle / running / error without waiting for
   "vm_name": "vm-8a494b-1",
   "hostname": "vm-8a494b-1",
   "agent_state": "idle",
+  "vmi_phase": "Running",
   "policy_mode": "idle",
   "reported_at": "2026-07-22T05:53:20Z"
 }
 ```
 
-`agent_state`: `idle` \| `running` \| `error` (guest may also use other labels).  
+`agent_state`: `idle` \| `running` \| `error` (guest may also use other labels) — drives **workload running** in the summary.  
+Optional `vmi_phase` (KubeVirt VMI phase, e.g. `Running`) — drives **VMI running**; omit when unknown (summary shows `—` until any phase is reported). Guests typically omit this; a host/cluster sync can POST heartbeats with `source: "vstorm"` and `vmi_phase` set.  
 `policy_mode` in the current guest script is the boot env `WORKLOAD_RUN_MODE` (not the last polled collector policy). Authoritative mode/remaining live in the collector `vm_policies` row and on `GET …/policy`.
 
 ## Collector and API
@@ -362,7 +364,7 @@ Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, dril
   Run detail
       |-- VM status chips + manifest / metadata
       |-- batch-wide controls: Idle | Run once | Run N | Forever
-      |-- charts
+      |-- boot-time histogram (create → guest boot)
       |-- VM table (per-VM status + policy)
       |
       | click VM
@@ -383,8 +385,8 @@ The home page is a **list of batches created by vstorm** — one row per `batch_
 |---------|---------|
 | Batches | Count of listed batches |
 | VMs created | Sum of `configured` / `total_vms` |
-| Contacted collector | Guests that have polled or POSTed (not `waiting`) |
-| Running / idle / waiting / error | From per-batch `vm_summary` (chips also show queued / stale when present) |
+| Contacted collector | Guests that have polled or POSTed (not `waiting` / “not contacted”) |
+| Running / idle / not contacted / error | From per-batch `vm_summary` (API key for not-contacted remains `waiting`; chips also show VMI running / queued / stale when present) |
 
 **Table columns (as implemented):**
 
@@ -393,35 +395,36 @@ The home page is a **list of batches created by vstorm** — one row per `batch_
 | Batch | `batch_id` (+ archived badge); click → run detail |
 | Basename | vstorm metadata |
 | Started / Stopped | vstorm `started_at` / `stopped_at` |
-| VM status | Chips from `vm_summary` (created · contacted · running / queued / idle / waiting / …) |
+| Workload status | `N running · N idle` (workload mid-fio vs not) |
 | Cycles | Cycle POST count |
 | Errors | Error cycle/event count |
 | IOPS avg / BW avg | Aggregate from cycles |
 | Workload | Fingerprint or cloud-init path |
 
-**Filters:** date (all / today UTC / specific day), batch id, namespace, API server, text search, active / archived / all. Short poll refresh while the page is open.
+**Filters:** date (all / today UTC / specific day), batch id, namespace, API server, text search, active / archived / all. Optional **Auto** refresh (off by default); use **Refresh** for a one-shot update.
 
 ### 2. Run detail
 
 Everything for one vstorm batch on one page.
 
-**Summary (top):** batch id, basename, fingerprint/cloud-init, VM status chips, started/stopped, created VMs, cycle/error counts, cores/memory, IOPS/BW percentiles.
+**Summary (top):** batch id, basename, fingerprint/cloud-init, workload running/idle, **boot time avg / min / max** (create → guest boot) with **Download boot times CSV**, started/stopped, created VMs, cycle/error counts, cores/memory.
 
 **VM rollup meanings** (same definitions as the VM table `ui_status`):
 
 | Metric | Meaning |
 |--------|---------|
 | Created | From vstorm batch `total_vms` / `vms[]` |
-| Contacted collector | Not `waiting` |
-| Idle | Policy idle (or remaining 0), not running |
-| Running | Agent reports `running` |
+| Contacted collector | Not `waiting` (UI: not contacted) |
+| VMI running | Guests (or host sync) reporting `vmi_phase: "Running"`; `—` until any phase is known |
+| Workload running | Agent reports `agent_state: "running"` (mid-fio cycle) |
+| Idle | Policy idle (or remaining 0), not workload-running |
 | Queued | Policy `once`/`count`/`forever` but not currently in a cycle |
-| Waiting | Listed in the manifest VM list (or seen empty), never contacted collector |
+| Not contacted | Listed in the manifest VM list (or seen empty), never contacted collector (`ui_status` / summary key: `waiting`) |
 | Error / stale | Last status error, or no poll within ~120s |
 
-Example chips: `10 created · 8 contacted · 2 running · 4 idle · 2 waiting`.
+Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 idle · 2 not contacted`.
 
-**Batch-wide controls:** Idle | Run once | Run N… | Forever. Warn mentally if many VMs are still **waiting** (not checking in) — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
+**Batch-wide controls:** Idle | Run once | Run N… | Forever. Warn mentally if many VMs are still **not contacted** — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
 
 **vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, guest_env, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
 
@@ -430,15 +433,14 @@ Example chips: `10 created · 8 contacted · 2 running · 4 idle · 2 waiting`.
 | Column | Meaning |
 |--------|---------|
 | VM | Link to VM detail |
-| Status | `ui_status`: idle / running / queued / waiting / error / stale |
+| Workload status | `running` (mid-fio) or `idle` (everything else) |
 | Policy | mode + remaining |
 | Namespace | From batch `namespace/vm` list when known |
 | Cycles | Count received |
 | Last stopped | Last cycle end time |
-| Latest IOPS / BW | From newest cycle |
 | Boot | Boot timestamp when known |
 
-**Charts:** IOPS / BW / latency across cycles.
+**Charts:** histogram of **create → guest boot** duration (batch `started_at` to per-VM `boot_timestamp`), with min / avg / max.
 
 ### 3. VM detail
 
@@ -470,7 +472,7 @@ Example chips: `10 created · 8 contacted · 2 running · 4 idle · 2 waiting`.
 ### Browse UX rules
 
 - Home = **vstorm batches first**, not a flat dump of cycle files.
-- VM status chips on run detail must match the VM table (same `ui_status` definitions).
+- VM status chips on run detail and the VMs table Workload status column show only `running` or `idle`.
 - Every stored result is one click from its **full JSON**.
 - Deep links: `/#/runs/{batch_id}`, `/#/runs/{batch_id}/vms/{vm}`, payload routes.
 - Prefer skim-friendly tables; large JSON behind “View payload”.
