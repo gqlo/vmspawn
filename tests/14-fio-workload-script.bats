@@ -6,9 +6,8 @@ load 'helpers'
 
 YAML="workload/cloudinit-fio-workload.yaml"
 
-# The embedded script installs fio when missing, then prints startup.
-# CI/minimal runners often have no fio and no working package install;
-# prepend a mock fio that records "$@" so runtime tests can assert flags.
+# Clear and return path to recorded mock fio args (one arg per line).
+# Mock fio also writes minimal JSON when --output= is present (result sync).
 setup_file() {
     _WL_MOCK_FIO_BIN=$(mktemp -d)
     _WL_FIO_ARGS_FILE=$(mktemp)
@@ -16,6 +15,20 @@ setup_file() {
     cat > "$_WL_MOCK_FIO_BIN/fio" << MOCKEOF
 #!/bin/bash
 printf '%s\n' "\$@" > "$_WL_FIO_ARGS_FILE"
+out=""
+args=("\$@")
+for ((i=0; i<\${#args[@]}; i++)); do
+    case "\${args[i]}" in
+        --output=*) out="\${args[i]#--output=}" ;;
+        --output)
+            if (( i + 1 < \${#args[@]} )); then out="\${args[i+1]}"; fi
+            ;;
+    esac
+done
+if [[ -n "\$out" ]]; then
+    mkdir -p "\$(dirname "\$out")"
+    printf '%s\n' '{"jobs":[{"jobname":"mock","read":{"iops":1,"bw_bytes":1,"lat_ns":{"mean":1}},"write":{"iops":1,"bw_bytes":1,"lat_ns":{"mean":1}}}]}' > "\$out"
+fi
 exit 0
 MOCKEOF
     chmod +x "$_WL_MOCK_FIO_BIN/fio"
@@ -23,6 +36,7 @@ MOCKEOF
 
     _WL_FIO_DIR=$(mktemp -d)
     export FIO_DIRECTORY="$_WL_FIO_DIR"
+    export RESULT_TIMESTAMP_FILE="$_WL_FIO_DIR/timestamp.txt"
 }
 
 teardown_file() {
@@ -263,4 +277,34 @@ _fio_args() {
     [[ "$args" == *"--rw=randwrite"* ]]
     [[ "$args" == *"--size=16M"* ]]
     [[ "$args" != *"--time_based"* ]]
+}
+
+@test "FIO: persistent jobN naming and counter file" {
+    local script_path args counter
+    script_path=$(_extract_fio_script)
+    unset FIO_CUSTOM_OPTS FIO_TIME_BASED RESULT_SERVER_URL
+    export WORKLOAD_TYPE=randrw FIO_SIZE=16M
+    echo 5 > "$FIO_DIRECTORY/job.counter"
+    _fio_args_reset
+    run timeout 3 bash "$script_path" 2>/dev/null || true
+    rm -f "$script_path"
+    [[ "$output" == *"job5"* ]]
+    [[ "$output" == *"Next job name: job5"* ]]
+    args=$(_fio_args)
+    [[ "$args" == *"--name=job5"* ]]
+    counter=$(tr -d '[:space:]' < "$FIO_DIRECTORY/job.counter")
+    # After at least one cycle, counter advanced past 5
+    [[ "$counter" -gt 5 ]]
+}
+
+@test "FIO: timestamp file appends on second start" {
+    local script_path lines
+    script_path=$(_extract_fio_script)
+    unset FIO_CUSTOM_OPTS RESULT_SERVER_URL
+    export FIO_SIZE=16M
+    run timeout 2 bash "$script_path" 2>/dev/null || true
+    run timeout 2 bash "$script_path" 2>/dev/null || true
+    rm -f "$script_path"
+    lines=$(wc -l < "$RESULT_TIMESTAMP_FILE")
+    [[ "$lines" -ge 2 ]]
 }

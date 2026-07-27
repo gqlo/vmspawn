@@ -4,6 +4,7 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 
 ## Contents
 
+- [Workload result collector + dashboard](#workload-result-collector--dashboard)
 - [Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)](#persist-your-json-dashboard-in-dittybopper-provisioning-to-dittybopper)
 - [Run Prometheus queries](#prom-query)
 - [VM dirty rate (libvirt vs KubeVirt)](#vm-dirty-rate-libvirt-vs-kubevirt)
@@ -11,6 +12,16 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 - [Compute Euclidean distance](#compute_euclidean_distancepy)
 - [Troubleshooting](#troubleshooting)
 - [Appendix](#appendix)
+
+## Workload result collector + dashboard
+
+Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom). Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md).
+
+```bash
+python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
+# Dashboard: http://<host>:8080/
+# Ingest:    POST http://<host>:8080/v1/results
+```
 
 ## Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)
 

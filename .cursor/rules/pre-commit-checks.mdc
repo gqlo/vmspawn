@@ -9,9 +9,10 @@ Before creating any `git commit`, always run the following checks and fix any fa
 
 ## Required Checks
 
-1. **Tests**: Run `bats tests/` and verify all tests pass
-2. **YAML lint**: Run `yamllint` on any changed plain YAML files (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`; not `templates/`)
-3. **Markdown lint**: Run `markdownlint-cli2` on any changed `.md` files
+1. **Bats tests**: Run `bats tests/` when `vstorm` / templates / helpers / workload / bats tests change
+2. **Python unit tests**: Run `python3 -m unittest discover -s monitoring/tests -v` when `monitoring/workload-result/`, `monitoring/tests/`, or `monitoring/scripts/` change
+3. **YAML lint**: Run `yamllint` on any changed plain YAML files (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`; not `templates/`)
+4. **Markdown lint**: Run `markdownlint-cli2` on any changed `.md` files
 
 ## Rules
 
@@ -23,8 +24,11 @@ Before creating any `git commit`, always run the following checks and fix any fa
 ## Check Commands
 
 ```bash
-# Run all tests
+# Bats
 bats tests/
+
+# Monitoring / workload-result Python tests
+python3 -m unittest discover -s monitoring/tests -v
 
 # Lint YAML (same globs as CI)
 yamllint helpers/*.yaml workload/*.yaml monitoring/yaml/*.yaml \

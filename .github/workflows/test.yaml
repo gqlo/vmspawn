@@ -19,6 +19,20 @@ jobs:
       - name: Run tests
         run: bats tests/
 
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run monitoring unit tests
+        run: python3 -m unittest discover -s monitoring/tests -v
+
   lint-yaml:
     runs-on: ubuntu-latest
     steps:

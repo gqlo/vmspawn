@@ -17,7 +17,8 @@
 - [Options](#options)
 - [How it works](#how-it-works)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cloud-init and fio workload](docs/cloud-init-fio-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
+- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cloud-init and fio workload](docs/cloud-init-fio-workload.md) | [workload result sync and dashboard](docs/workload-result-sync-and-dashboard.md)
+- **More docs:** [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
 - **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl)
 
 ---
@@ -270,15 +271,16 @@ VMs are distributed evenly across namespaces, with any remainder allocated to th
 
 ### CI workflow
 
-GitHub Actions runs three independent jobs on every push and pull request to `main` (defined in `.github/workflows/test.yaml`):
+GitHub Actions runs four independent jobs on every push and pull request to `main` (defined in `.github/workflows/test.yaml`):
 
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs all unit tests (`bats tests/`) |
+| `test-python` | `unittest` | Monitoring / workload-result Python tests (`monitoring/tests/`) |
 | `lint-yaml` | `yamllint` | Lints plain YAML (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`) |
 | `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
 
-All three jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook.
+All four jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook (Python tests when monitoring paths are staged).
 
 ### Pre-commit hook
 
@@ -293,6 +295,7 @@ The hook runs only the checks relevant to the files you are committing:
 | Staged files | Check |
 |---|---|
 | `vstorm`, `templates/*`, `helpers/*`, `workload/*`, `tests/*.bats` | `bats tests/` |
+| `monitoring/workload-result/*`, `monitoring/tests/*`, `monitoring/scripts/*` | `python3 -m unittest discover -s monitoring/tests -v` |
 | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` | `yamllint` on changed files |
 | any staged `*.md` / `*.MD` (e.g. `docs/...`, `monitoring/...`) | `markdownlint-cli2` on changed files |
 

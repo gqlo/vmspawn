@@ -53,6 +53,12 @@ VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
 GUEST_ENV_ARR=()
+# Original argv (for manifest cmdline); set before getopts mutates "$@"
+VSTORM_ARGV=("$@")
+# Epoch when logging/setup starts; filled in setup_logging
+STARTED_AT=
+# Ordered VM list for this batch (survives wait_for_all_vms unsetting expected_vms)
+BATCH_VMS_ORDERED=()
 # Generate a random 6-character hex batch ID (16.7M unique values)
 if [[ -z "$(type -t xxd)" ]] ; then
     echo "Error: xxd command is not installed (needed to generate batch IDs)"
@@ -473,6 +479,7 @@ log_message() {
 }
 
 setup_logging() {
+    STARTED_AT=$(date +%s)
     LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
     if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
@@ -1118,6 +1125,150 @@ create_volumesnapshots() {
 }
 
 ################################################################
+# Workload-result collector: POST run manifest (optional)
+# Finds RESULT_SERVER_URL in GUEST_ENV_ARR; no-ops if unset.
+post_batch_result_metadata() {
+    local url="" token="" e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL=*) url="${e#RESULT_SERVER_URL=}" ;;
+	    RESULT_SERVER_TOKEN=*) token="${e#RESULT_SERVER_TOKEN=}" ;;
+	esac
+    done
+    [[ -n "$url" ]] || return 0
+    if ! command -v curl &>/dev/null; then
+	log_message "${C_WARN}RESULT_SERVER_URL set but curl missing; skip manifest POST${C_RST}"
+	return 0
+    fi
+    if ! command -v python3 &>/dev/null; then
+	log_message "${C_WARN}RESULT_SERVER_URL set but python3 missing; skip manifest POST${C_RST}"
+	return 0
+    fi
+
+    local stopped_at reported_at
+    stopped_at=$(date +%s)
+    reported_at=$stopped_at
+    local started_at="${STARTED_AT:-$stopped_at}"
+
+    local ns_json vm_json guest_env_json cmdline_json log_text=""
+    BID="$BATCH_ID" NNS="$NUM_NAMESPACES" ns_json=$(python3 - <<'PY'
+import json, os
+bid = os.environ["BID"]
+n = int(os.environ["NNS"])
+print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1, n + 1)]))
+PY
+)
+
+    if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
+	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')
+    else
+	vm_json='[]'
+    fi
+
+    if ((${#GUEST_ENV_ARR[@]} > 0)); then
+	guest_env_json=$(printf '%s\n' "${GUEST_ENV_ARR[@]}" | python3 -c '
+import json, sys
+env = {}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line or "=" not in line:
+        continue
+    k, _, v = line.partition("=")
+    if k == "RESULT_SERVER_TOKEN":
+        v = "***"
+    env[k] = v
+print(json.dumps(env))
+')
+    else
+	guest_env_json='{}'
+    fi
+
+    if ((${#VSTORM_ARGV[@]} > 0)); then
+	cmdline_json=$(printf '%s\n' "vstorm" "${VSTORM_ARGV[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin]))')
+    else
+	cmdline_json='["vstorm"]'
+    fi
+
+    if [[ -n "${LOG_FILE:-}" && -f "$LOG_FILE" ]]; then
+	log_text=$(python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(encoding="utf-8", errors="replace"); print(t[:65536])' "$LOG_FILE" 2>/dev/null || true)
+    fi
+
+    local payload
+    payload=$(
+	BATCH_ID="$BATCH_ID" \
+	BASENAME="$VM_BASENAME" \
+	TOTAL_VMS="$NUM_VMS" \
+	TOTAL_NS="$NUM_NAMESPACES" \
+	CORES="$VM_CPU_CORES" \
+	MEMORY="$VM_MEMORY" \
+	CLOUDINIT="${CLOUDINIT_FILE:-}" \
+	STORAGE_CLASS="$STORAGE_CLASS" \
+	VOLUME_MODE="$VOLUME_MODE" \
+	LOG_PATH="${LOG_FILE:-}" \
+	STARTED_AT="$started_at" \
+	STOPPED_AT="$stopped_at" \
+	REPORTED_AT="$reported_at" \
+	NS_JSON="$ns_json" \
+	VM_JSON="$vm_json" \
+	GUEST_ENV_JSON="$guest_env_json" \
+	CMDLINE_JSON="$cmdline_json" \
+	LOG_TEXT="$log_text" \
+	python3 - <<'PY'
+import json, os
+from datetime import datetime, timezone
+
+def fmt_utc(unix):
+    return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+payload = {
+    "schema_version": 1,
+    "record_type": "manifest",
+    "source": "vstorm",
+    "reported_at": fmt_utc(os.environ["REPORTED_AT"]),
+    "started_at": fmt_utc(os.environ["STARTED_AT"]),
+    "stopped_at": fmt_utc(os.environ["STOPPED_AT"]),
+    "batch_id": os.environ["BATCH_ID"],
+    "basename": os.environ["BASENAME"],
+    "total_vms": int(os.environ["TOTAL_VMS"]),
+    "total_namespaces": int(os.environ["TOTAL_NS"]),
+    "namespaces": json.loads(os.environ["NS_JSON"]),
+    "vms": json.loads(os.environ["VM_JSON"]),
+    "cores": int(os.environ["CORES"]) if str(os.environ.get("CORES", "")).isdigit() else os.environ.get("CORES"),
+    "memory": os.environ["MEMORY"],
+    "cloudinit": os.environ.get("CLOUDINIT") or None,
+    "guest_env": json.loads(os.environ["GUEST_ENV_JSON"]),
+    "storage_class": os.environ["STORAGE_CLASS"],
+    "volume_mode": os.environ["VOLUME_MODE"],
+    "cmdline": json.loads(os.environ["CMDLINE_JSON"]),
+    "log_path": os.environ.get("LOG_PATH") or None,
+}
+log_text = os.environ.get("LOG_TEXT") or ""
+if log_text:
+    payload["log_text"] = log_text
+print(json.dumps(payload))
+PY
+    ) || {
+	log_message "${C_WARN}Failed to build manifest JSON; skip POST to $url${C_RST}"
+	return 0
+    }
+
+    local payload_file
+    payload_file=$(mktemp)
+    printf '%s\n' "$payload" > "$payload_file"
+    local curl_args=(-sS -f -X POST -H "Content-Type: application/json" --data-binary @"$payload_file"
+	--connect-timeout 15 --max-time 60)
+    if [[ -n "$token" ]]; then
+	curl_args+=(-H "Authorization: Bearer ${token}")
+    fi
+    if curl "${curl_args[@]}" "$url"; then
+	log_message "Posted manifest to ${C_VAL}$url${C_RST}"
+    else
+	log_message "${C_WARN}Failed to POST manifest to $url (create still succeeded)${C_RST}"
+    fi
+    rm -f "$payload_file"
+}
+
+################################################################
 # VMs
 wait_for_all_vms() {
     log_message "${C_BOLD}Waiting for all VMs to be ready${C_RST}"
@@ -1206,10 +1357,26 @@ firmware:
 	_guest_env_branch=false
 	if [[ "$cloudinit_content" == *"{VSTORM_GUEST_ENV}"* ]]; then
 	    _guest_env_branch=true
+	    # Count user --env before auto-inject so we can keep the “no --env” marker.
+	    _user_env_count=${#GUEST_ENV_ARR[@]}
+	    # Always inject batch id for result sync / policy poll (no-op if already set).
+	    _has_vstorm_batch=0
+	    for _ge in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+		if [[ "$_ge" == VSTORM_BATCH_ID=* ]]; then
+		    _has_vstorm_batch=1
+		    break
+		fi
+	    done
+	    if ((_has_vstorm_batch == 0)); then
+		GUEST_ENV_ARR+=("VSTORM_BATCH_ID=${BATCH_ID}")
+	    fi
 	    # Replace entire line containing placeholder so indentation is uniform (6 spaces per line).
 	    # Use bash while-read to avoid awk multi-line replacement duplicating or corrupting lines.
 	    if [[ "${#GUEST_ENV_ARR[@]}" -gt 0 ]]; then
 		GUEST_ENV_LINES=$(printf '%s\n' "${GUEST_ENV_ARR[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^/      /')
+		if ((_user_env_count == 0)); then
+		    GUEST_ENV_LINES="      # no --env passed"$'\n'"$GUEST_ENV_LINES"
+		fi
 	    else
 		GUEST_ENV_LINES="      # no --env passed"
 	    fi
@@ -1291,6 +1458,7 @@ firmware:
 		    fatal "Cannot create vm $vm_name!"
 	    fi
 	    expected_vms["$vm_name"]=1
+	    BATCH_VMS_ORDERED+=("$vm_name")
             VM_ID=$((VM_ID + 1))
         done
     done
@@ -1743,7 +1911,7 @@ main() {
 	    local ns_name="vm-${BATCH_ID}-ns-${ns}"
 	    ns_list="${ns_list:+${ns_list}, }${ns_name}"
 	done
-	for key in "${!expected_vms[@]}" ; do
+	for key in "${BATCH_VMS_ORDERED[@]+"${BATCH_VMS_ORDERED[@]}"}" ; do
 	    vm_list="${vm_list:+${vm_list}, }${key}"
 	done
 	cat > "$manifest_file" <<-MANIFEST
@@ -1756,6 +1924,8 @@ main() {
 	vms: $vm_list
 	MANIFEST
 	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
+
+	post_batch_result_metadata
 
 	cat <<-EOF
 

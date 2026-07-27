@@ -31,7 +31,9 @@ Ensure the guest root disk is large enough for `FIO_SIZE` (default `1G`) plus th
 vstorm --cloudinit=workload/cloudinit-fio-workload.yaml --vms=10 --namespaces=2
 ```
 
-Cloud-init will install `fio`, write the workload script to `/opt/fio_workload.sh`, and enable `fio-workload.service` so the workload runs forever (and survives reboots). I/O targets a file under `/var/lib/fio` on the guest root filesystem (exercises the VM PVC/DV backing store).
+Cloud-init will install `fio`, write the workload script to `/opt/fio_workload.sh`, and enable `fio-workload.service` (survives reboots). I/O targets a file under `/var/lib/fio` on the guest root filesystem (exercises the VM PVC/DV backing store).
+
+Without `RESULT_SERVER_URL`, the service runs fio in a **forever** loop (legacy soak). With `RESULT_SERVER_URL` set, the default is **idle** until the dashboard (or `WORKLOAD_RUN_MODE`) sets a run policy — see [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
 
 ## Workload presets: `WORKLOAD_TYPE`
 
@@ -69,6 +71,14 @@ Override with `--env KEY=VAL` (repeat as needed):
 | `FIO_RW` | Override `--rw` independently of `WORKLOAD_TYPE` |
 | `FIO_RWMIXREAD` | Read percentage for `randrw`/`rw` (default `50`) |
 | `FIO_CUSTOM_OPTS` | When set, each cycle runs `fio $FIO_CUSTOM_OPTS` (plus time args only if `FIO_TIME_BASED=1`) |
+| `RESULT_SERVER_URL` | Collector results URL (e.g. `http://host:8080/v1/results`). Enables POST after each cycle + policy poll between cycles |
+| `RESULT_SERVER_TOKEN` | Optional bearer token for collector auth |
+| `RESULT_RETRY` / `RESULT_TIMEOUT` | POST retry count / curl timeouts (see script defaults) |
+| `VSTORM_BATCH_ID` | Batch id for policy + result join (auto-injected by vstorm when creating VMs) |
+| `VSTORM_VM_NAME` | Optional; defaults to guest hostname |
+| `WORKLOAD_RUN_MODE` | Initial policy when the collector has none yet: `idle` (default when URL set), `once`, `count`, `forever` |
+| `WORKLOAD_RUN_COUNT` | Initial N when mode is `count` |
+| `WORKLOAD_POLL_SECONDS` | Idle/policy poll interval (default `5`) |
 
 ```bash
 # Custom block size and depth
@@ -84,6 +94,12 @@ vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
 vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --env 'FIO_CUSTOM_OPTS=--name=custom --filename=/var/lib/fio/custom.dat --rw=randread --bs=4k --iodepth=16 --size=512M --direct=1 --ioengine=libaio' \
   --vms=5
+
+# Dashboard-controlled runs (start idle; set once/N/forever in the UI)
+vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
+  --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
+  --env WORKLOAD_RUN_MODE=idle \
+  --cores=4 --memory=8Gi --vms=10 --wait
 ```
 
 ## Monitoring
@@ -151,8 +167,13 @@ For contributors and users who want to understand or extend the workload.
 Each cycle runs fio against a file under `FIO_DIRECTORY` (default `/var/lib/fio`). By default (`FIO_TIME_BASED=0`) there is no `--time_based`/`--runtime`; each cycle runs until `--size` completes, then the outer loop restarts fio. Set `FIO_TIME_BASED=1` to add `--time_based --runtime=${FIO_RUNTIME}` (default `60`s).
 **Deployment**: Via `--cloudinit` (recommended), or set env with `--env KEY=VAL`; or copy and run the script standalone inside a VM (`scp` + `ssh`).
 
+### Result sync and dashboard (design)
+
+To collect fio results after each cycle, sync the host **manifest** to the collector, and **control from the dashboard** whether the guest runs idle / once / N times / forever, see [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
+
 ### References
 
 - [README.md](../README.md) — Custom cloud-init section
 - [workload/cloudinit-fio-workload.yaml](../workload/cloudinit-fio-workload.yaml) — built-in workload cloud-init
 - [cloud-init and stress-ng workload](cloud-init-stress-ng-workload.md) — sibling CPU/memory workload
+- [workload result sync and dashboard](workload-result-sync-and-dashboard.md) — result push, run policy (idle/once/N/forever), collector/dashboard
