@@ -718,38 +718,54 @@ class Store:
         return self.get_policy(batch_id, vm_name)
 
     def set_batch_policy(
-        self, batch_id: str, *, mode: str, remaining: int | None = None
+        self,
+        batch_id: str,
+        *,
+        mode: str,
+        remaining: int | None = None,
+        vm_names: list[str] | None = None,
     ) -> dict[str, Any]:
-        """Set the same policy on all VMs known for this batch (metadata + results + policies)."""
+        """Set policy on selected VMs, or all known VMs when vm_names is omitted."""
         names: set[str] = set()
-        with self._lock:
-            for r in self._conn.execute(
-                "SELECT vm_name FROM vm_policies WHERE batch_id = ?", (batch_id,)
-            ):
-                if r["vm_name"]:
-                    names.add(str(r["vm_name"]))
-            for r in self._conn.execute(
-                "SELECT DISTINCT vm_name, hostname FROM results WHERE batch_id = ?",
-                (batch_id,),
-            ):
-                if r["vm_name"]:
-                    names.add(str(r["vm_name"]))
-                elif r["hostname"]:
-                    names.add(str(r["hostname"]))
-            batch_row = self._conn.execute(
-                "SELECT batch_result_id FROM batches WHERE batch_id = ?", (batch_id,)
-            ).fetchone()
-            if batch_row and batch_row["batch_result_id"]:
-                bp = self._load_result_payload(batch_row["batch_result_id"])
-                if bp and isinstance(bp.get("vms"), list):
-                    for entry in bp["vms"]:
-                        entry_s = str(entry)
-                        _, _, name = entry_s.partition("/")
-                        names.add(name or entry_s)
+        if vm_names is not None:
+            if not isinstance(vm_names, list):
+                raise ValueError("vm_names must be a list of VM names")
+            for name in vm_names:
+                n = str(name or "").strip()
+                if n:
+                    names.add(n)
+            if not names:
+                raise ValueError("vm_names is empty")
+        else:
+            with self._lock:
+                for r in self._conn.execute(
+                    "SELECT vm_name FROM vm_policies WHERE batch_id = ?", (batch_id,)
+                ):
+                    if r["vm_name"]:
+                        names.add(str(r["vm_name"]))
+                for r in self._conn.execute(
+                    "SELECT DISTINCT vm_name, hostname FROM results WHERE batch_id = ?",
+                    (batch_id,),
+                ):
+                    if r["vm_name"]:
+                        names.add(str(r["vm_name"]))
+                    elif r["hostname"]:
+                        names.add(str(r["hostname"]))
+                batch_row = self._conn.execute(
+                    "SELECT batch_result_id FROM batches WHERE batch_id = ?", (batch_id,)
+                ).fetchone()
+                if batch_row and batch_row["batch_result_id"]:
+                    bp = self._load_result_payload(batch_row["batch_result_id"])
+                    if bp and isinstance(bp.get("vms"), list):
+                        for entry in bp["vms"]:
+                            entry_s = str(entry)
+                            _, _, name = entry_s.partition("/")
+                            names.add(name or entry_s)
         if not names:
             raise ValueError("no VMs known for this batch yet")
         items = [
-            self.set_policy(batch_id, name, mode=mode, remaining=remaining) for name in sorted(names)
+            self.set_policy(batch_id, name, mode=mode, remaining=remaining)
+            for name in sorted(names)
         ]
         return {"batch_id": batch_id, "updated": len(items), "items": items}
 
@@ -1456,7 +1472,10 @@ def make_handler(app: App):
                     if remaining is not None:
                         remaining = int(remaining)
                     result = app.store.set_batch_policy(
-                        m.group(1), mode=mode, remaining=remaining
+                        m.group(1),
+                        mode=mode,
+                        remaining=remaining,
+                        vm_names=body.get("vm_names"),
                     )
                     self._json(200, result)
                 except ValueError as exc:

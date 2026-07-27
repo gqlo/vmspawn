@@ -93,11 +93,17 @@ python3 scripts/migration-stats.py --summary --start 2026-03-19T10:00:00Z
 python3 scripts/migration-stats.py --eviction-counts --start 2026-03-19T10:00:00Z --end 2026-03-19T11:00:00Z
 ```
 
-Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling) from repo root:
+Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling, workload-result collector) from repo root:
 
 ```bash
 pip install -r monitoring/tests/requirements.txt   # PyYAML for prom-query tests
 python3 -m unittest discover -s monitoring/tests -v
+```
+
+Dashboard helper unit tests (Node built-in runner, no npm install):
+
+```bash
+node --test monitoring/tests/test_dashboard_lib.js
 ```
 
 ### `compute_euclidean_distance.py`

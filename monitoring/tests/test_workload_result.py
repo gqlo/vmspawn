@@ -417,6 +417,26 @@ class TestStorePolicy(unittest.TestCase):
             self.assertEqual(p["mode"], "count")
             self.assertEqual(p["remaining"], 1)
 
+    def test_batch_policy_subset_vm_names(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "sub",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "vms": ["ns/vm-a", "ns/vm-b"],
+                "reported_at": "2026-07-22T05:50:00Z",
+                "started_at": "2026-07-22T05:48:20Z",
+                "stopped_at": "2026-07-22T05:50:00Z",
+            }
+        )
+        out = self.store.set_batch_policy("sub", mode="forever", vm_names=["vm-a"])
+        self.assertEqual(out["updated"], 1)
+        self.assertEqual(self.store.get_policy("sub", "vm-a")["mode"], "forever")
+        self.assertEqual(self.store.get_policy("sub", "vm-b")["mode"], "idle")
+
     def test_count_requires_remaining(self) -> None:
         with self.assertRaises(ValueError):
             self.store.set_policy("p1", "vm1", mode="count")

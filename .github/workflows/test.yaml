@@ -2,9 +2,7 @@ name: Tests
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -40,6 +38,20 @@ jobs:
 
       - name: Run monitoring unit tests
         run: python3 -m unittest discover -s monitoring/tests -v
+
+  test-js:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Run dashboard lib unit tests
+        run: node --test monitoring/tests/test_dashboard_lib.js
 
   lint-yaml:
     runs-on: ubuntu-latest

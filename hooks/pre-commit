@@ -9,8 +9,9 @@
 #
 # Runs yamllint on staged plain YAML (same globs as CI lint-yaml; templates/*.yaml
 # omitted — not valid YAML for yamllint), markdownlint-cli2 on any staged *.md,
-# bats when vstorm / templates / helpers / workload / tests change, and
-# python3 unittest (monitoring/tests/) when monitoring collector/scripts/tests change.
+# bats when vstorm / templates / helpers / workload / tests change,
+# python3 unittest (monitoring/tests/) when monitoring collector/scripts/tests change,
+# and node --test for dashboard-lib.js when static UI helpers change.
 
 set -eu
 
@@ -20,6 +21,7 @@ staged=$(git diff --cached --name-only --diff-filter=d)
 errors=0
 run_tests=0
 run_py_tests=0
+run_js_tests=0
 yaml_files=()
 md_files=()
 
@@ -47,6 +49,11 @@ while IFS= read -r f; do
         monitoring/workload-result/*|monitoring/tests/*|monitoring/scripts/*)
             run_py_tests=1 ;;
     esac
+
+    case "$f" in
+        monitoring/workload-result/static/*|monitoring/tests/test_dashboard_lib.js)
+            run_js_tests=1 ;;
+    esac
 done <<< "$staged"
 
 if ((run_tests)); then
@@ -65,6 +72,16 @@ if ((run_py_tests)); then
             || { echo "pre-commit: python unittest FAILED"; errors=$((errors + 1)); }
     else
         echo "pre-commit: WARNING -- python3 not found, skipping monitoring tests"
+    fi
+fi
+
+if ((run_js_tests)); then
+    if type -p node &>/dev/null; then
+        echo "pre-commit: running dashboard JS unit tests..."
+        node --test monitoring/tests/test_dashboard_lib.js \
+            || { echo "pre-commit: node --test FAILED"; errors=$((errors + 1)); }
+    else
+        echo "pre-commit: WARNING -- node not found, skipping dashboard JS tests"
     fi
 fi
 

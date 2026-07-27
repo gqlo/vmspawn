@@ -5,6 +5,8 @@ const state = {
   timer: null,
   downloadUrl: null,
   selectedBatches: new Set(),
+  selectedVms: new Set(),
+  selectedVmsBatchId: null,
   filters: {
     q: "",
     archived: "0",
@@ -17,6 +19,22 @@ const state = {
 };
 
 const TOKEN_KEY = "workload-result-token";
+
+const {
+  escapeHtml,
+  fmtTs,
+  displayTs,
+  fmtNum,
+  fmtBw,
+  fmtWorkloadStatus,
+  fmtWorkloadColumn,
+  parseRoute,
+  statusBadge,
+  bootDurationsSeconds,
+  fmtBootTimeSummary,
+  buildBootTimesCsv,
+  histogramBins,
+} = globalThis.WorkloadDashboardLib;
 
 function getStoredToken() {
   try {
@@ -77,89 +95,6 @@ function $(sel) {
   return document.querySelector(sel);
 }
 
-function fmtTs(ts) {
-  // Always render as UTC ISO-8601 with Z (API stores unix UTC epoch seconds).
-  if (ts == null) return "—";
-  if (typeof ts === "string" && ts.trim()) {
-    const s = ts.trim();
-    const n = Number(s);
-    if (Number.isFinite(n) && String(n) === s) {
-      const d = new Date(n * 1000);
-      if (!Number.isNaN(d.getTime())) return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-    }
-    // Prefer showing the string as-is when it already has a timezone; else parse as UTC.
-    if (/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) return s.endsWith("Z") || s.endsWith("z") ? s.replace(/z$/i, "Z") : s;
-    const d = new Date(s.includes("T") ? s + "Z" : s + "T00:00:00Z");
-    if (!Number.isNaN(d.getTime())) return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-    return s;
-  }
-  const d = new Date(Number(ts) * 1000);
-  if (Number.isNaN(d.getTime())) return String(ts);
-  return d.toISOString().replace(/\.\d{3}Z$/, "Z");
-}
-
-/** Display timestamp: prefer ISO string (with timezone), else format unix seconds as UTC …Z. */
-function displayTs(...vals) {
-  for (const v of vals) {
-    if (v == null || v === "") continue;
-    if (typeof v === "string" && v.trim()) return v.trim();
-    if (typeof v === "number" && Number.isFinite(v)) return fmtTs(v);
-  }
-  return "—";
-}
-
-function fmtNum(n, digits = 1) {
-  if (n == null || Number.isNaN(Number(n))) return "—";
-  const x = Number(n);
-  if (Math.abs(x) >= 1e9) return (x / 1e9).toFixed(digits) + "G";
-  if (Math.abs(x) >= 1e6) return (x / 1e6).toFixed(digits) + "M";
-  if (Math.abs(x) >= 1e3) return (x / 1e3).toFixed(digits) + "k";
-  return x.toFixed(digits);
-}
-
-function fmtBw(bps) {
-  if (bps == null) return "—";
-  return fmtNum(bps, 1) + " B/s";
-}
-
-function fmtWorkloadStatus(uiStatus) {
-  return uiStatus === "running" ? "running" : "idle";
-}
-
-/** Batches-list Workload status column: running / idle only. */
-function fmtWorkloadColumn(s) {
-  if (!s) return "—";
-  const running = Number(s.running || 0);
-  const total = Number(s.configured ?? 0);
-  const idle = total > 0 ? Math.max(0, total - running) : Number(s.idle || 0);
-  return `${running} running · ${idle} idle`;
-}
-
-function parseRoute() {
-  const h = (location.hash || "#/runs").replace(/^#/, "");
-  const parts = h.split("/").filter(Boolean);
-  // runs
-  // runs/:batch
-  // runs/:batch/vms/:vm
-  // runs/:batch/payload/:resultId
-  // runs/:batch/vms/:vm/cycles/:cycle  -> resolve via results list
-  if (parts[0] !== "runs") return { name: "runs" };
-  if (parts.length === 1) return { name: "runs" };
-  const batchId = decodeURIComponent(parts[1]);
-  if (parts.length === 2) return { name: "run", batchId };
-  if (parts[2] === "payload" && parts[3]) {
-    return { name: "payload", batchId, resultId: decodeURIComponent(parts[3]) };
-  }
-  if (parts[2] === "vms" && parts[3]) {
-    const vm = decodeURIComponent(parts[3]);
-    if (parts[4] === "cycles" && parts[5] != null) {
-      return { name: "cycle", batchId, vm, cycle: decodeURIComponent(parts[5]) };
-    }
-    return { name: "vm", batchId, vm };
-  }
-  return { name: "run", batchId };
-}
-
 function setCrumbs(items) {
   const el = $("#crumbs");
   el.innerHTML = items
@@ -169,21 +104,6 @@ function setCrumbs(items) {
       return `${sep}<span>${escapeHtml(it.label)}</span>`;
     })
     .join("");
-}
-
-function escapeHtml(s) {
-  return String(s)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
-}
-
-function statusBadge(status, fioRc) {
-  const st = status || (fioRc != null && Number(fioRc) !== 0 ? "fio_error" : "ok");
-  if (!st || st === "ok") return '<span class="badge ok">ok</span>';
-  if (st === "post_error") return `<span class="badge warn">${escapeHtml(st)}</span>`;
-  return `<span class="badge err">${escapeHtml(st)}</span>`;
 }
 
 function destroyChart() {
@@ -534,6 +454,18 @@ async function renderRun(app, batchId) {
   const batchResultId = b.batch_result_id;
   const vs = b.vm_summary || {};
   const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at);
+  const vmList = b.vms || [];
+  if (state.selectedVmsBatchId !== batchId) {
+    state.selectedVms = new Set();
+    state.selectedVmsBatchId = batchId;
+  }
+  const knownNames = new Set(vmList.map((v) => v.vm_name));
+  for (const name of [...state.selectedVms]) {
+    if (!knownNames.has(name)) state.selectedVms.delete(name);
+  }
+  const selectedCount = state.selectedVms.size;
+  const allSelected = vmList.length > 0 && selectedCount === vmList.length;
+  const scopeLabel = selectedCount ? String(selectedCount) : "all";
 
   app.innerHTML = `
     <div class="panel">
@@ -549,10 +481,6 @@ async function renderRun(app, batchId) {
         </div>
         <div class="actions">
           ${batchResultId ? `<a class="btn" href="#/runs/${encodeURIComponent(batchId)}/payload/${encodeURIComponent(batchResultId)}">View manifest</a>` : ""}
-          <button type="button" class="btn primary" id="btn-batch-once">Run once (all)</button>
-          <button type="button" class="btn" id="btn-batch-n">Run N (all)…</button>
-          <button type="button" class="btn" id="btn-batch-forever">Forever (all)</button>
-          <button type="button" class="btn" id="btn-batch-idle">Idle (all)</button>
           <button type="button" class="btn" id="btn-archive">${b.archived ? "Unarchive" : "Archive"}</button>
           <button type="button" class="btn danger" id="btn-delete">Delete</button>
         </div>
@@ -591,25 +519,36 @@ async function renderRun(app, batchId) {
     </div>
 
     <div class="panel">
-      <h3 style="margin-top:0">VM creation → guest boot</h3>
-      <p class="muted" style="margin-top:0">
-        Seconds from batch create start (DV / VM create, UTC) to the guest boot timestamp (UTC).
-      </p>
-      <div class="chart-wrap"><canvas id="boot-chart"></canvas></div>
-      <div id="boot-chart-empty" class="empty" style="display:none">No boot timestamps yet.</div>
-      <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
-    </div>
-
-    <div class="panel">
       <h3 style="margin-top:0">VMs</h3>
       ${
-        (b.vms || []).length
-          ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
+        vmList.length
+          ? `<div class="batch-toolbar">
+        <label class="check-all-label"><input type="checkbox" id="vm-check-all" ${
+          allSelected ? "checked" : ""
+        } /> Select all</label>
+        <span class="muted mono" id="vm-selection-label">${
+          selectedCount
+            ? `${escapeHtml(String(selectedCount))} selected`
+            : "none selected · actions apply to all"
+        }</span>
+        <div class="actions" style="margin-left:auto">
+          <button type="button" class="btn primary" id="btn-batch-once">Run once (${escapeHtml(scopeLabel)})</button>
+          <button type="button" class="btn" id="btn-batch-n">Run N (${escapeHtml(scopeLabel)})…</button>
+          <button type="button" class="btn" id="btn-batch-forever">Forever (${escapeHtml(scopeLabel)})</button>
+          <button type="button" class="btn" id="btn-batch-idle">Idle (${escapeHtml(scopeLabel)})</button>
+        </div>
+      </div>
+      <div class="table-wrap"><table>
+        <thead><tr><th class="col-check"></th><th>VM</th><th>Workload status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
         <tbody>
-          ${(b.vms || [])
+          ${vmList
             .map(
               (v) => `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
+              <td class="col-check" onclick="event.stopPropagation()">
+                <input type="checkbox" class="vm-check" data-vm="${escapeHtml(v.vm_name)}" ${
+                  state.selectedVms.has(v.vm_name) ? "checked" : ""
+                } />
+              </td>
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
               <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
@@ -626,41 +565,103 @@ async function renderRun(app, batchId) {
       </table></div>`
           : `<div class="empty">No VMs listed yet.</div>`
       }
+    </div>
+
+    <div class="panel">
+      <h3 style="margin-top:0">VM creation → guest boot</h3>
+      <p class="muted" style="margin-top:0">
+        Seconds from batch create start (DV / VM create, UTC) to the guest boot timestamp (UTC).
+      </p>
+      <div class="chart-wrap"><canvas id="boot-chart"></canvas></div>
+      <div id="boot-chart-empty" class="empty" style="display:none">No boot timestamps yet.</div>
+      <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
     </div>`;
 
-  drawBootHistogram(b.vms || [], b.started_at);
+  drawBootHistogram(vmList, b.started_at);
 
   const bootCsvBtn = $("#btn-boot-csv");
   if (bootCsvBtn) {
     bootCsvBtn.onclick = (e) => {
       e.preventDefault();
-      const csv = buildBootTimesCsv(batchId, b.vms || [], b.started_at);
+      const csv = buildBootTimesCsv(batchId, vmList, b.started_at);
       downloadTextFile(`${batchId}-boot-times.csv`, csv, "text/csv;charset=utf-8");
     };
   }
 
+  function syncVmSelectionUi() {
+    const n = state.selectedVms.size;
+    const scope = n ? String(n) : "all";
+    const label = $("#vm-selection-label");
+    if (label) {
+      label.textContent = n
+        ? `${n} selected`
+        : "none selected · actions apply to all";
+    }
+    const allBox = $("#vm-check-all");
+    if (allBox) allBox.checked = vmList.length > 0 && n === vmList.length;
+    for (const id of ["btn-batch-once", "btn-batch-n", "btn-batch-forever", "btn-batch-idle"]) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      if (id === "btn-batch-n") el.textContent = `Run N (${scope})…`;
+      else if (id === "btn-batch-once") el.textContent = `Run once (${scope})`;
+      else if (id === "btn-batch-forever") el.textContent = `Forever (${scope})`;
+      else if (id === "btn-batch-idle") el.textContent = `Idle (${scope})`;
+    }
+  }
+
+  const checkAll = $("#vm-check-all");
+  if (checkAll) {
+    checkAll.onchange = () => {
+      state.selectedVms.clear();
+      if (checkAll.checked) {
+        for (const v of vmList) state.selectedVms.add(v.vm_name);
+      }
+      app.querySelectorAll(".vm-check").forEach((cb) => {
+        cb.checked = checkAll.checked;
+      });
+      syncVmSelectionUi();
+    };
+  }
+  app.querySelectorAll(".vm-check").forEach((cb) => {
+    cb.onchange = () => {
+      const name = cb.dataset.vm;
+      if (cb.checked) state.selectedVms.add(name);
+      else state.selectedVms.delete(name);
+      syncVmSelectionUi();
+    };
+  });
+
   async function setBatchPolicy(mode, remaining) {
     const body = { mode };
     if (remaining != null) body.remaining = remaining;
+    if (state.selectedVms.size) {
+      body.vm_names = [...state.selectedVms];
+    }
     await api(`/v1/batches/${encodeURIComponent(batchId)}/policy`, {
       method: "POST",
       body: JSON.stringify(body),
     });
     render();
   }
-  $("#btn-batch-once").onclick = () => setBatchPolicy("once");
-  $("#btn-batch-n").onclick = () => {
-    const n = prompt("How many fio cycles per VM?", "2");
-    if (n == null) return;
-    const remaining = parseInt(n, 10);
-    if (!Number.isFinite(remaining) || remaining < 1) {
-      alert("Enter a positive integer");
-      return;
-    }
-    setBatchPolicy("count", remaining);
-  };
-  $("#btn-batch-forever").onclick = () => setBatchPolicy("forever");
-  $("#btn-batch-idle").onclick = () => setBatchPolicy("idle");
+  const btnOnce = $("#btn-batch-once");
+  if (btnOnce) btnOnce.onclick = () => setBatchPolicy("once");
+  const btnN = $("#btn-batch-n");
+  if (btnN) {
+    btnN.onclick = () => {
+      const n = prompt("How many fio cycles per selected VM?", "2");
+      if (n == null) return;
+      const remaining = parseInt(n, 10);
+      if (!Number.isFinite(remaining) || remaining < 1) {
+        alert("Enter a positive integer");
+        return;
+      }
+      setBatchPolicy("count", remaining);
+    };
+  }
+  const btnForever = $("#btn-batch-forever");
+  if (btnForever) btnForever.onclick = () => setBatchPolicy("forever");
+  const btnIdle = $("#btn-batch-idle");
+  if (btnIdle) btnIdle.onclick = () => setBatchPolicy("idle");
 
   $("#btn-archive").onclick = async () => {
     try {
@@ -695,70 +696,10 @@ async function renderRun(app, batchId) {
   app.querySelectorAll("tr.clickable").forEach((tr) => {
     tr.onclick = (e) => {
       if (e.target.closest("a")) return;
+      if (e.target.closest("input")) return;
       location.hash = tr.dataset.href;
     };
   });
-}
-
-function bootDurationsSeconds(vms, startedAt) {
-  if (startedAt == null) return [];
-  const out = [];
-  for (const v of vms || []) {
-    const boot = v.boot_timestamp_unix;
-    if (boot == null) continue;
-    const s = Number(boot) - Number(startedAt);
-    if (!Number.isFinite(s) || s < 0) continue;
-    out.push({ vm_name: v.vm_name, seconds: s });
-  }
-  return out;
-}
-
-function fmtBootTimeSummary(vms, startedAt) {
-  const samples = bootDurationsSeconds(vms, startedAt);
-  if (!samples.length) return "Boot time —";
-  const seconds = samples.map((s) => s.seconds);
-  const min = Math.min(...seconds);
-  const max = Math.max(...seconds);
-  const avg = seconds.reduce((a, b) => a + b, 0) / seconds.length;
-  return `Boot time avg ${Math.round(avg)}s · min ${Math.round(min)}s · max ${Math.round(max)}s`;
-}
-
-function csvEscape(val) {
-  const s = val == null ? "" : String(val);
-  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
-  return s;
-}
-
-function buildBootTimesCsv(batchId, vms, startedAt) {
-  const header = [
-    "batch_id",
-    "vm_name",
-    "namespace",
-    "batch_started_at_utc",
-    "boot_timestamp_utc",
-    "boot_duration_s",
-  ];
-  const startedIso = fmtTs(startedAt);
-  const rows = [header.join(",")];
-  for (const v of vms || []) {
-    const boot = v.boot_timestamp_unix;
-    let duration = "";
-    if (boot != null && startedAt != null) {
-      const s = Number(boot) - Number(startedAt);
-      if (Number.isFinite(s) && s >= 0) duration = String(Math.round(s));
-    }
-    rows.push(
-      [
-        csvEscape(batchId),
-        csvEscape(v.vm_name),
-        csvEscape(v.namespace || ""),
-        csvEscape(startedIso === "—" ? "" : startedIso),
-        csvEscape(boot != null ? fmtTs(boot) : ""),
-        csvEscape(duration),
-      ].join(",")
-    );
-  }
-  return rows.join("\n") + "\n";
 }
 
 function downloadTextFile(filename, text, mime) {
@@ -775,38 +716,6 @@ function downloadTextFile(filename, text, mime) {
   document.body.appendChild(a);
   a.click();
   a.remove();
-}
-
-function histogramBins(values, { maxBins = 12, minWidth = 5 } = {}) {
-  if (!values.length) return { labels: [], counts: [], edges: [] };
-  const sorted = [...values].sort((a, b) => a - b);
-  const lo = sorted[0];
-  const hi = sorted[sorted.length - 1];
-  if (hi === lo) {
-    const label = `${Math.round(lo)}s`;
-    return { labels: [label], counts: [values.length], edges: [lo, lo + minWidth] };
-  }
-  const n = Math.min(maxBins, Math.max(3, Math.ceil(Math.sqrt(values.length))));
-  let width = (hi - lo) / n;
-  if (width < minWidth) width = minWidth;
-  const binCount = Math.max(1, Math.ceil((hi - lo) / width));
-  const edges = [];
-  for (let i = 0; i <= binCount; i++) edges.push(lo + i * width);
-  edges[edges.length - 1] = Math.max(edges[edges.length - 1], hi);
-  const counts = new Array(binCount).fill(0);
-  for (const v of values) {
-    let idx = Math.floor((v - lo) / width);
-    if (idx >= binCount) idx = binCount - 1;
-    if (idx < 0) idx = 0;
-    counts[idx] += 1;
-  }
-  const labels = [];
-  for (let i = 0; i < binCount; i++) {
-    const a = Math.round(edges[i]);
-    const b = Math.round(edges[i + 1]);
-    labels.push(`${a}–${b}s`);
-  }
-  return { labels, counts, edges };
 }
 
 function drawBootHistogram(vms, startedAt) {

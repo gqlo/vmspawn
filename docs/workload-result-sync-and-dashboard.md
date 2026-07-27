@@ -338,7 +338,7 @@ One Python process: ingest, **policy store**, query, dashboard.
 | `GET /v1/batches/{id}/results` | Filtered results (`record_type=result`, …) |
 | `GET /v1/batches/{id}/vms/{vm}/policy` | Desired run policy for that VM |
 | `PUT /v1/batches/{id}/vms/{vm}/policy` | Set policy (`mode`, `remaining`, …) — used by dashboard |
-| `POST /v1/batches/{id}/policy` | Fan-out: set same policy on all VMs in the batch |
+| `POST /v1/batches/{id}/policy` | Fan-out: set same policy on all VMs, or only `vm_names: […]` when provided |
 | `DELETE /v1/batches/{id}` | Delete run |
 | `PATCH /v1/batches/{id}` | Label / notes / archived |
 | Static `/` | Dashboard |
@@ -363,9 +363,8 @@ Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, dril
       v
   Run detail
       |-- VM status chips + manifest / metadata
-      |-- batch-wide controls: Idle | Run once | Run N | Forever
+      |-- VM table (select VMs; Idle | Run once | Run N | Forever)
       |-- boot-time histogram (create → guest boot)
-      |-- VM table (per-VM status + policy)
       |
       | click VM
       v
@@ -424,7 +423,7 @@ Everything for one vstorm batch on one page.
 
 Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 idle · 2 not contacted`.
 
-**Batch-wide controls:** Idle | Run once | Run N… | Forever. Warn mentally if many VMs are still **not contacted** — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
+**Batch-wide controls:** on the VMs table — select one or more VMs (or **Select all**), then Idle | Run once | Run N… | Forever. With nothing selected, actions apply to **all** VMs. Warn mentally if many VMs are still **not contacted** — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
 
 **vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, guest_env, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
 
@@ -503,7 +502,7 @@ For unattended soak without clicking: `--env WORKLOAD_RUN_MODE=forever` (legacy 
 | [`vstorm`](../vstorm) | POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; optional truncated `log_text` |
 | [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Policy poll + cycle runner; capture/POST/spool; status heartbeats; default idle when URL set |
 | `monitoring/workload-result/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
-| `monitoring/workload-result/static/` | Batches list, batch/VM/payload views; Idle / Run once / Run N / Forever controls |
+| [`monitoring/workload-result/static/`](../monitoring/workload-result/static/) | Batches list, batch/VM/payload views; Idle / Run once / Run N / Forever; helpers in `dashboard-lib.js` (covered by `node --test monitoring/tests/test_dashboard_lib.js`) |
 | [`docs/cloud-init-fio-workload.md`](cloud-init-fio-workload.md) | Env table includes `RESULT_SERVER_*` / `WORKLOAD_RUN_*` |
 | `tests/` | `monitoring/tests/test_workload_result.py` — helpers, ingest/record types, policy, queries, HTTP API |
 

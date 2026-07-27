@@ -7,6 +7,7 @@
 #     git ls-files so local-only trees like rh-internal-doc/ are skipped)
 #   - Bats: tests/
 #   - Python unittest: monitoring/tests/
+#   - Node: monitoring/tests/test_dashboard_lib.js
 # Usage: ./helpers/run-all-tests.sh   (from repo root or any cwd)
 
 set -euo pipefail
@@ -28,6 +29,10 @@ if ! command -v bats >/dev/null 2>&1; then
 fi
 if ! command -v python3 >/dev/null 2>&1; then
     echo "run-all-tests: python3 is required for monitoring/tests" >&2
+    exit 1
+fi
+if ! command -v node >/dev/null 2>&1; then
+    echo "run-all-tests: node is required for dashboard JS tests" >&2
     exit 1
 fi
 
@@ -67,5 +72,8 @@ bats tests/
 
 echo "==> Python unittest (monitoring/tests/)"
 python3 -m unittest discover -s monitoring/tests -v
+
+echo "==> Node dashboard lib tests"
+node --test monitoring/tests/test_dashboard_lib.js
 
 echo "run-all-tests: OK"
