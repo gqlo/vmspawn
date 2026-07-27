@@ -1151,7 +1151,8 @@ post_batch_result_metadata() {
     local started_at="${STARTED_AT:-$stopped_at}"
 
     local ns_json vm_json guest_env_json cmdline_json log_text=""
-    BID="$BATCH_ID" NNS="$NUM_NAMESPACES" ns_json=$(python3 - <<'PY'
+    # Env must prefix python3 inside $(); bash does not pass VAR=val into ns_json=$(...).
+    ns_json=$(BID="$BATCH_ID" NNS="$NUM_NAMESPACES" python3 - <<'PY'
 import json, os
 bid = os.environ["BID"]
 n = int(os.environ["NNS"])
