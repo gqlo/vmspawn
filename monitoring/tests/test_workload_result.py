@@ -405,6 +405,38 @@ class TestStorePolicy(unittest.TestCase):
         self.assertEqual(p["remaining"], 2)
         self.assertEqual(p["agent_state"], "running")
 
+    def test_result_clears_running_agent_state(self) -> None:
+        self.store.set_policy("p1", "vm1", mode="idle", remaining=0)
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "fio",
+                "batch_id": "p1",
+                "vm_name": "vm1",
+                "agent_state": "running",
+                "reported_at": "2026-07-22T05:52:03Z",
+            }
+        )
+        self.assertEqual(self.store.get_policy("p1", "vm1")["agent_state"], "running")
+        self.store.ingest(_fio_payload(batch_id="p1", vm="vm1", cycle=1, status="ok"))
+        self.assertEqual(self.store.get_policy("p1", "vm1")["agent_state"], "idle")
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "fio",
+                "batch_id": "p1",
+                "vm_name": "vm1",
+                "agent_state": "running",
+                "reported_at": "2026-07-22T05:53:03Z",
+            }
+        )
+        self.store.ingest(_fio_payload(batch_id="p1", vm="vm1", cycle=2, status="fio_error"))
+        self.assertEqual(self.store.get_policy("p1", "vm1")["agent_state"], "error")
+
     def test_heartbeat_vmi_phase_in_summary(self) -> None:
         self.store.ingest(
             {
@@ -592,6 +624,52 @@ class TestStoreQueries(unittest.TestCase):
             "https://api.vlan622.rdu2.scalelab.redhat.com:6443",
             by_ns["facets"]["api_servers"],
         )
+
+    def test_list_vm_timestamps_across_batches(self) -> None:
+        for bid, vm, boot, started in (
+            ("ts1", "vm-a", "2026-07-22T05:50:25Z", "2026-07-22T05:48:00Z"),
+            ("ts2", "vm-b", "2026-07-22T06:00:00Z", "2026-07-22T05:55:00Z"),
+        ):
+            self.store.ingest(
+                {
+                    "schema_version": 1,
+                    "record_type": "manifest",
+                    "source": "vstorm",
+                    "batch_id": bid,
+                    "basename": "rhel9",
+                    "total_vms": 1,
+                    "vms": [f"ns/{vm}"],
+                    "reported_at": started,
+                    "started_at": started,
+                    "dv_created_at": started,
+                    "vm_dv_created": {vm: started},
+                    "cloudinit": "workload/cloudinit-fio-workload.yaml",
+                }
+            )
+            self.store.ingest(
+                {
+                    "schema_version": 1,
+                    "record_type": "heartbeat",
+                    "source": "guest",
+                    "workload_kind": "boot",
+                    "batch_id": bid,
+                    "vm_name": vm,
+                    "hostname": vm,
+                    "boot_timestamp": boot,
+                    "reported_at": boot,
+                }
+            )
+        out = self.store.list_vm_timestamps(archived="0", batch_id="ts")
+        self.assertEqual(out["total"], 2)
+        by_vm = {r["vm_name"]: r for r in out["items"]}
+        self.assertIn("vm-a", by_vm)
+        self.assertIn("vm-b", by_vm)
+        self.assertIsNotNone(by_vm["vm-a"]["boot_timestamp"])
+        self.assertIsNotNone(by_vm["vm-a"]["boot_duration_s"])
+        self.assertGreaterEqual(by_vm["vm-a"]["boot_duration_s"], 0)
+        filtered = self.store.list_vm_timestamps(batch_id="ts1")
+        self.assertEqual(filtered["total"], 1)
+        self.assertEqual(filtered["items"][0]["batch_id"], "ts1")
 
     def test_get_vm_includes_policy(self) -> None:
         detail = self.store.get_vm("q1", "vm1")

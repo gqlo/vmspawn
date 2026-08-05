@@ -350,7 +350,8 @@ write_files:
           shopt -u nullglob
 
           if _post_payload_file "$payload_file" "Result ($status)"; then
-              rm -f "${pending_dir}/${JOB_NAME}-payload.json" "$payload_file"
+              # Keep results/${JOB_NAME}-payload.json for local inspection; only clear pending spool copy.
+              rm -f "${pending_dir}/${JOB_NAME}-payload.json"
               return 0
           fi
 
@@ -389,6 +390,67 @@ write_files:
           fi
       }
 
+      # Dashboard "Workload status" is driven by agent_state on heartbeats.
+      # One-shot fio does not poll policy, so tell the collector when the job starts.
+      post_agent_heartbeat() {
+          local state="$1"
+          [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
+          command -v python3 &>/dev/null || return 0
+          command -v curl &>/dev/null || return 0
+          local vm_name="${VSTORM_VM_NAME:-$(hostname -s 2>/dev/null || hostname || echo unknown)}"
+          local hostname_s hb_file
+          hostname_s=$(hostname -s 2>/dev/null || hostname || echo unknown)
+          hb_file=$(mktemp)
+          if ! HB_STATE="$state" python3 - "$hb_file" \
+              "${VSTORM_BATCH_ID:-}" "$vm_name" "$hostname_s" <<'PY'
+      import json, os, sys
+      from datetime import datetime, timezone
+      out, batch_id, vm_name, hostname = sys.argv[1:5]
+      now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+      payload = {
+          "schema_version": 1,
+          "record_type": "heartbeat",
+          "source": "guest",
+          "workload_kind": "fio",
+          "status": os.environ.get("HB_STATE") or "idle",
+          "agent_state": os.environ.get("HB_STATE") or "idle",
+          "reported_at": now,
+          "hostname": hostname,
+          "batch_id": batch_id,
+          "vm_name": vm_name,
+      }
+      with open(out, "w", encoding="utf-8") as f:
+          json.dump(payload, f)
+          f.write("\n")
+      PY
+          then
+              rm -f "$hb_file"
+              return 1
+          fi
+          local attempt=1 http_code
+          local -a auth_args=()
+          [[ -n "${RESULT_SERVER_TOKEN:-}" ]] && auth_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
+          while (( attempt <= RESULT_RETRY )); do
+              http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
+                  --data-binary @"$hb_file" \
+                  --connect-timeout "$RESULT_TIMEOUT" \
+                  --max-time "$RESULT_TIMEOUT" \
+                  "${auth_args[@]}" \
+                  -o /dev/null -w '%{http_code}' \
+                  "$RESULT_SERVER_URL" 2>/dev/null) || true
+              if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+                  echo "Agent heartbeat ($state) posted"
+                  rm -f "$hb_file"
+                  return 0
+              fi
+              sleep $((attempt < 4 ? attempt : 4))
+              ((attempt++)) || true
+          done
+          echo "WARN: agent heartbeat ($state) POST failed (HTTP ${http_code:-000})" >&2
+          rm -f "$hb_file"
+          return 1
+      }
+
       echo "=========================================="
       echo "Starting fio workload (one-shot)"
       echo "WORKLOAD_TYPE=$WORKLOAD_TYPE"
@@ -397,13 +459,15 @@ write_files:
       echo "FIO_DIRECTORY=$FIO_DIRECTORY"
       [[ -n "${FIO_CUSTOM_OPTS:-}" ]] && echo "FIO_CUSTOM_OPTS is set: using CUSTOM-OPTS branch"
       if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
-          echo "RESULT_SERVER_URL=$RESULT_SERVER_URL (POST once after job completes)"
+          echo "RESULT_SERVER_URL=$RESULT_SERVER_URL (heartbeat at start; result POST after job)"
       else
           echo "RESULT_SERVER_URL unset: run locally only (no POST)"
       fi
       echo "Job name: $JOB_NAME"
       echo "=========================================="
       echo ""
+
+      post_agent_heartbeat running || true
 
       fio_json="${FIO_DIRECTORY}/results/${JOB_NAME}.json"
       started_at=$(date -u +%s)

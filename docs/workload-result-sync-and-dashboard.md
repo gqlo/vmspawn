@@ -103,7 +103,7 @@ Guests never need inbound ports. The dashboard never talks to the VM directly.
 1. Start collector; open dashboard.
 2. Run vstorm with `RESULT_SERVER_URL` + fio `--env`; vstorm POSTs a **manifest** and injects `VSTORM_BATCH_ID`.
 3. Guest boots, writes timestamp, starts `fio-workload.service` (oneshot).
-4. Guest runs **one** fio job with boot-time params; on completion POSTs a **result** JSON (spools locally if the collector is down).
+4. Guest POSTs a **heartbeat** with `agent_state: "running"`, then runs **one** fio job; on completion POSTs a **result** JSON (collector clears agent state to `idle` / `error`). Spools locally if the collector is down.
 5. Service exits. Dashboard shows the batch, VM, and payload.
 
 ## Legacy: run policy API
@@ -173,7 +173,7 @@ Replace the hard-coded forever loop with:
 2. Run fio with `--output-format=json` to a results file.
 3. Record `fio_stop`.
 4. Build **result** payload (identity, command, `fio_group_reporting`, workload fingerprint).
-5. Set `reported_at`; POST; spool on failure.
+5. Set `reported_at`; POST (leave `results/<job>-payload.json` on disk); spool under `pending/` on failure.
 
 All payload timestamps are **UTC**, written as ISO-8601 with an explicit timezone (`…Z` or `…+00:00`). The collector still indexes them as unix seconds internally for sorting.
 
@@ -354,6 +354,7 @@ One Python process: ingest, **policy store**, query, dashboard.
 | `POST /v1/results` | Ingest manifest / result / error / heartbeat |
 | `GET /healthz` | Liveness |
 | `GET /v1/batches` | List batches (`q`, `archived`, `batch_id`, `namespace`, `api_server`, `today=1`, `date=YYYY-MM-DD`, `date_from` / `date_to`); response includes `items` + `facets` |
+| `GET /v1/timestamps` | Flat VM timing rows across batches (same filters as `GET /v1/batches`); used by **Download all timestamps CSV** |
 | `GET /v1/batches/{id}` | Batch detail + VMs + series |
 | `GET /v1/batches/{id}/results/{result_id}` | One stored payload |
 | `GET /v1/batches/{id}/vms/{vm}` | Per-VM results + **current policy + agent status** |
@@ -428,7 +429,7 @@ The home page is a **list of batches created by vstorm** — one row per `batch_
 
 Everything for one vstorm batch on one page.
 
-**Summary (top):** batch id, basename, fingerprint/cloud-init, workload running/idle, **boot time avg / min / max** (create → guest boot) with **Download boot times CSV**, started/stopped, created VMs, cycle/error counts, cores/memory.
+**Summary (top):** batch id, basename, fingerprint/cloud-init, workload running/idle, **boot time avg / min / max** (create → guest boot) with **Download boot times CSV**, started/stopped, created VMs, cycle/error counts, cores/memory. On the **Batches** list: **Download all timestamps CSV** aggregates VM timing rows across all batches matching the current filters (`GET /v1/timestamps`).
 
 **VM rollup meanings** (same definitions as the VM table `ui_status`):
 
@@ -437,7 +438,7 @@ Everything for one vstorm batch on one page.
 | Created | From vstorm batch `total_vms` / `vms[]` |
 | Contacted collector | Not `waiting` (UI: not contacted) |
 | VMI running | Guests (or host sync) reporting `vmi_phase: "Running"`; `—` until any phase is known |
-| Workload running | Agent reports `agent_state: "running"` (mid-fio cycle) |
+| Workload running | Guest POSTs heartbeat with `agent_state: "running"` before the fio cycle; cleared to `idle`/`error` when the **result** is ingested |
 | Idle | Policy idle (or remaining 0), not workload-running |
 | Queued | Policy `once`/`count`/`forever` but not currently in a cycle |
 | Not contacted | Listed in the manifest VM list (or seen empty), never contacted collector (`ui_status` / summary key: `waiting`) |

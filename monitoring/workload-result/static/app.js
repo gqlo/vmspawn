@@ -31,6 +31,7 @@ const {
   bootDurationsSeconds,
   fmtBootTimeSummary,
   buildBootTimesCsv,
+  buildCrossBatchTimestampsCsv,
   histogramBins,
 } = globalThis.WorkloadDashboardLib;
 
@@ -230,6 +231,9 @@ async function renderRuns(app) {
           ${escapeHtml(String(totals.waiting))} not contacted
           ${totals.error ? ` · ${escapeHtml(String(totals.error))} error` : ""}
         </div>
+        <button type="button" class="btn" id="btn-all-timestamps" ${
+          items.length ? "" : "disabled"
+        }>Download all timestamps CSV</button>
       </div>
       <form id="filter-form" class="filters" autocomplete="off">
         <label class="filter-field">
@@ -400,6 +404,28 @@ async function renderRuns(app) {
     clearFilters();
     render();
   };
+
+  const btnAllTs = $("#btn-all-timestamps");
+  if (btnAllTs) {
+    btnAllTs.onclick = async () => {
+      try {
+        btnAllTs.disabled = true;
+        const data = await api("/v1/timestamps?" + params.toString());
+        const rows = data.items || [];
+        if (!rows.length) {
+          alert("No VM timestamps for the current filters.");
+          return;
+        }
+        const csv = buildCrossBatchTimestampsCsv(rows);
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+        downloadTextFile(`all-timestamps-${stamp}Z.csv`, csv, "text/csv;charset=utf-8");
+      } catch (err) {
+        alert(err.message || String(err));
+      } finally {
+        btnAllTs.disabled = !items.length;
+      }
+    };
+  }
 
   // Drop selections that are no longer in the current list.
   const visibleIds = new Set(items.map((b) => b.batch_id));
@@ -763,7 +789,7 @@ async function renderVm(app, batchId, vm) {
       ${
         cycles.length
           ? `<div class="table-wrap"><table>
-        <thead><tr><th>Cycle</th><th>Type</th><th>Status</th><th>fio start</th><th>fio stop</th><th>Duration</th><th>fio_rc</th><th>IOPS</th><th>BW</th><th>Error</th><th></th></tr></thead>
+        <thead><tr><th>Cycle</th><th>Type</th><th>Status</th><th>fio start</th><th>fio stop</th><th>Duration</th><th>fio_rc</th><th>IOPS avg</th><th>BW avg</th><th>Error</th><th></th></tr></thead>
         <tbody>
           ${cycles
             .map((c) => {

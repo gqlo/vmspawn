@@ -132,6 +132,30 @@ describe("boot durations and CSV", () => {
     assert.ok(lines[3].includes("vm-c"));
   });
 
+  it("builds cross-batch timestamps CSV", () => {
+    const csv = lib.buildCrossBatchTimestampsCsv([
+      {
+        batch_id: "b1",
+        basename: "rhel9",
+        cloudinit: "workload/x.yaml",
+        vm_name: "vm-a",
+        namespace: "ns1",
+        batch_started_at: 1000,
+        dv_created_at: 1020,
+        boot_timestamp: 1100,
+        boot_duration_s: 100,
+        dv_to_boot_s: 80,
+      },
+    ]);
+    const lines = csv.trim().split("\n");
+    assert.equal(
+      lines[0],
+      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,boot_timestamp_utc,boot_duration_s,dv_to_boot_s"
+    );
+    assert.ok(lines[1].startsWith("b1,rhel9,workload/x.yaml,vm-a,ns1,"));
+    assert.ok(lines[1].endsWith(",100,80"));
+  });
+
   it("escapes CSV fields", () => {
     assert.equal(lib.csvEscape('a,b'), '"a,b"');
     assert.equal(lib.csvEscape('say "hi"'), '"say ""hi"""');

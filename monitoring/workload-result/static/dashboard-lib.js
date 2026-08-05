@@ -224,6 +224,39 @@
     return { labels, counts, edges };
   }
 
+  function buildCrossBatchTimestampsCsv(items) {
+    const header = [
+      "batch_id",
+      "basename",
+      "cloudinit",
+      "vm_name",
+      "namespace",
+      "batch_started_at_utc",
+      "dv_created_at_utc",
+      "boot_timestamp_utc",
+      "boot_duration_s",
+      "dv_to_boot_s",
+    ];
+    const rows = [header.join(",")];
+    for (const it of items || []) {
+      rows.push(
+        [
+          csvEscape(it.batch_id),
+          csvEscape(it.basename || ""),
+          csvEscape(it.cloudinit || ""),
+          csvEscape(it.vm_name || ""),
+          csvEscape(it.namespace || ""),
+          csvEscape(it.batch_started_at != null ? fmtTs(it.batch_started_at) : ""),
+          csvEscape(it.dv_created_at != null ? fmtTs(it.dv_created_at) : ""),
+          csvEscape(it.boot_timestamp != null ? fmtTs(it.boot_timestamp) : ""),
+          csvEscape(it.boot_duration_s != null ? String(it.boot_duration_s) : ""),
+          csvEscape(it.dv_to_boot_s != null ? String(it.dv_to_boot_s) : ""),
+        ].join(",")
+      );
+    }
+    return rows.join("\n") + "\n";
+  }
+
   const api = {
     escapeHtml,
     fmtTs,
@@ -239,6 +272,7 @@
     fmtBootTimeSummary,
     csvEscape,
     buildBootTimesCsv,
+    buildCrossBatchTimestampsCsv,
     histogramBins,
   };
 

@@ -498,6 +498,15 @@ class Store:
             vm_for_policy = str(payload.get("vm_name") or payload.get("hostname") or "")
             if vm_for_policy:
                 self._consume_cycle_policy(batch_id, vm_for_policy)
+                # Result means the cycle finished; clear mid-run "running" so the UI
+                # does not stay stuck after a one-shot guest that only heartbeats once.
+                result_status = str(payload.get("status") or "ok")
+                agent_state = (
+                    "error"
+                    if result_status in ("fio_error", "missing_fio_json", "fio_json_error")
+                    else "idle"
+                )
+                self._touch_agent_status(batch_id, vm_for_policy, agent_state)
         elif _is_heartbeat(record_type):
             vm_for_policy = str(payload.get("vm_name") or payload.get("hostname") or "")
             agent_state = str(payload.get("agent_state") or payload.get("status") or "idle")
@@ -925,6 +934,79 @@ class Store:
                     "api_servers": sorted(facet_api),
                 },
             }
+
+    def list_vm_timestamps(
+        self,
+        *,
+        q: str | None = None,
+        archived: str | None = None,
+        basename: str | None = None,
+        batch_id: str | None = None,
+        namespace: str | None = None,
+        api_server: str | None = None,
+        today: str | None = None,
+        date: str | None = None,
+        date_from: str | None = None,
+        date_to: str | None = None,
+    ) -> dict[str, Any]:
+        """Flat VM timing rows across batches matching list_batches filters."""
+        batches = self.list_batches(
+            q=q,
+            archived=archived,
+            basename=basename,
+            batch_id=batch_id,
+            namespace=namespace,
+            api_server=api_server,
+            today=today,
+            date=date,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        items: list[dict[str, Any]] = []
+        for b in batches.get("items") or []:
+            bid = b.get("batch_id")
+            if not bid:
+                continue
+            detail = self.get_batch(str(bid))
+            if not detail:
+                continue
+            bp = detail.get("batch_payload") or {}
+            cloudinit = bp.get("cloudinit") or detail.get("cloudinit")
+            batch_started = detail.get("started_at")
+            for v in detail.get("vms") or []:
+                boot = v.get("boot_timestamp_unix")
+                dv = v.get("dv_created_at_unix")
+                boot_duration_s = None
+                dv_to_boot_s = None
+                if boot is not None and batch_started is not None:
+                    try:
+                        s = int(boot) - int(batch_started)
+                        if s >= 0:
+                            boot_duration_s = s
+                    except (TypeError, ValueError):
+                        pass
+                if boot is not None and dv is not None:
+                    try:
+                        s = int(boot) - int(dv)
+                        if s >= 0:
+                            dv_to_boot_s = s
+                    except (TypeError, ValueError):
+                        pass
+                items.append(
+                    {
+                        "batch_id": bid,
+                        "basename": detail.get("basename") or b.get("basename"),
+                        "cloudinit": cloudinit,
+                        "namespace": v.get("namespace"),
+                        "vm_name": v.get("vm_name"),
+                        "batch_started_at": batch_started,
+                        "dv_created_at": dv,
+                        "boot_timestamp": boot,
+                        "boot_duration_s": boot_duration_s,
+                        "dv_to_boot_s": dv_to_boot_s,
+                    }
+                )
+        return {"items": items, "total": len(items)}
 
     def _cycle_stats(self, batch_id: str) -> dict[str, Any]:
         cycles = self._conn.execute(
@@ -1631,6 +1713,24 @@ def make_handler(app: App):
                 self._json(
                     200,
                     app.store.list_batches(
+                        q=(qs.get("q") or [None])[0],
+                        archived=(qs.get("archived") or [None])[0],
+                        basename=(qs.get("basename") or [None])[0],
+                        batch_id=(qs.get("batch_id") or [None])[0],
+                        namespace=(qs.get("namespace") or [None])[0],
+                        api_server=(qs.get("api_server") or [None])[0],
+                        today=(qs.get("today") or [None])[0],
+                        date=(qs.get("date") or [None])[0],
+                        date_from=(qs.get("date_from") or [None])[0],
+                        date_to=(qs.get("date_to") or [None])[0],
+                    ),
+                )
+                return
+
+            if path == "/v1/timestamps":
+                self._json(
+                    200,
+                    app.store.list_vm_timestamps(
                         q=(qs.get("q") or [None])[0],
                         archived=(qs.get("archived") or [None])[0],
                         basename=(qs.get("basename") or [None])[0],
