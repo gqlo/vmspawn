@@ -73,6 +73,8 @@ write_files:
       RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
       # Optional blank data disk from vstorm --data-disk-size (usually /dev/vdb).
       # Format once, mount, and add /etc/fstab so the mount survives reboot.
+      # NOTE: do not use bare `findmnt --target $dir` to decide whether to mount —
+      # that succeeds for paths on `/` even when vdb is not mounted there.
       FIO_DATA_DEVICE="${FIO_DATA_DEVICE:-/dev/vdb}"
 
       if [[ -b "$FIO_DATA_DEVICE" ]]; then
@@ -96,9 +98,47 @@ write_files:
               echo "${_fio_fspec} ${FIO_DIRECTORY} ${_fio_fstype} defaults,nofail 0 2" >> /etc/fstab
               echo "Added ${_fio_fspec} -> ${FIO_DIRECTORY} to /etc/fstab"
           fi
-          if ! findmnt -n --target "$FIO_DIRECTORY" &>/dev/null; then
-              mount "$FIO_DIRECTORY" || mount "$FIO_DATA_DEVICE" "$FIO_DIRECTORY"
-              echo "Mounted $FIO_DATA_DEVICE on $FIO_DIRECTORY"
+          _fio_src=$(findmnt -n -o SOURCE --target "$FIO_DIRECTORY" 2>/dev/null || true)
+          _fio_already=0
+          if [[ -n "$_fio_src" ]]; then
+              if [[ "$_fio_src" == "$FIO_DATA_DEVICE" || "$_fio_src" == "/dev/disk/by-uuid/${_fio_uuid}" ]]; then
+                  _fio_already=1
+              elif [[ -n "$_fio_uuid" ]] && [[ "$_fio_src" == *"$_fio_uuid"* ]]; then
+                  _fio_already=1
+              else
+                  # Resolve SOURCE to a real block device (e.g. /dev/vdb) if possible
+                  _fio_src_real=$(readlink -f "$_fio_src" 2>/dev/null || true)
+                  _fio_dev_real=$(readlink -f "$FIO_DATA_DEVICE" 2>/dev/null || true)
+                  if [[ -n "$_fio_src_real" && -n "$_fio_dev_real" && "$_fio_src_real" == "$_fio_dev_real" ]]; then
+                      _fio_already=1
+                  fi
+              fi
+          fi
+          if ((_fio_already == 0)); then
+              if mount "$FIO_DIRECTORY" 2>/dev/null || mount "$FIO_DATA_DEVICE" "$FIO_DIRECTORY"; then
+                  echo "Mounted $FIO_DATA_DEVICE on $FIO_DIRECTORY"
+              else
+                  echo "ERROR: failed to mount $FIO_DATA_DEVICE on $FIO_DIRECTORY" >&2
+                  exit 1
+              fi
+          else
+              echo "Data disk already mounted: $_fio_src -> $FIO_DIRECTORY"
+          fi
+          # Refuse to run fio if the directory is still on the root filesystem.
+          _fio_src=$(findmnt -n -o SOURCE --target "$FIO_DIRECTORY" 2>/dev/null || true)
+          _fio_dev_real=$(readlink -f "$FIO_DATA_DEVICE" 2>/dev/null || echo "$FIO_DATA_DEVICE")
+          _fio_src_real=$(readlink -f "$_fio_src" 2>/dev/null || echo "$_fio_src")
+          _fio_ok=0
+          if [[ -n "$_fio_src" ]]; then
+              if [[ "$_fio_src_real" == "$_fio_dev_real" || "$_fio_src" == "$FIO_DATA_DEVICE" ]]; then
+                  _fio_ok=1
+              elif [[ -n "$_fio_uuid" && "$_fio_src" == *"${_fio_uuid}"* ]]; then
+                  _fio_ok=1
+              fi
+          fi
+          if ((_fio_ok == 0)); then
+              echo "ERROR: $FIO_DIRECTORY is not on $FIO_DATA_DEVICE (SOURCE=${_fio_src:-none}); refusing to fill the root disk" >&2
+              exit 1
           fi
       fi
 
