@@ -5,8 +5,6 @@ const state = {
   timer: null,
   downloadUrl: null,
   selectedBatches: new Set(),
-  selectedVms: new Set(),
-  selectedVmsBatchId: null,
   filters: {
     q: "",
     archived: "0",
@@ -93,6 +91,41 @@ async function api(path, opts = {}) {
 
 function $(sel) {
   return document.querySelector(sel);
+}
+
+/** Launch-time guest env for display (FIO_* and related knobs first). */
+function formatGuestEnv(env) {
+  if (!env || typeof env !== "object") return "—";
+  const prefer = [
+    "WORKLOAD_TYPE",
+    "FIO_SIZE",
+    "FIO_BS",
+    "FIO_IODEPTH",
+    "FIO_NUMJOBS",
+    "FIO_DIRECT",
+    "FIO_TIME_BASED",
+    "FIO_RUNTIME",
+    "FIO_DIRECTORY",
+    "FIO_RW",
+    "FIO_CUSTOM_OPTS",
+    "WORKLOAD_RUN_MODE",
+    "WORKLOAD_RUN_COUNT",
+    "WORKLOAD_MAX_JOBS",
+    "RESULT_SERVER_URL",
+  ];
+  const lines = [];
+  const seen = new Set();
+  for (const k of prefer) {
+    if (env[k] == null || String(env[k]).trim() === "") continue;
+    lines.push(`${k}=${env[k]}`);
+    seen.add(k);
+  }
+  for (const k of Object.keys(env).sort()) {
+    if (seen.has(k)) continue;
+    if (env[k] == null || String(env[k]).trim() === "") continue;
+    lines.push(`${k}=${env[k]}`);
+  }
+  return lines.length ? lines.join("\n") : "—";
 }
 
 function setCrumbs(items) {
@@ -455,17 +488,7 @@ async function renderRun(app, batchId) {
   const vs = b.vm_summary || {};
   const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at);
   const vmList = b.vms || [];
-  if (state.selectedVmsBatchId !== batchId) {
-    state.selectedVms = new Set();
-    state.selectedVmsBatchId = batchId;
-  }
-  const knownNames = new Set(vmList.map((v) => v.vm_name));
-  for (const name of [...state.selectedVms]) {
-    if (!knownNames.has(name)) state.selectedVms.delete(name);
-  }
-  const selectedCount = state.selectedVms.size;
-  const allSelected = vmList.length > 0 && selectedCount === vmList.length;
-  const scopeLabel = selectedCount ? String(selectedCount) : "all";
+  const guestEnvLines = formatGuestEnv(bp.guest_env);
 
   app.innerHTML = `
     <div class="panel">
@@ -509,46 +532,29 @@ async function renderRun(app, batchId) {
             <dt>Namespaces</dt><dd class="mono">${escapeHtml((bp.namespaces || []).join(", ") || "—")}</dd>
             <dt>Storage</dt><dd>${escapeHtml(bp.storage_class || "—")} / ${escapeHtml(bp.volume_mode || "—")}</dd>
             <dt>Cmdline</dt><dd class="mono">${escapeHtml((bp.cmdline || []).join(" ") || "—")}</dd>
-            <dt>Guest env</dt><dd class="mono">${escapeHtml(bp.guest_env ? JSON.stringify(bp.guest_env) : "—")}</dd>
+            <dt>FIO / guest env</dt><dd class="mono" style="white-space:pre-wrap">${escapeHtml(guestEnvLines)}</dd>
             <dt>Notes</dt><dd><input type="text" id="notes" style="width:100%" value="${escapeHtml(b.notes || "")}" placeholder="Notes…" /></dd>
             <dt>Label</dt><dd><input type="text" id="label" style="width:100%" value="${escapeHtml(b.label || "")}" placeholder="Label…" /></dd>
           </dl>
           <button type="button" class="btn primary" id="btn-save-meta">Save notes/label</button>
         </div>
       </div>
+      <p class="muted" style="margin-top:1rem;margin-bottom:0">
+        FIO knobs are set once at VM create (<span class="mono">vstorm --env FIO_*=…</span>).
+        Each guest runs one fio job and POSTs one result when finished.
+      </p>
     </div>
 
     <div class="panel">
       <h3 style="margin-top:0">VMs</h3>
       ${
         vmList.length
-          ? `<div class="batch-toolbar">
-        <label class="check-all-label"><input type="checkbox" id="vm-check-all" ${
-          allSelected ? "checked" : ""
-        } /> Select all</label>
-        <span class="muted mono" id="vm-selection-label">${
-          selectedCount
-            ? `${escapeHtml(String(selectedCount))} selected`
-            : "none selected · actions apply to all"
-        }</span>
-        <div class="actions" style="margin-left:auto">
-          <button type="button" class="btn primary" id="btn-batch-once">Run once (${escapeHtml(scopeLabel)})</button>
-          <button type="button" class="btn" id="btn-batch-n">Run N (${escapeHtml(scopeLabel)})…</button>
-          <button type="button" class="btn" id="btn-batch-forever">Forever (${escapeHtml(scopeLabel)})</button>
-          <button type="button" class="btn" id="btn-batch-idle">Idle (${escapeHtml(scopeLabel)})</button>
-        </div>
-      </div>
-      <div class="table-wrap"><table>
-        <thead><tr><th class="col-check"></th><th>VM</th><th>Workload status</th><th>Policy</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
+          ? `<div class="table-wrap"><table>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
         <tbody>
           ${vmList
             .map(
               (v) => `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
-              <td class="col-check" onclick="event.stopPropagation()">
-                <input type="checkbox" class="vm-check" data-vm="${escapeHtml(v.vm_name)}" ${
-                  state.selectedVms.has(v.vm_name) ? "checked" : ""
-                } />
-              </td>
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
               <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
@@ -587,81 +593,6 @@ async function renderRun(app, batchId) {
       downloadTextFile(`${batchId}-boot-times.csv`, csv, "text/csv;charset=utf-8");
     };
   }
-
-  function syncVmSelectionUi() {
-    const n = state.selectedVms.size;
-    const scope = n ? String(n) : "all";
-    const label = $("#vm-selection-label");
-    if (label) {
-      label.textContent = n
-        ? `${n} selected`
-        : "none selected · actions apply to all";
-    }
-    const allBox = $("#vm-check-all");
-    if (allBox) allBox.checked = vmList.length > 0 && n === vmList.length;
-    for (const id of ["btn-batch-once", "btn-batch-n", "btn-batch-forever", "btn-batch-idle"]) {
-      const el = document.getElementById(id);
-      if (!el) continue;
-      if (id === "btn-batch-n") el.textContent = `Run N (${scope})…`;
-      else if (id === "btn-batch-once") el.textContent = `Run once (${scope})`;
-      else if (id === "btn-batch-forever") el.textContent = `Forever (${scope})`;
-      else if (id === "btn-batch-idle") el.textContent = `Idle (${scope})`;
-    }
-  }
-
-  const checkAll = $("#vm-check-all");
-  if (checkAll) {
-    checkAll.onchange = () => {
-      state.selectedVms.clear();
-      if (checkAll.checked) {
-        for (const v of vmList) state.selectedVms.add(v.vm_name);
-      }
-      app.querySelectorAll(".vm-check").forEach((cb) => {
-        cb.checked = checkAll.checked;
-      });
-      syncVmSelectionUi();
-    };
-  }
-  app.querySelectorAll(".vm-check").forEach((cb) => {
-    cb.onchange = () => {
-      const name = cb.dataset.vm;
-      if (cb.checked) state.selectedVms.add(name);
-      else state.selectedVms.delete(name);
-      syncVmSelectionUi();
-    };
-  });
-
-  async function setBatchPolicy(mode, remaining) {
-    const body = { mode };
-    if (remaining != null) body.remaining = remaining;
-    if (state.selectedVms.size) {
-      body.vm_names = [...state.selectedVms];
-    }
-    await api(`/v1/batches/${encodeURIComponent(batchId)}/policy`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    });
-    render();
-  }
-  const btnOnce = $("#btn-batch-once");
-  if (btnOnce) btnOnce.onclick = () => setBatchPolicy("once");
-  const btnN = $("#btn-batch-n");
-  if (btnN) {
-    btnN.onclick = () => {
-      const n = prompt("How many fio cycles per selected VM?", "2");
-      if (n == null) return;
-      const remaining = parseInt(n, 10);
-      if (!Number.isFinite(remaining) || remaining < 1) {
-        alert("Enter a positive integer");
-        return;
-      }
-      setBatchPolicy("count", remaining);
-    };
-  }
-  const btnForever = $("#btn-batch-forever");
-  if (btnForever) btnForever.onclick = () => setBatchPolicy("forever");
-  const btnIdle = $("#btn-batch-idle");
-  if (btnIdle) btnIdle.onclick = () => setBatchPolicy("idle");
 
   $("#btn-archive").onclick = async () => {
     try {
@@ -818,16 +749,10 @@ async function renderVm(app, batchId, vm) {
             <dt>First report lag</dt><dd>${escapeHtml(
               id.first_report_lag_s != null ? id.first_report_lag_s + "s" : "—"
             )}</dd>
-            <dt>Policy</dt><dd class="mono">${escapeHtml(policy.mode || "—")} · remaining=${escapeHtml(
+            <dt>Mode</dt><dd class="mono">${escapeHtml(policy.mode || "—")} · remaining=${escapeHtml(
               String(policy.remaining ?? "—")
             )} · rev=${escapeHtml(String(policy.revision ?? "—"))}</dd>
           </dl>
-        </div>
-        <div class="actions">
-          <button type="button" class="btn primary" id="btn-run-once">Run once</button>
-          <button type="button" class="btn" id="btn-run-n">Run N…</button>
-          <button type="button" class="btn" id="btn-forever">Forever</button>
-          <button type="button" class="btn" id="btn-idle">Idle</button>
         </div>
       </div>
     </div>
@@ -863,29 +788,6 @@ async function renderVm(app, batchId, vm) {
           : `<div class="empty">Waiting for guest results.</div>`
       }
     </div>`;
-
-  async function setPolicy(mode, remaining) {
-    const body = { mode };
-    if (remaining != null) body.remaining = remaining;
-    await api(`/v1/batches/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(vm)}/policy`, {
-      method: "PUT",
-      body: JSON.stringify(body),
-    });
-    render();
-  }
-  $("#btn-run-once").onclick = () => setPolicy("once");
-  $("#btn-run-n").onclick = () => {
-    const n = prompt("How many fio cycles?", "2");
-    if (n == null) return;
-    const remaining = parseInt(n, 10);
-    if (!Number.isFinite(remaining) || remaining < 1) {
-      alert("Enter a positive integer");
-      return;
-    }
-    setPolicy("count", remaining);
-  };
-  $("#btn-forever").onclick = () => setPolicy("forever");
-  $("#btn-idle").onclick = () => setPolicy("idle");
 
   app.querySelectorAll("tr.clickable").forEach((tr) => {
     tr.onclick = (e) => {

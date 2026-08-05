@@ -26,18 +26,19 @@ setup_file() {
   # --- correct disk source shown ---
   [[ "$output" == *"Disk source: ContainerDisk quay.io/containerdisks/fedora:latest"* ]]
 
-  # --- no DataVolume or VolumeSnapshot created ---
+  # --- no OS base DataVolume wait / VolumeSnapshot; blank data disk DV is OK ---
   [[ "$output" != *"Creating DataVolumes"* ]]
   [[ "$output" != *"Creating VolumeSnapshots"* ]]
-  [[ "$output" != *"kind: DataVolume"* ]]
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"name: vdb"* ]]
 
-  # --- VM uses containerDisk volume ---
+  # --- VM uses containerDisk volume for root ---
   [[ "$output" == *"kind: VirtualMachine"* ]]
   [[ "$output" == *"containerDisk:"* ]]
   [[ "$output" == *"image: quay.io/containerdisks/fedora:latest"* ]]
 
-  # --- storage-related fields show N/A ---
+  # --- storage-related fields show N/A for root disk mode ---
   [[ "$output" == *"Storage Class: N/A (container disk)"* ]]
   [[ "$output" == *"Snapshot mode: N/A (container disk)"* ]]
 }

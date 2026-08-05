@@ -17,6 +17,8 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 
 Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom). Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md).
 
+**Simple flow:** set `FIO_*` at `vstorm` create with `RESULT_SERVER_URL`; each guest runs **one** fio job and POSTs **one** result; dashboard browses batches / VMs / payloads.
+
 ```bash
 python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
 # Dashboard: http://<host>:8080/

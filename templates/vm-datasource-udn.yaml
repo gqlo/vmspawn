@@ -28,6 +28,7 @@ spec:
             storage: {STORAGE_SIZE}
         volumeMode: {VOLUME_MODE}
         storageClassName: {STORAGE_CLASS}
+  {DATA_DV_TEMPLATE}
   runStrategy: {RUN_STRATEGY}
   template:
     metadata:
@@ -46,6 +47,7 @@ spec:
           - disk:
               bus: virtio
             name: vda
+          {DATA_DISK}
           {CLOUDINIT_DISK}
           interfaces:
           - name: primary-udn-net
@@ -63,4 +65,5 @@ spec:
       - dataVolume:
           name: {VM_BASENAME}-{BATCH_ID}-{vm-id}
         name: vda
+      {DATA_VOLUME}
       {CLOUDINIT_VOLUME}

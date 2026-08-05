@@ -18,19 +18,15 @@ write_files:
     permissions: '0755'
     content: |
       #!/bin/bash
-      # fio storage I/O workload: set WORKLOAD_TYPE=randread|randwrite|randrw|seqwrite|seqread (default: randrw).
-      # Override via env: FIO_DIRECTORY, FIO_SIZE, FIO_BS, FIO_IODEPTH, FIO_NUMJOBS,
-      #   FIO_TIME_BASED, FIO_RUNTIME, FIO_DIRECT, FIO_RW.
-      # FIO_TIME_BASED=0 (default): no --time_based/--runtime; each cycle runs until --size completes.
-      # FIO_TIME_BASED=1: add --time_based --runtime=$FIO_RUNTIME.
-      # Set FIO_CUSTOM_OPTS to run a custom fio command instead of the built-in job (all other tunables still apply for banner/logging).
-      # Result sync (optional): RESULT_SERVER_URL, RESULT_SERVER_TOKEN, RESULT_RETRY, RESULT_TIMEOUT,
-      #   RESULT_MAX_FAILED_POSTS (default 5; 0=unlimited), VSTORM_BATCH_ID, VSTORM_VM_NAME —
-      #   see docs/workload-result-sync-and-dashboard.md
-      # Run control (when RESULT_SERVER_URL set): WORKLOAD_RUN_MODE=idle|once|count|forever (default idle),
-      #   WORKLOAD_RUN_COUNT (for count), WORKLOAD_POLL_SECONDS (default 5). Guest polls GET /v1/policy.
-      # WORKLOAD_MAX_JOBS: hard ceiling on jobN (e.g. 5 → stop after job5), even if policy is forever.
+      # One-shot fio workload: run a single job with boot-time FIO_* params, then exit.
+      # Optional RESULT_SERVER_URL: POST one result JSON when the job finishes.
+      # Override via env: WORKLOAD_TYPE, FIO_DIRECTORY, FIO_SIZE, FIO_BS, FIO_IODEPTH,
+      #   FIO_NUMJOBS, FIO_TIME_BASED, FIO_RUNTIME, FIO_DIRECT, FIO_RW, FIO_CUSTOM_OPTS.
+      # Result sync: RESULT_SERVER_URL, RESULT_SERVER_TOKEN, RESULT_RETRY, RESULT_TIMEOUT,
+      #   VSTORM_BATCH_ID, VSTORM_VM_NAME — see docs/workload-result-sync-and-dashboard.md
       # Use /etc/default/fio-workload or systemd Environment= to customize.
+
+      set -euo pipefail
 
       # Install fio if not already present
       if ! command -v fio &> /dev/null; then
@@ -53,7 +49,6 @@ write_files:
           fi
       fi
 
-      # WORKLOAD_TYPE preset (env overrides below)
       WORKLOAD_TYPE="${WORKLOAD_TYPE:-randrw}"
       case "$WORKLOAD_TYPE" in
           randread)  _rw=randread;  _bs=4k; _rwmix=50 ;;
@@ -64,8 +59,7 @@ write_files:
           *)         _rw=randrw;    _bs=4k; _rwmix=50 ;;
       esac
 
-      # Tunables (env overrides preset)
-      FIO_DIRECTORY="${FIO_DIRECTORY:-/var/lib/fio}"
+      FIO_DIRECTORY="${FIO_DIRECTORY:-/root/data}"
       FIO_SIZE="${FIO_SIZE:-1G}"
       FIO_BS="${FIO_BS:-$_bs}"
       FIO_IODEPTH="${FIO_IODEPTH:-16}"
@@ -77,21 +71,40 @@ write_files:
       FIO_RWMIXREAD="${FIO_RWMIXREAD:-$_rwmix}"
       RESULT_RETRY="${RESULT_RETRY:-3}"
       RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
-      # Stop workload after this many consecutive failed cycle result POSTs (0 = unlimited).
-      RESULT_MAX_FAILED_POSTS="${RESULT_MAX_FAILED_POSTS:-5}"
-      # When RESULT_SERVER_URL is set, default idle and wait for dashboard policy.
-      # Without RESULT_SERVER_URL, the loop still runs forever (legacy soak).
-      WORKLOAD_RUN_MODE="${WORKLOAD_RUN_MODE:-idle}"
-      WORKLOAD_RUN_COUNT="${WORKLOAD_RUN_COUNT:-0}"
-      WORKLOAD_POLL_SECONDS="${WORKLOAD_POLL_SECONDS:-5}"
-      # Optional hard stop on job counter (independent of collector policy).
-      WORKLOAD_MAX_JOBS="${WORKLOAD_MAX_JOBS:-}"
-      _FAILED_POSTS=0
-      _POSTS_DISABLED=0
+      # Optional blank data disk from vstorm --data-disk-size (usually /dev/vdb).
+      # Format once, mount, and add /etc/fstab so the mount survives reboot.
+      FIO_DATA_DEVICE="${FIO_DATA_DEVICE:-/dev/vdb}"
+
+      if [[ -b "$FIO_DATA_DEVICE" ]]; then
+          if ! blkid "$FIO_DATA_DEVICE" &>/dev/null; then
+              echo "Formatting data disk $FIO_DATA_DEVICE for $FIO_DIRECTORY..."
+              if command -v mkfs.xfs &>/dev/null; then
+                  mkfs.xfs -f "$FIO_DATA_DEVICE"
+              else
+                  mkfs.ext4 -F "$FIO_DATA_DEVICE"
+              fi
+          fi
+          mkdir -p "$FIO_DIRECTORY"
+          _fio_uuid=$(blkid -s UUID -o value "$FIO_DATA_DEVICE" 2>/dev/null || true)
+          _fio_fstype=$(blkid -s TYPE -o value "$FIO_DATA_DEVICE" 2>/dev/null || echo auto)
+          if [[ -n "$_fio_uuid" ]]; then
+              _fio_fspec="UUID=${_fio_uuid}"
+          else
+              _fio_fspec="$FIO_DATA_DEVICE"
+          fi
+          if ! grep -qE "^[^#].*[[:space:]]${FIO_DIRECTORY}[[:space:]]" /etc/fstab 2>/dev/null; then
+              echo "${_fio_fspec} ${FIO_DIRECTORY} ${_fio_fstype} defaults,nofail 0 2" >> /etc/fstab
+              echo "Added ${_fio_fspec} -> ${FIO_DIRECTORY} to /etc/fstab"
+          fi
+          if ! findmnt -n --target "$FIO_DIRECTORY" &>/dev/null; then
+              mount "$FIO_DIRECTORY" || mount "$FIO_DATA_DEVICE" "$FIO_DIRECTORY"
+              echo "Mounted $FIO_DATA_DEVICE on $FIO_DIRECTORY"
+          fi
+      fi
 
       mkdir -p "$FIO_DIRECTORY/results"
       FIO_FILENAME="${FIO_DIRECTORY}/fio-job.dat"
-      JOB_COUNTER_FILE="${FIO_DIRECTORY}/job.counter"
+      JOB_NAME="job1"
 
       # Timestamp log: create on first start, append on later service starts / reboots (UTC)
       _ts_unix=$(date -u +%s)
@@ -114,42 +127,26 @@ write_files:
           }
       fi
       SERVICE_START_UNIX="$_ts_unix"
-      SERVICE_START_TEXT="$_ts_human"
-      # First line = original boot; payload uses UTC ISO (…Z) derived from unix
       IFS=',' read -r _bu _bt < "$BOOT_TIMESTAMP_FILE" || true
       BOOT_TIMESTAMP_UNIX="${_bu// /}"
-      BOOT_TIMESTAMP_TEXT="${_bt# }"
-      BOOT_TIMESTAMP_TEXT="${BOOT_TIMESTAMP_TEXT## }"
       [[ -n "$BOOT_TIMESTAMP_UNIX" ]] || BOOT_TIMESTAMP_UNIX="$_ts_unix"
-      [[ -n "$BOOT_TIMESTAMP_TEXT" ]] || BOOT_TIMESTAMP_TEXT="$_ts_human"
 
-      # Persistent jobN counter (survives reboot); next job to run
-      if [[ -f "$JOB_COUNTER_FILE" ]] && [[ "$(tr -d '[:space:]' < "$JOB_COUNTER_FILE")" =~ ^[1-9][0-9]*$ ]]; then
-          cycle=$(tr -d '[:space:]' < "$JOB_COUNTER_FILE")
-      else
-          cycle=1
-      fi
-
-      report_cycle() {
-          local cycle_num="$1" fio_rc="$2" started_at="$3" stopped_at="$4" fio_json="$5"
-          shift 5
+      report_result() {
+          local fio_rc="$1" started_at="$2" stopped_at="$3" fio_json="$4"
+          shift 4
           local -a cmd_argv=("$@")
 
           [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
-          if (( _POSTS_DISABLED )); then
-              echo "Cycle $cycle_num: result POST disabled after $RESULT_MAX_FAILED_POSTS consecutive failures; skipping POST"
-              return 0
-          fi
           if ! command -v python3 &>/dev/null; then
-              echo "Cycle $cycle_num: cannot build result payload (python3 missing)"
+              echo "Cannot build result payload (python3 missing)"
               return 0
           fi
           if ! command -v curl &>/dev/null; then
-              echo "Cycle $cycle_num: cannot POST result payload (curl missing)"
+              echo "Cannot POST result payload (curl missing)"
               return 0
           fi
 
-          local payload_file="${FIO_DIRECTORY}/results/job${cycle_num}-payload.json"
+          local payload_file="${FIO_DIRECTORY}/results/${JOB_NAME}-payload.json"
           local pending_dir="${FIO_DIRECTORY}/results/pending"
           mkdir -p "$pending_dir"
           local status="ok" error_message=""
@@ -178,24 +175,23 @@ write_files:
               "$reported_at_unix" "$started_at" "$stopped_at" \
               "$BOOT_TIMESTAMP_UNIX" \
               "$hostname_s" "${VSTORM_BATCH_ID:-}" "$vm_name" \
-              "$cycle_num" "$cpu_count" "$mem_total_kb" "$fio_rc" \
+              "$cpu_count" "$mem_total_kb" "$fio_rc" \
               "$WORKLOAD_TYPE" "$FIO_SIZE" "$FIO_BS" "$FIO_IODEPTH" "$FIO_NUMJOBS" "$FIO_DIRECT" "$FIO_RW" \
-              "job${cycle_num}" "$SERVICE_START_UNIX" <<'PY'
+              "$JOB_NAME" "$SERVICE_START_UNIX" <<'PY'
       import json, os, sys
       from datetime import datetime, timezone
 
       def fmt_utc(unix):
-          # Explicit UTC timezone via Z suffix
           return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
       fio_path, out_path = sys.argv[1], sys.argv[2]
       reported_at_unix, fio_start_unix, fio_stop_unix = map(int, sys.argv[3:6])
       boot_unix = int(sys.argv[6] or 0)
       hostname, batch_id, vm_name = sys.argv[7], sys.argv[8], sys.argv[9]
-      cycle, cpu_count, mem_total_kb, fio_rc = map(int, sys.argv[10:14])
-      wtype, fsize, fbs, fiodepth, fnumjobs, fdirect, frw = sys.argv[14:21]
-      job_name = sys.argv[21]
-      service_start_unix = int(sys.argv[22] or 0)
+      cpu_count, mem_total_kb, fio_rc = map(int, sys.argv[10:13])
+      wtype, fsize, fbs, fiodepth, fnumjobs, fdirect, frw = sys.argv[13:20]
+      job_name = sys.argv[20]
+      service_start_unix = int(sys.argv[21] or 0)
       status = os.environ.get("RESULT_STATUS") or "ok"
       error_message = os.environ.get("RESULT_ERROR_MESSAGE") or ""
       fio = None
@@ -226,7 +222,7 @@ write_files:
           "hostname": hostname,
           "batch_id": batch_id,
           "vm_name": vm_name,
-          "cycle": cycle,
+          "cycle": 1,
           "job_name": job_name,
           "cpu_count": cpu_count,
           "mem_total_kb": mem_total_kb,
@@ -276,21 +272,6 @@ write_files:
               return 1
           }
 
-          # Drop oldest successful cycle artifacts; keep pending/ for retries.
-          _prune_posted_artifacts() {
-              local keep=20 dir="${FIO_DIRECTORY}/results"
-              [[ -d "$dir" ]] || return 0
-              # shellcheck disable=SC2012
-              ls -1t "$dir"/job*-payload.json 2>/dev/null | tail -n +"$((keep + 1))" | while read -r f; do
-                  rm -f "$f"
-              done
-              # shellcheck disable=SC2012
-              ls -1t "$dir"/job*.json 2>/dev/null | grep -v -- '-payload\.json$' | grep -v -- '-post-error\.json$' | tail -n +"$((keep + 1))" | while read -r f; do
-                  rm -f "$f"
-              done
-          }
-
-          # Flush any previously failed posts first
           local pending
           shopt -s nullglob
           for pending in "$pending_dir"/*.json; do
@@ -302,323 +283,119 @@ write_files:
           done
           shopt -u nullglob
 
-          if _post_payload_file "$payload_file" "Cycle $cycle_num ($status)"; then
-              rm -f "${pending_dir}/job${cycle_num}-payload.json" "$payload_file"
-              _prune_posted_artifacts
-              _FAILED_POSTS=0
+          if _post_payload_file "$payload_file" "Result ($status)"; then
+              rm -f "${pending_dir}/${JOB_NAME}-payload.json" "$payload_file"
               return 0
           fi
 
-          # Connection / server issue: keep spool for retry; also POST a compact error event if possible
-          cp -f "$payload_file" "${pending_dir}/job${cycle_num}-payload.json"
-          ((_FAILED_POSTS++)) || true
-          if [[ "$RESULT_MAX_FAILED_POSTS" =~ ^[1-9][0-9]*$ ]] && (( _FAILED_POSTS >= RESULT_MAX_FAILED_POSTS )); then
-              _POSTS_DISABLED=1
-              echo "RESULT_MAX_FAILED_POSTS=$RESULT_MAX_FAILED_POSTS reached ($_FAILED_POSTS consecutive cycle POST failures); disabling further POSTs and idling"
-          fi
-          local conn_err_file="${FIO_DIRECTORY}/results/job${cycle_num}-post-error.json"
-          python3 - "$conn_err_file" "$reported_at_unix" "$started_at" "$stopped_at" \
-              "$hostname_s" "${VSTORM_BATCH_ID:-}" "$vm_name" "$cycle_num" \
-              "job${cycle_num}" "$RESULT_SERVER_URL" <<'PY'
+          cp -f "$payload_file" "${pending_dir}/${JOB_NAME}-payload.json"
+          local conn_err_file="${FIO_DIRECTORY}/results/${JOB_NAME}-post-error.json"
+          python3 - "$conn_err_file" \
+              "$hostname_s" "${VSTORM_BATCH_ID:-}" "$vm_name" \
+              "$JOB_NAME" "$RESULT_SERVER_URL" <<'PY'
       import json, sys
       from datetime import datetime, timezone
-
-      def fmt_utc(unix):
-          return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
-      out, reported_at_unix, fio_start_unix, fio_stop_unix = sys.argv[1], *map(int, sys.argv[2:5])
-      hostname, batch_id, vm_name, cycle = sys.argv[5], sys.argv[6], sys.argv[7], int(sys.argv[8])
-      job_name, url = sys.argv[9], sys.argv[10]
+      out, hostname, batch_id, vm_name, job_name, url = sys.argv[1:7]
+      now = datetime.now(tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
       payload = {
           "schema_version": 1,
           "record_type": "error",
           "source": "guest",
           "workload_kind": "fio",
           "status": "post_error",
-          "error_message": f"failed to POST cycle payload to {url} after retries; left in guest pending spool",
-          "fio_start": fmt_utc(fio_start_unix),
-          "fio_stop": fmt_utc(fio_stop_unix),
-          "reported_at": fmt_utc(reported_at_unix),
+          "error_message": f"failed to POST result payload to {url} after retries; left in guest pending spool",
+          "reported_at": now,
           "hostname": hostname,
           "batch_id": batch_id,
           "vm_name": vm_name,
-          "cycle": cycle,
+          "cycle": 1,
           "job_name": job_name,
-          "fio_rc": None,
-          "fio_group_reporting": None,
       }
       with open(out, "w", encoding="utf-8") as f:
           json.dump(payload, f)
           f.write("\n")
       PY
-          # Best-effort: if connectivity flaps, this may still land; otherwise spool it too
-          # Do not count post_error failures toward the cap (already counted the cycle result).
-          if ! _post_payload_file "$conn_err_file" "Cycle $cycle_num post_error"; then
-              cp -f "$conn_err_file" "${pending_dir}/job${cycle_num}-post-error.json"
-              echo "Cycle $cycle_num: collector unreachable; payloads spooled under $pending_dir"
+          if ! _post_payload_file "$conn_err_file" "Result post_error"; then
+              cp -f "$conn_err_file" "${pending_dir}/${JOB_NAME}-post-error.json"
+              echo "Collector unreachable; payloads spooled under $pending_dir"
           fi
-          return 0
       }
 
-      echo "Starting fio workload (WORKLOAD_TYPE=$WORKLOAD_TYPE)"
-      echo "FIO_RW=$FIO_RW | FIO_BS=$FIO_BS | FIO_IODEPTH=$FIO_IODEPTH | FIO_NUMJOBS=$FIO_NUMJOBS"
-      if [[ "$FIO_TIME_BASED" == "1" ]]; then
-          echo "FIO_SIZE=$FIO_SIZE | FIO_TIME_BASED=1 | FIO_RUNTIME=${FIO_RUNTIME}s | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
-      else
-          echo "FIO_SIZE=$FIO_SIZE | FIO_TIME_BASED=0 (no runtime limit) | FIO_DIRECT=$FIO_DIRECT | FIO_DIRECTORY=$FIO_DIRECTORY"
-      fi
-      [[ -n "${FIO_CUSTOM_OPTS:-}" ]] && echo "FIO_CUSTOM_OPTS is set: using CUSTOM-OPTS branch for each cycle."
+      echo "=========================================="
+      echo "Starting fio workload (one-shot)"
+      echo "WORKLOAD_TYPE=$WORKLOAD_TYPE"
+      echo "FIO_RW=$FIO_RW FIO_SIZE=$FIO_SIZE FIO_BS=$FIO_BS FIO_IODEPTH=$FIO_IODEPTH FIO_NUMJOBS=$FIO_NUMJOBS"
+      echo "FIO_DIRECT=$FIO_DIRECT FIO_TIME_BASED=$FIO_TIME_BASED FIO_RUNTIME=$FIO_RUNTIME"
+      echo "FIO_DIRECTORY=$FIO_DIRECTORY"
+      [[ -n "${FIO_CUSTOM_OPTS:-}" ]] && echo "FIO_CUSTOM_OPTS is set: using CUSTOM-OPTS branch"
       if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
-          echo "RESULT_SERVER_URL=$RESULT_SERVER_URL (post after each cycle; poll policy between cycles)"
-          echo "WORKLOAD_RUN_MODE=$WORKLOAD_RUN_MODE WORKLOAD_RUN_COUNT=$WORKLOAD_RUN_COUNT WORKLOAD_POLL_SECONDS=$WORKLOAD_POLL_SECONDS"
-          echo "RESULT_MAX_FAILED_POSTS=$RESULT_MAX_FAILED_POSTS (0=unlimited consecutive cycle POST failures)"
-          echo "VSTORM_BATCH_ID=${VSTORM_BATCH_ID:-<unset>} VSTORM_VM_NAME=${VSTORM_VM_NAME:-<hostname>}"
+          echo "RESULT_SERVER_URL=$RESULT_SERVER_URL (POST once after job completes)"
       else
-          echo "RESULT_SERVER_URL unset: running forever without policy poll (legacy)"
+          echo "RESULT_SERVER_URL unset: run locally only (no POST)"
       fi
-      [[ -n "${WORKLOAD_MAX_JOBS:-}" ]] && echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS (hard stop after job${WORKLOAD_MAX_JOBS})"
-      echo "Boot timestamp (first line): $BOOT_TIMESTAMP_UNIX, $BOOT_TIMESTAMP_TEXT ($BOOT_TIMESTAMP_FILE)"
-      echo "This service start: $SERVICE_START_UNIX, $SERVICE_START_TEXT"
-      echo "Next job name: job${cycle} (counter file: $JOB_COUNTER_FILE)"
+      echo "Job name: $JOB_NAME"
+      echo "=========================================="
       echo ""
 
-      # Collector base URL for policy poll (strip /v1/results suffix)
-      RESULT_BASE=""
-      if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
-          RESULT_BASE="${RESULT_SERVER_URL%/}"
-          RESULT_BASE="${RESULT_BASE%/v1/results}"
-      fi
-
-      _post_agent_status() {
-          local agent_state="$1"
-          [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
-          [[ -n "${VSTORM_BATCH_ID:-}" ]] || return 0
-          command -v python3 &>/dev/null || return 0
-          command -v curl &>/dev/null || return 0
-          local vm_name="${VSTORM_VM_NAME:-$(hostname -s 2>/dev/null || hostname || echo unknown)}"
-          local hostname_s tmp
-          hostname_s=$(hostname -s 2>/dev/null || hostname || echo unknown)
-          tmp=$(mktemp)
-          python3 - "$tmp" "$agent_state" "$hostname_s" "${VSTORM_BATCH_ID}" "$vm_name" \
-              "${WORKLOAD_RUN_MODE:-idle}" <<'PY'
-      import json, sys, time
-      from datetime import datetime, timezone
-      out, agent_state, hostname, batch_id, vm_name, policy_mode = sys.argv[1:7]
-      now = int(time.time())
-      payload = {
-          "schema_version": 1,
-          "record_type": "heartbeat",
-          "source": "guest",
-          "workload_kind": "fio",
-          "batch_id": batch_id,
-          "vm_name": vm_name,
-          "hostname": hostname,
-          "agent_state": agent_state,
-          "policy_mode": policy_mode,
-          "reported_at": datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-      }
-      with open(out, "w", encoding="utf-8") as f:
-          json.dump(payload, f)
-          f.write("\n")
-      PY
-          local curl_args=(-sS -f -X POST -H "Content-Type: application/json"
-                           --data-binary @"$tmp"
-                           --connect-timeout "$RESULT_TIMEOUT"
-                           --max-time "$RESULT_TIMEOUT")
-          [[ -n "${RESULT_SERVER_TOKEN:-}" ]] && curl_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
-          curl "${curl_args[@]}" "$RESULT_SERVER_URL" >/dev/null 2>&1 || true
-          rm -f "$tmp"
-      }
-
-      # Local budget so once/count still stop when result POSTs fail (server
-      # only decrements remaining on successful result ingest).
-      _POLICY_REV=""
-      _LOCAL_RUNS=0
-      _LOCAL_BUDGET=0
-
-      _max_jobs_reached() {
-          [[ -n "${WORKLOAD_MAX_JOBS:-}" ]] || return 1
-          [[ "$WORKLOAD_MAX_JOBS" =~ ^[1-9][0-9]*$ ]] || return 1
-          (( cycle > WORKLOAD_MAX_JOBS ))
-      }
-
-      _policy_allows_run() {
-          # Returns 0 if guest should run one cycle now.
-          if _max_jobs_reached; then
-              echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS reached (next would be job${cycle}); idling"
-              _post_agent_status "idle"
-              return 1
-          fi
-          [[ -n "${RESULT_SERVER_URL:-}" ]] || return 0
-          [[ -n "${RESULT_BASE:-}" ]] || return 1
-          local batch_id="${VSTORM_BATCH_ID:-}"
-          if [[ -z "$batch_id" ]]; then
-              echo "Policy poll skipped: VSTORM_BATCH_ID unset; idling"
-              return 1
-          fi
-          if ! command -v curl &>/dev/null || ! command -v python3 &>/dev/null; then
-              echo "Policy poll skipped: curl/python3 missing; idling"
-              return 1
-          fi
-          local vm_name="${VSTORM_VM_NAME:-$(hostname -s 2>/dev/null || hostname || echo unknown)}"
-          local url curl_args=() body
-          url="${RESULT_BASE}/v1/policy?batch_id=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$batch_id")"
-          url="${url}&vm_name=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$vm_name")"
-          url="${url}&default_mode=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1], safe=""))' "$WORKLOAD_RUN_MODE")"
-          if [[ "$WORKLOAD_RUN_MODE" == "count" ]]; then
-              url="${url}&default_remaining=${WORKLOAD_RUN_COUNT}"
-          fi
-          curl_args=(-sS -f --connect-timeout "$RESULT_TIMEOUT" --max-time "$RESULT_TIMEOUT")
-          if [[ -n "${RESULT_SERVER_TOKEN:-}" ]]; then
-              curl_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
-          fi
-          if ! body=$(curl "${curl_args[@]}" "$url"); then
-              echo "Policy poll failed ($url); will retry after ${WORKLOAD_POLL_SECONDS}s"
-              _post_agent_status "error"
-              return 1
-          fi
-          local decision
-          decision=$(echo "$body" | python3 -c '
-      import json, sys
-      p = json.load(sys.stdin)
-      mode = str(p.get("mode") or "idle")
-      remaining = int(p.get("remaining") or 0)
-      revision = int(p.get("revision") or 0)
-      run = bool(p.get("run"))
-      print(f"{mode} remaining={remaining} revision={revision} run={run}")
-      # budget: once/count use remaining; forever = -1 (unlimited); idle = 0
-      if mode == "forever":
-          budget = -1
-      elif mode in ("once", "count"):
-          budget = remaining
-      else:
-          budget = 0
-      print(f"META {revision} {budget} {1 if run else 0}")
-      sys.exit(0 if run else 1)
-      ') && _pol_rc=0 || _pol_rc=$?
-          echo "$decision" | grep -v '^META ' || true
-          local meta rev budget runflag
-          meta=$(echo "$decision" | awk '/^META /{print; exit}')
-          read -r _tag rev budget runflag <<<"$meta"
-          if [[ -n "$rev" && "$rev" != "$_POLICY_REV" ]]; then
-              _POLICY_REV="$rev"
-              _LOCAL_RUNS=0
-              _LOCAL_BUDGET="$budget"
-              echo "Policy grant revision=$rev budget=$budget (local runs reset)"
-          fi
-          if ((_pol_rc != 0)); then
-              _post_agent_status "idle"
-              return 1
-          fi
-          # Stop once/count locally even if collector remaining stuck (failed result POSTs).
-          if [[ "$_LOCAL_BUDGET" =~ ^[0-9]+$ ]] && (( _LOCAL_RUNS >= _LOCAL_BUDGET )); then
-              echo "Local cycle budget exhausted ($_LOCAL_RUNS/$_LOCAL_BUDGET) under revision $_POLICY_REV; idling"
-              _post_agent_status "idle"
-              return 1
-          fi
-          return 0
-      }
-
-      # On startup, retry any payloads left from prior connection failures
-      if [[ -n "${RESULT_SERVER_URL:-}" ]] && command -v curl &>/dev/null; then
-          _pending_dir="${FIO_DIRECTORY}/results/pending"
-          mkdir -p "$_pending_dir"
-          shopt -s nullglob
-          for _pending in "$_pending_dir"/*.json; do
-              _curl_args=(-sS -f -X POST -H "Content-Type: application/json"
-                          --data-binary @"$_pending"
-                          --connect-timeout "$RESULT_TIMEOUT"
-                          --max-time "$RESULT_TIMEOUT")
-              [[ -n "${RESULT_SERVER_TOKEN:-}" ]] && _curl_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
-              if curl "${_curl_args[@]}" "$RESULT_SERVER_URL"; then
-                  echo "Flushed pending $(basename "$_pending") to $RESULT_SERVER_URL"
-                  rm -f "$_pending"
-              else
-                  echo "Still cannot flush pending $(basename "$_pending"); will retry later"
-                  break
-              fi
-          done
-          shopt -u nullglob
-      fi
-
-      while true; do
-          if (( _POSTS_DISABLED )); then
-              echo "Result POSTs disabled after $RESULT_MAX_FAILED_POSTS consecutive failures; idling (fix/restart to retry)"
-              _post_agent_status "error"
-              sleep "$WORKLOAD_POLL_SECONDS"
-              continue
-          fi
-          if _max_jobs_reached; then
-              echo "WORKLOAD_MAX_JOBS=$WORKLOAD_MAX_JOBS reached (next would be job${cycle}); sleeping"
-              _post_agent_status "idle"
-              sleep "$WORKLOAD_POLL_SECONDS"
-              continue
-          fi
-          if [[ -n "${RESULT_SERVER_URL:-}" ]]; then
-              if ! _policy_allows_run; then
-                  sleep "$WORKLOAD_POLL_SECONDS"
-                  continue
-              fi
-          fi
-
-          _post_agent_status "running"
-          fio_rc=0
-          job_name="job${cycle}"
-          fio_json="${FIO_DIRECTORY}/results/${job_name}.json"
-          started_at=$(date -u +%s)
-          if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
-              if [[ "$FIO_TIME_BASED" == "1" ]]; then
-                  echo "Cycle $cycle ($job_name): CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
-                  # shellcheck disable=SC2086
-                  fio $FIO_CUSTOM_OPTS --name="$job_name" --output-format=json --output="$fio_json" --time_based --runtime="${FIO_RUNTIME}" || fio_rc=$?
-              else
-                  echo "Cycle $cycle ($job_name): CUSTOM-OPTS - Running fio (no runtime limit)..."
-                  # shellcheck disable=SC2086
-                  fio $FIO_CUSTOM_OPTS --name="$job_name" --output-format=json --output="$fio_json" || fio_rc=$?
-              fi
+      fio_json="${FIO_DIRECTORY}/results/${JOB_NAME}.json"
+      started_at=$(date -u +%s)
+      fio_rc=0
+      set +e
+      if [[ -n "${FIO_CUSTOM_OPTS:-}" ]]; then
+          if [[ "$FIO_TIME_BASED" == "1" ]]; then
+              echo "CUSTOM-OPTS - Running fio for ${FIO_RUNTIME}s..."
               # shellcheck disable=SC2086
-              report_cycle "$cycle" "$fio_rc" "$started_at" "$(date -u +%s)" "$fio_json" fio $FIO_CUSTOM_OPTS --name="$job_name"
+              fio $FIO_CUSTOM_OPTS --name="$JOB_NAME" --output-format=json --output="$fio_json" \
+                  --time_based --runtime="$FIO_RUNTIME"
+              fio_rc=$?
           else
-              if [[ "$FIO_TIME_BASED" == "1" ]]; then
-                  echo "Cycle $cycle ($job_name): ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
-              else
-                  echo "Cycle $cycle ($job_name): ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) until size=$FIO_SIZE completes..."
-              fi
-              fio_args=(
-                  --name="$job_name"
-                  --filename="$FIO_FILENAME"
-                  --rw="$FIO_RW"
-                  --bs="$FIO_BS"
-                  --iodepth="$FIO_IODEPTH"
-                  --numjobs="$FIO_NUMJOBS"
-                  --size="$FIO_SIZE"
-                  --direct="$FIO_DIRECT"
-                  --ioengine=libaio
-                  --group_reporting
-                  --output-format=json
-                  --output="$fio_json"
-              )
-              if [[ "$FIO_TIME_BASED" == "1" ]]; then
-                  fio_args+=(--time_based --runtime="$FIO_RUNTIME")
-              fi
-              if [[ "$FIO_RW" == "randrw" || "$FIO_RW" == "rw" ]]; then
-                  fio_args+=(--rwmixread="$FIO_RWMIXREAD")
-              fi
-              fio "${fio_args[@]}" || fio_rc=$?
-              stopped_at=$(date -u +%s)
-              report_cycle "$cycle" "$fio_rc" "$started_at" "$stopped_at" "$fio_json" fio "${fio_args[@]}"
+              echo "CUSTOM-OPTS - Running fio (no runtime limit)..."
+              # shellcheck disable=SC2086
+              fio $FIO_CUSTOM_OPTS --name="$JOB_NAME" --output-format=json --output="$fio_json"
+              fio_rc=$?
           fi
-          if [[ $fio_rc -ne 0 ]]; then
-              echo "Cycle $cycle ($job_name): fio exited with status $fio_rc; backing off before retry..."
-              sleep "${FIO_FAILURE_SLEEP:-5}"
+          report_result "$fio_rc" "$started_at" "$(date -u +%s)" "$fio_json" fio $FIO_CUSTOM_OPTS --name="$JOB_NAME"
+      else
+          if [[ "$FIO_TIME_BASED" == "1" ]]; then
+              echo "ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) for ${FIO_RUNTIME}s..."
+          else
+              echo "ACTIVE - Running fio ($FIO_RW, bs=$FIO_BS) until size=$FIO_SIZE completes..."
           fi
-          # Count completed cycles toward local once/count budget (even if POST failed).
-          ((_LOCAL_RUNS++)) || true
-          # Persist next job number before increment (survives reboot)
-          printf '%s\n' "$((cycle + 1))" > "$JOB_COUNTER_FILE"
-          ((cycle++))
-          _post_agent_status "idle"
-      done
+          fio_args=(
+              --name="$JOB_NAME"
+              --filename="$FIO_FILENAME"
+              --rw="$FIO_RW"
+              --bs="$FIO_BS"
+              --iodepth="$FIO_IODEPTH"
+              --size="$FIO_SIZE"
+              --numjobs="$FIO_NUMJOBS"
+              --direct="$FIO_DIRECT"
+              --ioengine=libaio
+              --group_reporting
+              --output-format=json
+              --output="$fio_json"
+          )
+          if [[ "$FIO_RW" == "randrw" ]]; then
+              fio_args+=(--rwmixread="$FIO_RWMIXREAD")
+          fi
+          if [[ "$FIO_TIME_BASED" == "1" ]]; then
+              fio_args+=(--time_based --runtime="$FIO_RUNTIME")
+          fi
+          fio "${fio_args[@]}"
+          fio_rc=$?
+          stopped_at=$(date -u +%s)
+          report_result "$fio_rc" "$started_at" "$stopped_at" "$fio_json" fio "${fio_args[@]}"
+      fi
+      set -e
+
+      if [[ "$fio_rc" -ne 0 ]]; then
+          echo "fio exited with status $fio_rc"
+      else
+          echo "fio completed successfully"
+      fi
+      echo "One-shot workload finished."
+      exit "$fio_rc"
+
   - path: /etc/default/vstorm-guest-env
     permissions: '0644'
     content: |
@@ -628,17 +405,17 @@ write_files:
     permissions: '0644'
     content: |
       [Unit]
-      Description=fio storage I/O workload (WORKLOAD_TYPE=randread|randwrite|randrw|seqwrite|seqread)
+      Description=fio storage I/O workload (one-shot)
       After=network-online.target network.target
       Wants=network-online.target
 
       [Service]
-      Type=simple
+      Type=oneshot
+      RemainAfterExit=yes
       EnvironmentFile=-/etc/default/vstorm-guest-env
       EnvironmentFile=-/etc/default/fio-workload
       ExecStart=/opt/fio_workload.sh
-      Restart=always
-      RestartSec=5
+      Restart=no
 
       [Install]
       WantedBy=multi-user.target

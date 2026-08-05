@@ -233,6 +233,8 @@ NodePort values are auto-allocated from 32222 upward (one per namespace). OVN lo
 
 `--volume-mode=Block|Filesystem` sets PVC `volumeMode` (default `Block`). Use `Filesystem` for NFS/NAS storage classes. Access mode is still auto-detected from the StorageProfile for the chosen volume mode unless you pass `--access-mode`.
 
+`--data-disk-size=N` attaches a **blank** second disk (`vdb`) via a DataVolume (default **20G**). Pass `--data-disk-size=0` to disable. The fio cloud-init formats and mounts it on `/root/data` when present. Root/OS disk size remains `--storage-size`.
+
 KubeVirt sets **no resource limits** by default — only requests. The guest VM cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 Use `--create-existing-vm` with `--batch-id` to re-apply VM YAML for an existing batch (e.g. after changing `--cores` or `--memory`); without it, VMs that already exist on the cluster are skipped.

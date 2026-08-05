@@ -182,7 +182,9 @@ setup_file() {
   [[ "$output" == *"kind: UserDefinedNetwork"* ]]
   [[ "$output" == *"name: l2bridge"* ]]
   [[ "$output" == *"containerDisk:"* ]]
-  [[ "$output" != *"kind: DataVolume"* ]]
+  # Root is containerDisk; blank data-disk DataVolume (vdb) is expected by default
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"name: vdb"* ]]
 }
 
 # ---------------------------------------------------------------

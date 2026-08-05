@@ -505,3 +505,39 @@ setup_file() {
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
 }
 
+# ---------------------------------------------------------------
+# COMBO-26: --data-disk-size (default 20G blank vdb; 0 disables)
+# ---------------------------------------------------------------
+@test "combo: default data disk is 20G blank vdb" {
+  run bash "$VSTORM" -n --batch-id=cmb026 --datasource=rhel9 \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Data disk:     20G (blank vdb)"* ]]
+  [[ "$output" == *"name: vdb"* ]]
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"20G"* ]]
+  [[ "$output" == *"-data"* ]]
+  [[ "$output" == *"name: vda"* ]]
+}
+
+@test "combo: --data-disk-size=50Gi overrides default data disk" {
+  run bash "$VSTORM" -n --batch-id=cmb026b --datasource=rhel9 --data-disk-size=50Gi \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Data disk:     50Gi (blank vdb)"* ]]
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"50Gi"* ]]
+}
+
+@test "combo: --data-disk-size=0 disables blank vdb" {
+  run bash "$VSTORM" -n --batch-id=cmb027 --datasource=rhel9 --data-disk-size=0 \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" != *"blank: {}"* ]]
+  [[ "$output" != *"name: vdb"* ]]
+  [[ "$output" != *"Data disk:"* ]]
+}
+

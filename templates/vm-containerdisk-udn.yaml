@@ -7,6 +7,7 @@ metadata:
     batch-id: "{BATCH_ID}"
     vm-basename: "{VM_BASENAME}"
 spec:
+  {DATA_DV_TEMPLATES}
   runStrategy: {RUN_STRATEGY}
   template:
     metadata:
@@ -25,6 +26,7 @@ spec:
           - disk:
               bus: virtio
             name: vda
+          {DATA_DISK}
           {CLOUDINIT_DISK}
           interfaces:
           - name: primary-udn-net
@@ -42,4 +44,5 @@ spec:
       - containerDisk:
           image: {CONTAINERDISK_IMAGE}
         name: vda
+      {DATA_VOLUME}
       {CLOUDINIT_VOLUME}

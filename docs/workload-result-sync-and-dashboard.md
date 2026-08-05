@@ -1,42 +1,59 @@
 # Workload result sync and dashboard
 
-Design for capturing guest workload results (initially fio), syncing host-side vstorm **manifests** (run inventory), and controlling **when / how often** a guest workload runs from a web dashboard — not only forever loops.
+Design for capturing guest workload results (initially fio), syncing host-side vstorm **manifests** (run inventory), and browsing collected data in a simple web dashboard.
 
-Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and batch manifests](logging.md). Collector: [`monitoring/workload-result/`](../monitoring/workload-result/). First guest integration: [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml). Same control + result schema is intended for other workloads later (e.g. stress-ng).
+Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and batch manifests](logging.md). Collector: [`monitoring/workload-result/`](../monitoring/workload-result/). First guest integration: [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml).
+
+## Simple path (recommended)
+
+1. Start the collector; open the dashboard to **browse** batches / VMs / result payloads.
+2. Create VMs with **fio knobs once** via `vstorm --env FIO_*=…` and `RESULT_SERVER_URL`.
+3. Each guest runs **one** fio job at boot, POSTs **one** result when finished, then exits (`Type=oneshot`).
+4. Watch status and drill into JSON on the dashboard.
+
+```bash
+# Terminal A — collector
+python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
+# Open http://<host>:8080/
+
+# Terminal B — fio params at create; one job per VM; POST once
+vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
+  --env FIO_SIZE=1G \
+  --env WORKLOAD_TYPE=randrw \
+  --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
+  --cores=4 --memory=8Gi --vms=10 --wait
+```
+
+Dashboard is browse-first (batches → VMs → results → payload). No run-once / run-N / forever controls in the UI or guest.
 
 ## Goals
 
-- **Flexible run control from the dashboard** for each VM (or whole batch):
-  - **idle** — do not run the workload (dashboard **Idle** button; also the API `stop` mode, which collapses to idle)
-  - **once** — run one cycle, then idle
-  - **count N** — run N cycles, then idle
-  - **forever** — keep cycling until policy is set back to idle
-- After each completed guest cycle, POST structured JSON (metrics + identity) to a collector.
-- Dashboard home: **list of vstorm batches**, each with a **VM status summary** (created / contacted collector / VMI running / workload running / idle / queued / not contacted / error / stale); drill into VMs and payloads; create→boot histogram; archive/notes/delete.
-- From **vstorm on the host**, once per run, POST a **manifest** (inventory + sizing + cmdline); join guest cycles on `batch_id`.
-- Work for **fio first**, but keep the control plane workload-agnostic (`workload_kind` on results; run policy applies to the guest workload service, e.g. `fio-workload.service`).
+- **Pass fio / workload knobs once at VM create** (`vstorm --env`); guest runs a single job with those params.
+- After the job completes, POST structured JSON (metrics + identity) to a collector **once**.
+- Dashboard home: **list of vstorm batches**, each with a **VM status summary**; drill into VMs and payloads; create→boot histogram; archive/notes/delete.
+- From **vstorm on the host**, once per run, POST a **manifest** (inventory + sizing + cmdline); join guest results on `batch_id`.
+- Work for **fio first**, but keep the result schema workload-agnostic (`workload_kind` on results).
 
 ## Non-goals (v1)
 
-- Pushing commands **into** the guest (no inbound HTTP/SSH/`virtctl` required for control)
-- Time-based fio as the only cycle definition (`FIO_TIME_BASED=1` remains supported as a cycle length, not as the control model)
-- Embedding raw vstorm stdout into every guest cycle payload
+- Multi-cycle / forever guest loops or dashboard run-mode controls (`idle` / `once` / `count` / `forever`)
+- Pushing commands **into** the guest (no inbound HTTP/SSH/`virtctl` required)
+- Time-based fio as the only job definition (`FIO_TIME_BASED=1` remains supported as job length)
+- Embedding raw vstorm stdout into every guest result payload
 - Grafana / Prometheus wiring for guest workload JSON (existing Grafana under [`monitoring/dashboard/`](../monitoring/dashboard/) stays for CNV/Prom)
 - Host-side harvest of guest journals via `virtctl` / `helpers/log-vm`
 - Multi-user RBAC or multi-tenant isolation
 - TLS / HTTPS for the collector (v1 is plain **HTTP** on a trusted/lab network)
-- Live rewriting of fio tunables mid-cycle from the dashboard (policy is “how many cycles”; env/cloud-init still sets size/bs/etc. for v1)
+- Live rewriting of fio tunables from the dashboard (set `FIO_*` at create via `--env`)
 
 ## Assumptions
 
 | Decision | Choice |
 |----------|--------|
-| Control direction | **Pull**: guests poll the collector for desired run policy (VMs usually have egress only) |
-| Cycle unit | One workload invocation (for fio: one size- or time-based job); then re-check policy |
-| Default at boot | With `RESULT_SERVER_URL`: default **idle** (wait for dashboard). Override with `WORKLOAD_RUN_MODE=forever` for soak. Without URL: forever loop, no poll. |
-| Transport | **HTTP** (not HTTPS) JSON over a reachable lab network: guests POST results + GET policy; vstorm POSTs manifests. Example: `http://<host>:8080/v1/results`. TLS out of scope for v1; optional bearer token still allowed. |
-| Record types | `manifest` (host inventory) \| `result` (finished workload job) \| `error` (incident) \| `heartbeat` (agent state); join on `batch_id` |
-| Server role | One process: ingest + policy store + query + dashboard |
+| Guest job model | **One-shot**: boot → one fio job → optional POST → exit |
+| Transport | **HTTP** JSON over a reachable lab network: guests POST results; vstorm POSTs manifests. Example: `http://<host>:8080/v1/results`. TLS out of scope for v1; optional bearer token still allowed. |
+| Record types | `manifest` (host inventory) \| `result` (finished workload job) \| `error` (incident); join on `batch_id` |
+| Server role | One process: ingest + query + dashboard |
 | Collector | Python (`monitoring/workload-result/serve.py`), stdlib preferred |
 
 ## Current gap
@@ -47,15 +64,9 @@ Status vs this design (as of the current tree).
 
 | Area | Status |
 |------|--------|
-| Guest capture | Timestamps, fio JSON, result/error/heartbeat payloads, POST + pending spool when `RESULT_SERVER_URL` is set. |
-| Run control (poll) | Guest polls `GET /v1/policy` before each cycle; default `WORKLOAD_RUN_MODE=idle` when URL is set. |
-| Policy API | `GET /v1/policy`, `PUT .../vms/{vm}/policy`, `POST .../batches/{id}/policy` fan-out; remaining decrements on **result** ingest. |
-| Per-VM + batch dashboard controls | VM page and run page: Run once / Run N / Forever / Idle. |
-| VM status rollups | Home + run detail: created / contacted collector / VMI running / workload running / idle / queued / not contacted / error / stale. |
-| Host manifest | **vstorm** POSTs `record_type: "manifest"` / `source: "vstorm"` after create (and after `--wait`) when `RESULT_SERVER_URL` is in `--env`; includes `log_path` + truncated `log_text`, plus `cluster` (`api_server`, `oc_version`, `worker_nodes`, `master_nodes`). Same inventory idea as the on-disk `logs/batch-*.manifest`, posted to the collector. |
-| Batch id inject | **vstorm** auto-injects `VSTORM_BATCH_ID` into `{VSTORM_GUEST_ENV}` cloud-inits. |
-| Agent heartbeats | Guest POSTs `record_type: "heartbeat"` while idle / running / on poll errors. |
-| Collector + browse UI | Ingest, SQLite, batches list, batch/VM/payload views. |
+| Guest capture | One-shot fio; timestamps; result/error POST + pending spool when `RESULT_SERVER_URL` is set. |
+| Host manifest | **vstorm** POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`. |
+| Collector + browse UI | Ingest, SQLite, batches list, batch/VM/payload views (no run-control buttons). |
 | Transport | Plain HTTP (v1). |
 
 ### Still open / by design
@@ -63,27 +74,26 @@ Status vs this design (as of the current tree).
 | Area | Notes |
 |------|-------|
 | Per-VM `VSTORM_VM_NAME` | Not injected (shared cloud-init Secret per namespace). Guest uses hostname unless user sets `--env VSTORM_VM_NAME=…`. |
-| Unset `RESULT_SERVER_URL` | No push/poll; guest still runs **forever** (legacy soak). Intentional. |
-| Full log upload API | Batch POST may include truncated `log_text` (64 KiB); separate `POST /v1/batches/{id}/log` not required for v1. |
-| Dedicated policy/payload tests | Covered by `monitoring/tests/test_workload_result.py` (helpers, ingest, policy, HTTP). |
+| Unset `RESULT_SERVER_URL` | No POST; guest still runs the one fio job locally. |
+| Legacy policy API | Collector may still expose `/v1/policy` endpoints from earlier designs; the fio guest no longer polls them. |
+| Full log upload API | Batch POST may include truncated `log_text` (64 KiB); separate log upload not required for v1. |
 
 ## Architecture
 
 ```text
-  Dashboard UI                    Collector                         Guest agent
-  ------------                    ---------                         -----------
-  Set policy (once/N/forever) --> store desired policy
+  Dashboard UI (browse)           Collector                         Guest
+  -------------------             ---------                         -----
+  list batches / VMs / payloads   ingest + SQLite index
                                         ^
-                                        |  GET /v1/.../policy  (poll)
+                                        |  POST /v1/results (manifest from vstorm)
+                                        |  POST /v1/results (one result from guest)
                                         |
-                                  guest applies policy
+                                  guest boots
                                         |
-                                  run 0..N cycles (or forever)
+                                  run one fio job (FIO_* from --env)
                                         |
-                                  POST result JSON --------------> ingest + index
-                                                                   (decrement remaining)
-                                        |
-                                  (optional) POST heartbeat -----> agent_state for UI
+                                  POST result once ---------------> store + show on UI
+                                  exit (systemd oneshot)
 ```
 
 Guests never need inbound ports. The dashboard never talks to the VM directly.
@@ -91,19 +101,16 @@ Guests never need inbound ports. The dashboard never talks to the VM directly.
 ### End-to-end flow
 
 1. Start collector; open dashboard.
-2. Run vstorm with result URL + batch id injection; vstorm POSTs a **manifest** (run inventory).
-3. Guest boots, writes timestamp, starts **workload agent** service (fio today).
-4. Agent polls collector for **run policy** for its `batch_id` + `vm_name`.
-5. User sets policy from dashboard (e.g. “run 3 cycles” on one VM, “forever” on all).
-6. Agent runs cycles according to policy; after each cycle, POSTs a **result** JSON. Collector decrements `remaining` on result ingest (for `count` / `once`).
-7. When policy is satisfied (`once`/`count` done) or user sets **idle**, agent idles and keeps polling (heartbeats).
-8. Failed POSTs spool locally and retry; guest may also POST an **error** record (`post_error`). After `RESULT_MAX_FAILED_POSTS` consecutive failed cycle POSTs (default 5; `0` = unlimited), further POSTs are disabled and the guest idles.
+2. Run vstorm with `RESULT_SERVER_URL` + fio `--env`; vstorm POSTs a **manifest** and injects `VSTORM_BATCH_ID`.
+3. Guest boots, writes timestamp, starts `fio-workload.service` (oneshot).
+4. Guest runs **one** fio job with boot-time params; on completion POSTs a **result** JSON (spools locally if the collector is down).
+5. Service exits. Dashboard shows the batch, VM, and payload.
 
-## Run policy (control plane)
+## Legacy: run policy API
 
-Desired state lives on the collector. Guests pull it; they do not invent “forever” on their own once control mode is enabled.
+Earlier designs used guest policy polling (`idle` / `once` / `count` / `forever`). The fio guest **no longer** polls policy. Collector `/v1/policy` endpoints may still exist for compatibility; they are unused by the one-shot workload.
 
-### Policy fields
+### Policy fields (legacy)
 
 | Field | Meaning |
 |-------|---------|
@@ -278,7 +285,7 @@ One completed workload invocation (one fio job). Timing: UTC ISO-8601 with expli
 | `boot_timestamp` / `service_start` | guest boot / service start (UTC) |
 | `cycle` | Sequence number of this invocation on the guest (`jobN`) — not the record type |
 
-Failed fio jobs still POST as `result` (with `status` / `fio_rc`). Unreachable collector → spool under `/var/lib/fio/results/pending/`; optional `record_type: "error"` / `status: "post_error"`.
+Failed fio jobs still POST as `result` (with `status` / `fio_rc`). Unreachable collector → spool under `$FIO_DIRECTORY/results/pending/` (default `/root/data/results/pending/`); optional `record_type: "error"` / `status: "post_error"`.
 
 ### Error payload (incident)
 
@@ -354,7 +361,7 @@ Policy GET may accept identity query params if the guest uses a shared results U
 
 ## Dashboard
 
-Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, drill into one VM, and **control** workload execution — without SSH into guests.
+Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, drill into one VM and its cycle payloads — without SSH into guests.
 
 ```text
   Home: Batches list (one row per vstorm batch)
@@ -362,13 +369,13 @@ Primary UX: **see every vstorm run**, skim **how many VMs are doing what**, dril
       | click batch_id
       v
   Run detail
-      |-- VM status chips + manifest / metadata
-      |-- VM table (select VMs; Idle | Run once | Run N | Forever)
+      |-- VM status + manifest / FIO guest env (launch params)
+      |-- VM table (status / mode / cycles)
       |-- boot-time histogram (create → guest boot)
       |
       | click VM
       v
-  VM detail  ---- per-VM controls + cycle history
+  VM detail  ---- cycle history
       |
       v
   Cycle / payload view
@@ -423,9 +430,9 @@ Everything for one vstorm batch on one page.
 
 Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 idle · 2 not contacted`.
 
-**Batch-wide controls:** on the VMs table — select one or more VMs (or **Select all**), then Idle | Run once | Run N… | Forever. With nothing selected, actions apply to **all** VMs. Warn mentally if many VMs are still **not contacted** — they will not pick up policy until `RESULT_SERVER_URL` + `VSTORM_BATCH_ID` work.
+**Batch-wide controls:** not shown in the UI. Set `WORKLOAD_RUN_MODE` at create, or call `POST /v1/batches/{id}/policy` from a script if needed.
 
-**vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, guest_env, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
+**vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, **guest_env (FIO launch params)**, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
 
 **VMs table:**
 
@@ -433,7 +440,7 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 |--------|---------|
 | VM | Link to VM detail |
 | Workload status | `running` (mid-fio) or `idle` (everything else) |
-| Policy | mode + remaining |
+| Policy | mode + remaining (read-only; set at boot or via API) |
 | Namespace | From batch `namespace/vm` list when known |
 | Cycles | Count received |
 | Last stopped | Last cycle end time |
@@ -444,8 +451,7 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 ### 3. VM detail
 
 - Identity: hostname, CPU/RAM, boot timestamp when known.
-- **Status strip:** agent state, policy mode/remaining/revision.
-- **Per-VM controls:** Idle / Run once / Run N / Forever — after a cycle finishes and policy returns to idle, **Run once** (or Run N) re-runs fio on the same VM.
+- **Status strip:** agent state, policy mode/remaining/revision (read-only).
 - **Cycles table:** cycle number, timing, fio_rc, IOPS/BW, status; click → payload view.
 
 ### 4. Cycle / payload view
@@ -455,14 +461,14 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 - Full raw JSON (copy / download).
 - Same viewer for the vstorm batch payload from run detail.
 
-### Control panel semantics
+### Run policy (API / boot; not dashboard buttons)
 
-- Show **current policy** (`mode`, `remaining`, `revision`) from the collector.
-- **Idle** — no new cycles (API `mode=idle`; `stop` is accepted and stored as idle).
-- **Run once** — one more cycle on this VM (or all VMs if batch-wide), then idle.
-- **Run N…** — N cycles then idle.
-- **Forever** — soak until Idle.
-- Guests that have never polled will not run until they check in (`RESULT_SERVER_URL` / `VSTORM_BATCH_ID`).
+- Guests poll `GET /v1/policy`; boot `WORKLOAD_RUN_MODE` / `WORKLOAD_RUN_COUNT` seed the first policy row.
+- **`idle`** — no new cycles (API `mode=idle`; `stop` is accepted and stored as idle).
+- **`once`** — one cycle, then idle.
+- **`count`** — N cycles then idle.
+- **`forever`** — soak until policy changes.
+- Prefer setting mode at create for the simple collect path. Guests that have never polled will not run until they check in (`RESULT_SERVER_URL` / `VSTORM_BATCH_ID`).
 
 ### Manage (non-control)
 
@@ -478,22 +484,7 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 
 ## Example usage
 
-```bash
-# Terminal A — collector
-python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
-# Open http://<host>:8080/
-
-# Terminal B — VMs start idle and wait for dashboard policy
-vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
-  --env FIO_SIZE=1G \
-  --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
-  --env WORKLOAD_RUN_MODE=idle \
-  --cores=4 --memory=8Gi --vms=10 --wait
-```
-
-Then in the dashboard: open the run → **Run N = 3** on all VMs (or Forever on one VM for a soak). Guests poll, execute, POST cycles; the collector decrements remaining; guests return to idle when done.
-
-For unattended soak without clicking: `--env WORKLOAD_RUN_MODE=forever` (legacy soak when you do not want to wait for the dashboard).
+See **[Simple path (recommended)](#simple-path-recommended)** above. Cap jobs with `WORKLOAD_MAX_JOBS` or use `WORKLOAD_RUN_MODE=once` / `count` when you do not want a forever soak.
 
 ## Implementation touchpoints
 
@@ -502,7 +493,7 @@ For unattended soak without clicking: `--env WORKLOAD_RUN_MODE=forever` (legacy 
 | [`vstorm`](../vstorm) | POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; optional truncated `log_text` |
 | [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Policy poll + cycle runner; capture/POST/spool; status heartbeats; default idle when URL set |
 | `monitoring/workload-result/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
-| [`monitoring/workload-result/static/`](../monitoring/workload-result/static/) | Batches list, batch/VM/payload views; Idle / Run once / Run N / Forever; helpers in `dashboard-lib.js` (covered by `node --test monitoring/tests/test_dashboard_lib.js`) |
+| [`monitoring/workload-result/static/`](../monitoring/workload-result/static/) | Browse batches / VMs / payloads; helpers in `dashboard-lib.js` |
 | [`docs/cloud-init-fio-workload.md`](cloud-init-fio-workload.md) | Env table includes `RESULT_SERVER_*` / `WORKLOAD_RUN_*` |
 | `tests/` | `monitoring/tests/test_workload_result.py` — helpers, ingest/record types, policy, queries, HTTP API |
 

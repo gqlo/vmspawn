@@ -19,6 +19,7 @@ DATASOURCE=
 DATASOURCE_NS="openshift-virtualization-os-images"
 DV_URL="http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow"
 STORAGE_SIZE="32Gi"
+DATA_DISK_SIZE="20G"
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
 VOLUME_MODE="Block"
@@ -236,6 +237,13 @@ validate_args() {
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] && { [[ -n "$DATASOURCE" ]] || [[ -n "$DV_URL" ]] ; } ; then
 	    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
 	fi
+
+	# --data-disk-size=0 disables the blank data disk (default is 20G).
+	if [[ "$DATA_DISK_SIZE" == "0" ]] ; then
+	    DATA_DISK_SIZE=""
+	elif [[ -n "$DATA_DISK_SIZE" ]] && [[ ! "$DATA_DISK_SIZE" =~ ^[0-9]+([KMGT]i?)?$ ]]; then
+	    usage_error "Invalid --data-disk-size '$DATA_DISK_SIZE' (example: 20G or 50Gi; use 0 to disable)"
+	fi
     fi
 }
 
@@ -278,7 +286,8 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         -q                      Only list objects to be created
         --datasource=NAME       Clone from OCP DataSource (overrides default URL)
         --dv-url=URL            Import disk from URL (default: $DV_URL)
-        --storage-size=N        Storage size ($STORAGE_SIZE)
+        --storage-size=N        Root / OS disk size ($STORAGE_SIZE)
+        --data-disk-size=N      Blank data disk as vdb (default 20G; 0 disables)
         --storage-class=class   Storage class ($STORAGE_CLASS)
                                 | | | (auto-disables snapshots unless
                                 | | | --snapshot-class is also provided)
@@ -353,6 +362,7 @@ process_option() {
 	dvurl)     DV_URL=$value; DATASOURCE= ;;
 	storagecl*) STORAGE_CLASS=$value; STORAGE_CLASS_SET=1 ;;
 	storagesi*|storage) STORAGE_SIZE=$value ;;
+	datadisksi*|datadisksize) DATA_DISK_SIZE=$value ;;
 	accessmod*|accessmode) ACCESS_MODE=$value; ACCESS_MODE_SET=1 ;;
 	volumemod*|volumemode) VOLUME_MODE=$value; VOLUME_MODE_SET=1 ;;
 	snapshotcl*) SNAPSHOT_CLASS=$value; SNAPSHOT_CLASS_SET=1; USE_SNAPSHOT=1; SNAPSHOT_EXPLICITLY_SET=1 ;;
@@ -569,8 +579,8 @@ check_prerequisites() {
 	    ((errors++))
 	fi
 
-	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	    if ((USE_SNAPSHOT)) ; then
+	if [[ -z "$CONTAINERDISK_IMAGE" || -n "$DATA_DISK_SIZE" ]] ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] && ((USE_SNAPSHOT)) ; then
 		if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
 		    echo "  ${C_WARN}Hint:${C_RST} use --no-snapshot to skip VolumeSnapshot-based cloning"
@@ -585,7 +595,7 @@ check_prerequisites() {
 		((errors++))
 	    fi
 
-	    if ((USE_SNAPSHOT)) ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] && ((USE_SNAPSHOT)) ; then
 		if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} volume snapshot class ${C_VAL}'$SNAPSHOT_CLASS'${C_RST} not found"
 		    echo "  Available volume snapshot classes:"
@@ -595,7 +605,7 @@ check_prerequisites() {
 		fi
 	    fi
 
-	    if [[ -n "$DATASOURCE" ]] ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" && -n "$DATASOURCE" ]] ; then
 		if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} DataSource ${C_VAL}'$DATASOURCE'${C_RST} not found in namespace ${C_VAL}'$DATASOURCE_NS'${C_RST}"
 		    echo "  Available DataSources:"
@@ -1367,6 +1377,10 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
     local cloudinit_volume=""
     local cloudinit_b64=""
     local cloudinit_secret_file=""
+    local data_dv_templates=""
+    local data_dv_template=""
+    local data_disk=""
+    local data_volume=""
     local domain_firmware=
     case "${VM_FIRMWARE,,}" in
 	efi)
@@ -1456,6 +1470,36 @@ firmware:
   name: cloudinit"
 	fi
     fi
+
+    if [[ -n "$DATA_DISK_SIZE" ]] ; then
+	# Blank data disk (vdb). Name is filled per-VM in the create loop.
+	data_disk="- disk:
+    bus: virtio
+  name: vdb"
+	data_volume="- dataVolume:
+    name: __DATA_DV_NAME__
+  name: vdb"
+	data_dv_template="- apiVersion: cdi.kubevirt.io/v1beta1
+  kind: DataVolume
+  metadata:
+    name: __DATA_DV_NAME__
+  spec:
+    source:
+      blank: {}
+    storage:
+      accessModes:
+      - ${ACCESS_MODE}
+      resources:
+        requests:
+          storage: ${DATA_DISK_SIZE}
+      volumeMode: ${VOLUME_MODE}
+      storageClassName: ${STORAGE_CLASS}"
+	# containerdisk templates have no dataVolumeTemplates section yet
+	data_dv_templates="dataVolumeTemplates:
+${data_dv_template}"
+	log_message "Data disk enabled: ${C_VAL}${DATA_DISK_SIZE}${C_RST} blank volume as ${C_VAL}vdb${C_RST}"
+    fi
+
     local -A existing_vms=()
     if ((! RECREATE_EXISTING_VMS)) ; then
 	local vm
@@ -1486,11 +1530,22 @@ firmware:
 	    local vm_name="${namespace}/${VM_BASENAME}-${BATCH_ID}-${VM_ID}"
 	    if [[ -z "${existing_vms[$vm_name]:-}" ]] ; then
 		log_message "Creating VirtualMachine ${C_VAL}$VM_ID${C_RST} for namespace: ${C_VAL}$namespace${C_RST}"
+		local data_dv_name="${VM_BASENAME}-${BATCH_ID}-${VM_ID}-data"
+		local data_dv_templates_vm="" data_dv_template_vm="" data_volume_vm=""
+		if [[ -n "$DATA_DISK_SIZE" ]] ; then
+		    data_dv_template_vm=${data_dv_template//__DATA_DV_NAME__/$data_dv_name}
+		    data_dv_templates_vm=${data_dv_templates//__DATA_DV_NAME__/$data_dv_name}
+		    data_volume_vm=${data_volume//__DATA_DV_NAME__/$data_dv_name}
+		fi
 		process_template "$vm_file" |
 		    indent_token DOMAIN_FIRMWARE "$domain_firmware" |
 		    indent_token RESOURCES "$requeststr" |
 		    indent_token CLOUDINIT_DISK "$cloudinit_disk" |
 		    indent_token CLOUDINIT_VOLUME "$cloudinit_volume" |
+		    indent_token DATA_DV_TEMPLATES "$data_dv_templates_vm" |
+		    indent_token DATA_DV_TEMPLATE "$data_dv_template_vm" |
+		    indent_token DATA_DISK "$data_disk" |
+		    indent_token DATA_VOLUME "$data_volume_vm" |
 		    oc_apply ||
 		    fatal "Cannot create vm $vm_name!"
 	    fi
@@ -1892,15 +1947,20 @@ main() {
 	log_message "DV URL:        ${C_VAL}$DV_URL${C_RST}"
 	log_message "Storage size:  ${C_VAL}$STORAGE_SIZE${C_RST}"
     fi
-    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+    if [[ -n "$DATA_DISK_SIZE" ]] ; then
+	log_message "Data disk:     ${C_VAL}$DATA_DISK_SIZE${C_RST} (blank vdb)"
+    fi
+    if [[ -z "$CONTAINERDISK_IMAGE" || -n "$DATA_DISK_SIZE" ]] ; then
 	log_message "Storage class: ${C_VAL}$STORAGE_CLASS${C_RST}"
 	log_message "Volume mode:   ${C_VAL}$VOLUME_MODE${C_RST}"
-	if ((USE_SNAPSHOT)) ; then
-	    log_message "Snapshot mode: enabled (class: ${C_VAL}$SNAPSHOT_CLASS${C_RST})"
-	elif [[ -n "$DATASOURCE" ]] ; then
-	    log_message "Snapshot mode: disabled (direct DataSource clone)"
-	else
-	    log_message "Snapshot mode: disabled (direct PVC clone)"
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    if ((USE_SNAPSHOT)) ; then
+		log_message "Snapshot mode: enabled (class: ${C_VAL}$SNAPSHOT_CLASS${C_RST})"
+	    elif [[ -n "$DATASOURCE" ]] ; then
+		log_message "Snapshot mode: disabled (direct DataSource clone)"
+	    else
+		log_message "Snapshot mode: disabled (direct PVC clone)"
+	    fi
 	fi
     fi
     log_message "VM CPU cores:  ${C_VAL}$VM_CPU_CORES${C_RST}"
