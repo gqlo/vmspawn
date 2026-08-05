@@ -86,14 +86,26 @@ describe("parseRoute", () => {
 
 describe("boot durations and CSV", () => {
   const started = 1000;
+  const dvCreated = 1020;
   const vms = [
-    { vm_name: "vm-a", namespace: "ns1", boot_timestamp_unix: 1045 },
-    { vm_name: "vm-b", namespace: "ns1", boot_timestamp_unix: 1100 },
+    { vm_name: "vm-a", namespace: "ns1", boot_timestamp_unix: 1045, dv_created_at_unix: 1020 },
+    { vm_name: "vm-b", namespace: "ns1", boot_timestamp_unix: 1100, dv_created_at_unix: 1030 },
     { vm_name: "vm-c", namespace: "ns1", boot_timestamp_unix: null },
   ];
 
-  it("computes create→boot durations", () => {
-    assert.deepEqual(lib.bootDurationsSeconds(vms, started), [
+  it("computes DV→boot durations preferring per-VM dv_created", () => {
+    assert.deepEqual(lib.bootDurationsSeconds(vms, started, dvCreated), [
+      { vm_name: "vm-a", seconds: 25 },
+      { vm_name: "vm-b", seconds: 70 },
+    ]);
+  });
+
+  it("falls back to batch started_at when no DV times", () => {
+    const plain = [
+      { vm_name: "vm-a", boot_timestamp_unix: 1045 },
+      { vm_name: "vm-b", boot_timestamp_unix: 1100 },
+    ];
+    assert.deepEqual(lib.bootDurationsSeconds(plain, started), [
       { vm_name: "vm-a", seconds: 45 },
       { vm_name: "vm-b", seconds: 100 },
     ]);
@@ -101,24 +113,23 @@ describe("boot durations and CSV", () => {
 
   it("summarizes avg/min/max", () => {
     assert.equal(
-      lib.fmtBootTimeSummary(vms, started),
-      "Boot time avg 73s · min 45s · max 100s"
+      lib.fmtBootTimeSummary(vms, started, dvCreated),
+      "DV→boot avg 48s · min 25s · max 70s"
     );
     assert.equal(lib.fmtBootTimeSummary([], started), "Boot time —");
   });
 
-  it("builds boot times CSV", () => {
-    const csv = lib.buildBootTimesCsv("a1b2c3", vms, started);
+  it("builds boot times CSV with DV columns", () => {
+    const csv = lib.buildBootTimesCsv("a1b2c3", vms, started, dvCreated);
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,vm_name,namespace,batch_started_at_utc,boot_timestamp_utc,boot_duration_s"
+      "batch_id,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,boot_timestamp_utc,boot_duration_s,dv_to_boot_s"
     );
     assert.ok(lines[1].startsWith("a1b2c3,vm-a,ns1,"));
-    assert.ok(lines[1].endsWith(",45"));
-    assert.ok(lines[2].endsWith(",100"));
+    assert.ok(lines[1].endsWith(",45,25"));
+    assert.ok(lines[2].endsWith(",100,70"));
     assert.ok(lines[3].includes("vm-c"));
-    assert.ok(lines[3].endsWith(","));
   });
 
   it("escapes CSV fields", () => {

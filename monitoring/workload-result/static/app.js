@@ -486,7 +486,7 @@ async function renderRun(app, batchId) {
   const bp = b.batch_payload || {};
   const batchResultId = b.batch_result_id;
   const vs = b.vm_summary || {};
-  const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at);
+  const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at, b.dv_created_at);
   const vmList = b.vms || [];
   const guestEnvLines = formatGuestEnv(bp.guest_env);
 
@@ -511,6 +511,7 @@ async function renderRun(app, batchId) {
       <div class="grid-2" style="margin-top:1rem">
         <dl class="kv">
           <dt>Started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
+          <dt>DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_created_at))}</dd>
           <dt>Stopped</dt><dd class="mono">${escapeHtml(fmtTs(b.stopped_at))}</dd>
           <dt>Created VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
           <dt>Cycles</dt><dd>${escapeHtml(String(b.cycle_count ?? 0))} / ${escapeHtml(String(b.vms_reporting ?? 0))} VMs reporting
@@ -550,7 +551,7 @@ async function renderRun(app, batchId) {
       ${
         vmList.length
           ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>Boot</th></tr></thead>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>DV created</th><th>Boot</th></tr></thead>
         <tbody>
           ${vmList
             .map(
@@ -563,6 +564,7 @@ async function renderRun(app, batchId) {
               <td class="mono">${escapeHtml(v.namespace || "—")}</td>
               <td>${escapeHtml(String(v.cycle_count || 0))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.last_stopped_at))}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.dv_created_at_unix))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
             </tr>`
             )
@@ -574,22 +576,22 @@ async function renderRun(app, batchId) {
     </div>
 
     <div class="panel">
-      <h3 style="margin-top:0">VM creation → guest boot</h3>
+      <h3 style="margin-top:0">DV create → guest boot</h3>
       <p class="muted" style="margin-top:0">
-        Seconds from batch create start (DV / VM create, UTC) to the guest boot timestamp (UTC).
+        Seconds from DataVolume <span class="mono">creationTimestamp</span> (per-VM when known, else earliest in batch; falls back to vstorm start) to the guest boot timestamp (UTC).
       </p>
       <div class="chart-wrap"><canvas id="boot-chart"></canvas></div>
       <div id="boot-chart-empty" class="empty" style="display:none">No boot timestamps yet.</div>
       <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
     </div>`;
 
-  drawBootHistogram(vmList, b.started_at);
+  drawBootHistogram(vmList, b.started_at, b.dv_created_at);
 
   const bootCsvBtn = $("#btn-boot-csv");
   if (bootCsvBtn) {
     bootCsvBtn.onclick = (e) => {
       e.preventDefault();
-      const csv = buildBootTimesCsv(batchId, vmList, b.started_at);
+      const csv = buildBootTimesCsv(batchId, vmList, b.started_at, b.dv_created_at);
       downloadTextFile(`${batchId}-boot-times.csv`, csv, "text/csv;charset=utf-8");
     };
   }
@@ -649,13 +651,13 @@ function downloadTextFile(filename, text, mime) {
   a.remove();
 }
 
-function drawBootHistogram(vms, startedAt) {
+function drawBootHistogram(vms, startedAt, dvCreatedAt) {
   const canvas = $("#boot-chart");
   const emptyEl = $("#boot-chart-empty");
   const statsEl = $("#boot-chart-stats");
   if (!canvas || typeof Chart === "undefined") return;
 
-  const samples = bootDurationsSeconds(vms, startedAt);
+  const samples = bootDurationsSeconds(vms, startedAt, dvCreatedAt);
   if (!samples.length) {
     canvas.style.display = "none";
     if (emptyEl) emptyEl.style.display = "";

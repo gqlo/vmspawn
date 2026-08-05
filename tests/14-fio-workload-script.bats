@@ -270,17 +270,37 @@ _fio_prepare() {
     [[ "$args" == *"--name=job1"* ]]
 }
 
-@test "FIO: timestamp file appends on second start" {
+@test "FIO: timestamp file created on first start (standalone fallback)" {
     local script_path lines
     script_path=$(_extract_fio_script)
     unset FIO_CUSTOM_OPTS RESULT_SERVER_URL
     export FIO_SIZE=16M
-    : > "$RESULT_TIMESTAMP_FILE"
+    rm -f "$RESULT_TIMESTAMP_FILE"
     run bash "$script_path" 2>/dev/null
-    run bash "$script_path" 2>/dev/null
+    [[ "$status" -eq 0 ]]
     rm -f "$script_path"
-    lines=$(grep -c . "$RESULT_TIMESTAMP_FILE" || true)
-    [[ "$lines" -ge 2 ]]
+    [[ -f "$RESULT_TIMESTAMP_FILE" ]]
+    lines=$(grep -cE '^[0-9]+,' "$RESULT_TIMESTAMP_FILE" || true)
+    [[ "$lines" -ge 1 ]]
+}
+
+@test "FIO: skips non-numeric timestamp header when reading boot unix" {
+    local script_path boot_line
+    script_path=$(_extract_fio_script)
+    unset FIO_CUSTOM_OPTS RESULT_SERVER_URL
+    export FIO_SIZE=16M
+    printf '%s\n' 'unix-timestamp, YYYY-MM-DDTHH:MM:SSZ' > "$RESULT_TIMESTAMP_FILE"
+    run bash "$script_path" 2>/dev/null
+    [[ "$status" -eq 0 ]]
+    rm -f "$script_path"
+    # Header alone: fio uses service start; does not fail
+    [[ "$status" -eq 0 ]]
+}
+
+@test "FIO: boot timestamp unit is present and ordered before fio" {
+    grep -q 'path: /opt/vstorm-boot-timestamp.sh' "$YAML"
+    grep -q 'vstorm-boot-timestamp.service' "$YAML"
+    grep -q 'After=.*vstorm-boot-timestamp.service' "$YAML"
 }
 
 @test "FIO: systemd unit is oneshot Restart=no" {

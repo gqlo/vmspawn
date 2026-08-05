@@ -60,7 +60,7 @@ Override with `--env KEY=VAL` (repeat as needed):
 
 | Parameter | Description |
 |-----------|-------------|
-| `FIO_DIRECTORY` | Directory for the job file (default `/root/data`; created if missing). With a data disk (default `--data-disk-size=20G`), the guest mounts `/dev/vdb` here (checks mount **source**, not just path-on-`/`) and records it in `/etc/fstab` (UUID) so the mount persists across reboot. |
+| `FIO_DIRECTORY` | Job file directory (default `/root/data`). With `--data-disk-size` (default `20G`), mounts `/dev/vdb` here (by mount **source**) and records UUID in `/etc/fstab`. Boot time comes from shared `vstorm-boot-timestamp.service` (`/root/timestamp.txt`); fio reads it for result payloads. |
 | `FIO_DATA_DEVICE` | Block device for optional data disk (default `/dev/vdb`); formatted + mounted onto `FIO_DIRECTORY` when present |
 | `FIO_SIZE` | File size per job (default `1G`) |
 | `FIO_BS` | Block size (overrides preset default) |

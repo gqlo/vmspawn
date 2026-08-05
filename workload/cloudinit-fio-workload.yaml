@@ -146,30 +146,32 @@ write_files:
       FIO_FILENAME="${FIO_DIRECTORY}/fio-job.dat"
       JOB_NAME="job1"
 
-      # Timestamp log: create on first start, append on later service starts / reboots (UTC)
-      _ts_unix=$(date -u +%s)
-      _ts_human=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+      # Boot timestamp is written by vstorm-boot-timestamp.service (/root/timestamp.txt).
+      # Fio only reads it for result payloads (standalone fallback: create once if missing).
+      SERVICE_START_UNIX=$(date -u +%s)
       BOOT_TIMESTAMP_FILE="${RESULT_TIMESTAMP_FILE:-/root/timestamp.txt}"
-      if ! mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")" 2>/dev/null; then
-          BOOT_TIMESTAMP_FILE="${FIO_DIRECTORY}/timestamp.txt"
-          mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")"
-      fi
-      if [[ -f "$BOOT_TIMESTAMP_FILE" ]]; then
-          printf '%s, %s\n' "$_ts_unix" "$_ts_human" >> "$BOOT_TIMESTAMP_FILE"
-      else
-          printf '%s, %s\n' "$_ts_unix" "$_ts_human" > "$BOOT_TIMESTAMP_FILE" || {
+      if [[ ! -f "$BOOT_TIMESTAMP_FILE" ]]; then
+          _ts_human=$(date -u -d "@$SERVICE_START_UNIX" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null \
+              || date -u '+%Y-%m-%dT%H:%M:%SZ')
+          if ! mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")" 2>/dev/null \
+              || ! printf '%s, %s\n' "$SERVICE_START_UNIX" "$_ts_human" > "$BOOT_TIMESTAMP_FILE"; then
               BOOT_TIMESTAMP_FILE="${FIO_DIRECTORY}/timestamp.txt"
-              if [[ -f "$BOOT_TIMESTAMP_FILE" ]]; then
-                  printf '%s, %s\n' "$_ts_unix" "$_ts_human" >> "$BOOT_TIMESTAMP_FILE"
-              else
-                  printf '%s, %s\n' "$_ts_unix" "$_ts_human" > "$BOOT_TIMESTAMP_FILE"
-              fi
-          }
+              mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")"
+              printf '%s, %s\n' "$SERVICE_START_UNIX" "$_ts_human" > "$BOOT_TIMESTAMP_FILE"
+          fi
       fi
-      SERVICE_START_UNIX="$_ts_unix"
-      IFS=',' read -r _bu _bt < "$BOOT_TIMESTAMP_FILE" || true
-      BOOT_TIMESTAMP_UNIX="${_bu// /}"
-      [[ -n "$BOOT_TIMESTAMP_UNIX" ]] || BOOT_TIMESTAMP_UNIX="$_ts_unix"
+      BOOT_TIMESTAMP_UNIX=""
+      while IFS=',' read -r _bu _bt || [[ -n "${_bu:-}" ]]; do
+          _bu="${_bu//[[:space:]]/}"
+          if [[ "$_bu" =~ ^[0-9]+$ ]]; then
+              BOOT_TIMESTAMP_UNIX="$_bu"
+              break
+          fi
+      done < "$BOOT_TIMESTAMP_FILE"
+      if [[ -z "$BOOT_TIMESTAMP_UNIX" ]]; then
+          echo "WARN: no numeric boot unix in $BOOT_TIMESTAMP_FILE; using service start" >&2
+          BOOT_TIMESTAMP_UNIX="$SERVICE_START_UNIX"
+      fi
 
       report_result() {
           local fio_rc="$1" started_at="$2" stopped_at="$3" fio_json="$4"
@@ -210,7 +212,11 @@ write_files:
           reported_at_unix=$(date -u +%s)
           cmd_json=$(printf '%s\n' "${cmd_argv[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin]))')
 
-          RESULT_CMD_JSON="$cmd_json" RESULT_STATUS="$status" RESULT_ERROR_MESSAGE="$error_message" \
+          if [[ -z "${VSTORM_BATCH_ID:-}" ]]; then
+              echo "WARN: VSTORM_BATCH_ID unset; collector will reject result POSTs" >&2
+          fi
+
+          if ! RESULT_CMD_JSON="$cmd_json" RESULT_STATUS="$status" RESULT_ERROR_MESSAGE="$error_message" \
           python3 - "${fio_json:-}" "$payload_file" \
               "$reported_at_unix" "$started_at" "$stopped_at" \
               "$BOOT_TIMESTAMP_UNIX" \
@@ -221,17 +227,25 @@ write_files:
       import json, os, sys
       from datetime import datetime, timezone
 
+      def parse_unix(val, default=0):
+          try:
+              return int(str(val).strip() or default)
+          except (TypeError, ValueError):
+              return int(default)
+
       def fmt_utc(unix):
           return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
       fio_path, out_path = sys.argv[1], sys.argv[2]
-      reported_at_unix, fio_start_unix, fio_stop_unix = map(int, sys.argv[3:6])
-      boot_unix = int(sys.argv[6] or 0)
+      reported_at_unix = parse_unix(sys.argv[3])
+      fio_start_unix = parse_unix(sys.argv[4])
+      fio_stop_unix = parse_unix(sys.argv[5])
+      boot_unix = parse_unix(sys.argv[6])
       hostname, batch_id, vm_name = sys.argv[7], sys.argv[8], sys.argv[9]
-      cpu_count, mem_total_kb, fio_rc = map(int, sys.argv[10:13])
+      cpu_count, mem_total_kb, fio_rc = map(parse_unix, sys.argv[10:13])
       wtype, fsize, fbs, fiodepth, fnumjobs, fdirect, frw = sys.argv[13:20]
       job_name = sys.argv[20]
-      service_start_unix = int(sys.argv[21] or 0)
+      service_start_unix = parse_unix(sys.argv[21])
       status = os.environ.get("RESULT_STATUS") or "ok"
       error_message = os.environ.get("RESULT_ERROR_MESSAGE") or ""
       fio = None
@@ -283,11 +297,23 @@ write_files:
           json.dump(payload, f)
           f.write("\n")
       PY
+          then
+              echo "ERROR: failed to build result payload JSON" >&2
+              return 1
+          fi
+          if [[ ! -s "$payload_file" ]]; then
+              echo "ERROR: result payload missing or empty: $payload_file" >&2
+              return 1
+          fi
 
           _post_payload_file() {
               local file="$1" label="$2"
               local attempt=1 curl_err curl_body http_code
               local -a auth_args=()
+              if [[ ! -s "$file" ]]; then
+                  echo "$label: missing or empty file $file"
+                  return 1
+              fi
               [[ -n "${RESULT_SERVER_TOKEN:-}" ]] && auth_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
               while (( attempt <= RESULT_RETRY )); do
                   curl_err=$(mktemp)
@@ -328,7 +354,9 @@ write_files:
               return 0
           fi
 
-          cp -f "$payload_file" "${pending_dir}/${JOB_NAME}-payload.json"
+          if ! cp -f "$payload_file" "${pending_dir}/${JOB_NAME}-payload.json"; then
+              echo "ERROR: failed to spool $payload_file into $pending_dir" >&2
+          fi
           local conn_err_file="${FIO_DIRECTORY}/results/${JOB_NAME}-post-error.json"
           python3 - "$conn_err_file" \
               "$hostname_s" "${VSTORM_BATCH_ID:-}" "$vm_name" \
@@ -436,6 +464,131 @@ write_files:
       echo "One-shot workload finished."
       exit "$fio_rc"
 
+  - path: /opt/vstorm-boot-timestamp.sh
+    permissions: '0755'
+    content: |
+      #!/bin/bash
+      # Shared guest boot timestamp: append /root/timestamp.txt and optionally POST a
+      # heartbeat with boot_timestamp when RESULT_SERVER_URL + VSTORM_BATCH_ID are set.
+      # Embedded into cloud-init profiles (keep in sync with write_files copies).
+      set -euo pipefail
+
+      BOOT_TIMESTAMP_FILE="${RESULT_TIMESTAMP_FILE:-/root/timestamp.txt}"
+      mkdir -p "$(dirname "$BOOT_TIMESTAMP_FILE")"
+
+      _ts_unix=$(date -u +%s)
+      _ts_human=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+      if [[ -f "$BOOT_TIMESTAMP_FILE" ]]; then
+          printf '%s, %s\n' "$_ts_unix" "$_ts_human" >> "$BOOT_TIMESTAMP_FILE"
+      else
+          printf '%s, %s\n' "$_ts_unix" "$_ts_human" > "$BOOT_TIMESTAMP_FILE"
+      fi
+
+      BOOT_TIMESTAMP_UNIX=""
+      while IFS=',' read -r _bu _bt || [[ -n "${_bu:-}" ]]; do
+          _bu="${_bu//[[:space:]]/}"
+          if [[ "$_bu" =~ ^[0-9]+$ ]]; then
+              BOOT_TIMESTAMP_UNIX="$_bu"
+              break
+          fi
+      done < "$BOOT_TIMESTAMP_FILE"
+      if [[ -z "$BOOT_TIMESTAMP_UNIX" ]]; then
+          echo "WARN: no numeric boot unix in $BOOT_TIMESTAMP_FILE; using service start" >&2
+          BOOT_TIMESTAMP_UNIX="$_ts_unix"
+      fi
+
+      echo "vstorm-boot-timestamp: file=$BOOT_TIMESTAMP_FILE boot_unix=$BOOT_TIMESTAMP_UNIX service_unix=$_ts_unix"
+
+      [[ -n "${RESULT_SERVER_URL:-}" ]] || exit 0
+      if [[ -z "${VSTORM_BATCH_ID:-}" ]]; then
+          echo "RESULT_SERVER_URL set but VSTORM_BATCH_ID unset; skip boot heartbeat POST" >&2
+          exit 0
+      fi
+      if ! command -v python3 &>/dev/null; then
+          echo "python3 missing; skip boot heartbeat POST" >&2
+          exit 0
+      fi
+      if ! command -v curl &>/dev/null; then
+          echo "curl missing; skip boot heartbeat POST" >&2
+          exit 0
+      fi
+
+      vm_name="${VSTORM_VM_NAME:-$(hostname -s 2>/dev/null || hostname || echo unknown)}"
+      hostname_s=$(hostname -s 2>/dev/null || hostname || echo unknown)
+      payload_file=$(mktemp)
+      trap 'rm -f "$payload_file"' EXIT
+
+      python3 - "$payload_file" "$BOOT_TIMESTAMP_UNIX" "$_ts_unix" \
+          "$hostname_s" "${VSTORM_BATCH_ID}" "$vm_name" <<'PY'
+      import json, sys
+      from datetime import datetime, timezone
+
+      def fmt_utc(unix):
+          return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+      out, boot_unix, service_unix, hostname, batch_id, vm_name = sys.argv[1:7]
+      boot_unix = int(boot_unix)
+      service_unix = int(service_unix)
+      now = service_unix
+      payload = {
+          "schema_version": 1,
+          "record_type": "heartbeat",
+          "source": "guest",
+          "workload_kind": "boot",
+          "status": "booted",
+          "agent_state": "booted",
+          "boot_timestamp": fmt_utc(boot_unix),
+          "service_start": fmt_utc(service_unix),
+          "reported_at": fmt_utc(now),
+          "hostname": hostname,
+          "batch_id": batch_id,
+          "vm_name": vm_name,
+      }
+      with open(out, "w", encoding="utf-8") as f:
+          json.dump(payload, f)
+          f.write("\n")
+      PY
+
+      RESULT_RETRY="${RESULT_RETRY:-3}"
+      RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
+      attempt=1
+      while (( attempt <= RESULT_RETRY )); do
+          http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
+              --data-binary @"$payload_file" \
+              --connect-timeout "$RESULT_TIMEOUT" \
+              --max-time "$RESULT_TIMEOUT" \
+              ${RESULT_SERVER_TOKEN:+-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}"} \
+              -o /tmp/vstorm-boot-post.body -w '%{http_code}' \
+              "$RESULT_SERVER_URL" 2>/tmp/vstorm-boot-post.err) || true
+          if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then
+              echo "Boot heartbeat posted to $RESULT_SERVER_URL"
+              exit 0
+          fi
+          echo "Boot heartbeat POST failed attempt $attempt/$RESULT_RETRY: HTTP ${http_code:-000}"
+          sleep $((attempt < 4 ? attempt * 2 : 8))
+          ((attempt++)) || true
+      done
+      echo "Boot heartbeat POST failed after retries (file still written)" >&2
+      exit 0
+
+  - path: /etc/systemd/system/vstorm-boot-timestamp.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Record guest boot timestamp and optional collector heartbeat
+      After=network-online.target network.target
+      Wants=network-online.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      EnvironmentFile=-/etc/default/vstorm-guest-env
+      ExecStart=/opt/vstorm-boot-timestamp.sh
+      Restart=no
+
+      [Install]
+      WantedBy=multi-user.target
+
   - path: /etc/default/vstorm-guest-env
     permissions: '0644'
     content: |
@@ -446,8 +599,8 @@ write_files:
     content: |
       [Unit]
       Description=fio storage I/O workload (one-shot)
-      After=network-online.target network.target
-      Wants=network-online.target
+      After=network-online.target network.target vstorm-boot-timestamp.service
+      Wants=network-online.target vstorm-boot-timestamp.service
 
       [Service]
       Type=oneshot
@@ -465,4 +618,5 @@ runcmd:
   - sed -i 's/^#\?PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config
   - systemctl restart sshd 2>/dev/null || systemctl restart ssh
   - ["systemctl", "daemon-reload"]
+  - ["systemctl", "enable", "--now", "vstorm-boot-timestamp.service"]
   - ["systemctl", "enable", "--now", "fio-workload.service"]

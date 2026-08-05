@@ -1137,6 +1137,100 @@ create_volumesnapshots() {
 ################################################################
 # Workload-result collector: POST run manifest (optional)
 # Finds RESULT_SERVER_URL in GUEST_ENV_ARR; no-ops if unset.
+
+# Best-effort: DataVolume creationTimestamps for this batch (JSON object or {}).
+# Never fails the create path.
+collect_batch_dv_created_json() {
+    local dv_raw=""
+    if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
+	echo '{}'
+	return 0
+    fi
+    dv_raw=$(oc get datavolume -A -l "batch-id=${BATCH_ID}" -o json 2>/dev/null || true)
+    [[ -n "$dv_raw" ]] || { echo '{}'; return 0; }
+
+    local vm_json='[]'
+    if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
+	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')
+    fi
+
+    BASENAME="$VM_BASENAME" VM_JSON="$vm_json" python3 -c '
+import json, os, sys
+from datetime import datetime, timezone
+
+def to_iso_z(ts):
+    if not ts:
+        return None
+    s = ts.strip()
+    if s.endswith("Z"):
+        return s
+    try:
+        if s.endswith("+00:00"):
+            return s[:-6] + "Z"
+        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    except ValueError:
+        return s
+
+raw = sys.stdin.read()
+try:
+    doc = json.loads(raw) if raw.strip() else {}
+except json.JSONDecodeError:
+    print("{}")
+    raise SystemExit(0)
+
+items = doc.get("items") or []
+dv_created = []
+for it in items:
+    md = it.get("metadata") or {}
+    name = md.get("name") or ""
+    ns = md.get("namespace") or ""
+    created = to_iso_z(str(md.get("creationTimestamp") or ""))
+    if not name or not created:
+        continue
+    dv_created.append({"namespace": ns, "name": name, "created_at": created})
+
+dv_created.sort(key=lambda d: (d["created_at"], d["namespace"], d["name"]))
+out = {}
+if dv_created:
+    out["dv_created"] = dv_created
+    out["dv_created_at"] = min(d["created_at"] for d in dv_created)
+
+vms = json.loads(os.environ.get("VM_JSON") or "[]")
+basename = (os.environ.get("BASENAME") or "").strip()
+vm_dv = {}
+# Prefer root DV named like the VM.
+by_ns_name = {(d["namespace"], d["name"]): d["created_at"] for d in dv_created}
+base_by_ns = {}
+for d in dv_created:
+    if basename and d["name"] == f"{basename}-base":
+        base_by_ns[d["namespace"]] = d["created_at"]
+
+for entry in vms:
+    entry_s = str(entry)
+    ns, _, name = entry_s.partition("/")
+    if not name:
+        name = entry_s
+        ns = ""
+    if ns and name and (ns, name) in by_ns_name:
+        vm_dv[name] = by_ns_name[(ns, name)]
+    elif ns and ns in base_by_ns:
+        vm_dv[name] = base_by_ns[ns]
+    elif name and any(d["name"] == name for d in dv_created):
+        # fallback: match by DV name alone
+        for d in dv_created:
+            if d["name"] == name:
+                vm_dv[name] = d["created_at"]
+                break
+
+if vm_dv:
+    out["vm_dv_created"] = vm_dv
+print(json.dumps(out))
+' <<<"$dv_raw" 2>/dev/null || echo '{}'
+}
+
 post_batch_result_metadata() {
     local url="" token="" e
     for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
@@ -1161,6 +1255,10 @@ post_batch_result_metadata() {
     local started_at="${STARTED_AT:-$stopped_at}"
 
     local ns_json vm_json guest_env_json cmdline_json log_text=""
+    local dv_created_json="${BATCH_DV_CREATED_JSON:-}"
+    if [[ -z "$dv_created_json" ]]; then
+	dv_created_json=$(collect_batch_dv_created_json)
+    fi
     # Env must prefix python3 inside $(); bash does not pass VAR=val into ns_json=$(...).
     ns_json=$(BID="$BATCH_ID" NNS="$NUM_NAMESPACES" python3 - <<'PY'
 import json, os
@@ -1247,6 +1345,7 @@ print(json.dumps(env))
 	OC_VERSION="$oc_version_text" \
 	WORKER_NODES="$worker_nodes" \
 	MASTER_NODES="$master_nodes" \
+	DV_CREATED_JSON="$dv_created_json" \
 	python3 - <<'PY'
 import json, os
 from datetime import datetime, timezone
@@ -1288,6 +1387,17 @@ payload = {
     "log_path": os.environ.get("LOG_PATH") or None,
     "cluster": cluster,
 }
+try:
+    dv_info = json.loads(os.environ.get("DV_CREATED_JSON") or "{}")
+except json.JSONDecodeError:
+    dv_info = {}
+if isinstance(dv_info, dict):
+    if dv_info.get("dv_created"):
+        payload["dv_created"] = dv_info["dv_created"]
+    if dv_info.get("dv_created_at"):
+        payload["dv_created_at"] = dv_info["dv_created_at"]
+    if dv_info.get("vm_dv_created"):
+        payload["vm_dv_created"] = dv_info["vm_dv_created"]
 log_text = os.environ.get("LOG_TEXT") or ""
 if log_text:
     payload["log_text"] = log_text
@@ -2004,6 +2114,11 @@ main() {
 	local manifest_file="${LOG_DIR}/batch-${BATCH_ID}.manifest"
 	local ns_list=""
 	local vm_list=""
+	local dv_created_json="{}"
+	dv_created_json=$(collect_batch_dv_created_json)
+	BATCH_DV_CREATED_JSON="$dv_created_json"
+	local dv_created_at_line=""
+	dv_created_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("dv_created_at") or "")' 2>/dev/null || true)
 	for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
 	    local ns_name="vm-${BATCH_ID}-ns-${ns}"
 	    ns_list="${ns_list:+${ns_list}, }${ns_name}"
@@ -2019,7 +2134,11 @@ main() {
 	total-namespaces: $NUM_NAMESPACES
 	namespaces: $ns_list
 	vms: $vm_list
+	dv-created-at: ${dv_created_at_line:-}
 	MANIFEST
+	if [[ "$dv_created_json" != "{}" && -n "$dv_created_json" ]]; then
+	    printf '%s\n' "$dv_created_json" > "${LOG_DIR}/batch-${BATCH_ID}.dv-created.json"
+	fi
 	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
 
 	post_batch_result_metadata

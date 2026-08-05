@@ -258,6 +258,73 @@ class TestStoreIngest(unittest.TestCase):
         self.assertEqual(batch["cycle_count"], 1)
         self.assertEqual(batch["event_count"], 1)
 
+    def test_boot_heartbeat_indexes_boot_timestamp_without_result(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "boot1",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "total_namespaces": 1,
+                "started_at": "2026-07-22T05:48:00Z",
+                "reported_at": "2026-07-22T05:50:00Z",
+                "vms": ["ns1/vm-boot"],
+            }
+        )
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "boot",
+                "status": "booted",
+                "agent_state": "booted",
+                "batch_id": "boot1",
+                "vm_name": "vm-boot",
+                "hostname": "vm-boot",
+                "boot_timestamp": "2026-07-22T05:50:25Z",
+                "reported_at": "2026-07-22T05:50:26Z",
+            }
+        )
+        batch = self.store.get_batch("boot1")
+        assert batch is not None
+        self.assertEqual(batch["cycle_count"], 0)
+        vms = {v["vm_name"]: v for v in batch["vms"]}
+        self.assertEqual(vms["vm-boot"]["boot_timestamp_unix"], 1784699425)
+        vm = self.store.get_vm("boot1", "vm-boot")
+        assert vm is not None
+        self.assertEqual(vm["identity"]["boot_timestamp_unix"], 1784699425)
+        self.assertEqual(vm["cycle_count"], 0)
+
+    def test_manifest_dv_created_exposed_on_batch_and_vms(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "dv1",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "total_namespaces": 1,
+                "started_at": "2026-07-22T05:48:00Z",
+                "dv_created_at": "2026-07-22T05:49:00Z",
+                "vm_dv_created": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:10Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:20Z",
+                },
+                "reported_at": "2026-07-22T05:50:00Z",
+                "vms": ["ns1/rhel9-dv1-1", "ns1/rhel9-dv1-2"],
+            }
+        )
+        batch = self.store.get_batch("dv1")
+        assert batch is not None
+        self.assertEqual(batch["dv_created_at"], 1784699340)
+        vms = {v["vm_name"]: v for v in batch["vms"]}
+        self.assertEqual(vms["rhel9-dv1-1"]["dv_created_at_unix"], 1784699350)
+        self.assertEqual(vms["rhel9-dv1-2"]["dv_created_at_unix"], 1784699360)
+
     def test_ingest_requires_batch_id(self) -> None:
         with self.assertRaises(ValueError):
             self.store.ingest({"record_type": "result", "source": "guest"})

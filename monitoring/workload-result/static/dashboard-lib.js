@@ -103,27 +103,45 @@
     return `<span class="badge err">${escapeHtml(st)}</span>`;
   }
 
-  function bootDurationsSeconds(vms, startedAt) {
-    if (startedAt == null) return [];
+  function createAnchorUnix(vm, batchDvCreatedAt, batchStartedAt) {
+    if (vm && vm.dv_created_at_unix != null && Number.isFinite(Number(vm.dv_created_at_unix))) {
+      return Number(vm.dv_created_at_unix);
+    }
+    if (batchDvCreatedAt != null && Number.isFinite(Number(batchDvCreatedAt))) {
+      return Number(batchDvCreatedAt);
+    }
+    if (batchStartedAt != null && Number.isFinite(Number(batchStartedAt))) {
+      return Number(batchStartedAt);
+    }
+    return null;
+  }
+
+  function bootDurationsSeconds(vms, batchStartedAt, batchDvCreatedAt) {
     const out = [];
     for (const v of vms || []) {
       const boot = v.boot_timestamp_unix;
       if (boot == null) continue;
-      const s = Number(boot) - Number(startedAt);
+      const anchor = createAnchorUnix(v, batchDvCreatedAt, batchStartedAt);
+      if (anchor == null) continue;
+      const s = Number(boot) - Number(anchor);
       if (!Number.isFinite(s) || s < 0) continue;
       out.push({ vm_name: v.vm_name, seconds: s });
     }
     return out;
   }
 
-  function fmtBootTimeSummary(vms, startedAt) {
-    const samples = bootDurationsSeconds(vms, startedAt);
+  function fmtBootTimeSummary(vms, batchStartedAt, batchDvCreatedAt) {
+    const samples = bootDurationsSeconds(vms, batchStartedAt, batchDvCreatedAt);
     if (!samples.length) return "Boot time —";
     const seconds = samples.map((s) => s.seconds);
     const min = Math.min(...seconds);
     const max = Math.max(...seconds);
     const avg = seconds.reduce((a, b) => a + b, 0) / seconds.length;
-    return `Boot time avg ${Math.round(avg)}s · min ${Math.round(min)}s · max ${Math.round(max)}s`;
+    const label =
+      batchDvCreatedAt != null || (vms || []).some((v) => v.dv_created_at_unix != null)
+        ? "DV→boot"
+        : "Boot time";
+    return `${label} avg ${Math.round(avg)}s · min ${Math.round(min)}s · max ${Math.round(max)}s`;
   }
 
   function csvEscape(val) {
@@ -132,23 +150,31 @@
     return s;
   }
 
-  function buildBootTimesCsv(batchId, vms, startedAt) {
+  function buildBootTimesCsv(batchId, vms, batchStartedAt, batchDvCreatedAt) {
     const header = [
       "batch_id",
       "vm_name",
       "namespace",
       "batch_started_at_utc",
+      "dv_created_at_utc",
       "boot_timestamp_utc",
       "boot_duration_s",
+      "dv_to_boot_s",
     ];
-    const startedIso = fmtTs(startedAt);
+    const startedIso = fmtTs(batchStartedAt);
     const rows = [header.join(",")];
     for (const v of vms || []) {
       const boot = v.boot_timestamp_unix;
-      let duration = "";
-      if (boot != null && startedAt != null) {
-        const s = Number(boot) - Number(startedAt);
-        if (Number.isFinite(s) && s >= 0) duration = String(Math.round(s));
+      const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
+      let bootDuration = "";
+      let dvToBoot = "";
+      if (boot != null && batchStartedAt != null) {
+        const s = Number(boot) - Number(batchStartedAt);
+        if (Number.isFinite(s) && s >= 0) bootDuration = String(Math.round(s));
+      }
+      if (boot != null && dv != null) {
+        const s = Number(boot) - Number(dv);
+        if (Number.isFinite(s) && s >= 0) dvToBoot = String(Math.round(s));
       }
       rows.push(
         [
@@ -156,8 +182,10 @@
           csvEscape(v.vm_name),
           csvEscape(v.namespace || ""),
           csvEscape(startedIso === "—" ? "" : startedIso),
+          csvEscape(dv != null ? fmtTs(dv) : ""),
           csvEscape(boot != null ? fmtTs(boot) : ""),
-          csvEscape(duration),
+          csvEscape(bootDuration),
+          csvEscape(dvToBoot),
         ].join(",")
       );
     }
@@ -206,6 +234,7 @@
     fmtWorkloadColumn,
     parseRoute,
     statusBadge,
+    createAnchorUnix,
     bootDurationsSeconds,
     fmtBootTimeSummary,
     csvEscape,

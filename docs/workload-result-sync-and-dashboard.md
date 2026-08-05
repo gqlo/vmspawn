@@ -179,7 +179,14 @@ All payload timestamps are **UTC**, written as ISO-8601 with an explicit timezon
 
 ### Boot timestamp
 
-Unchanged path: `/root/timestamp.txt` (or under `$FIO_DIRECTORY`); first line = boot; append on later service starts. Each line is `unix_utc, YYYY-MM-DDTHH:MM:SSZ` (UTC). Payload fields use the same UTC epoch via ISO-8601 `…Z`.
+Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (`/opt/vstorm-boot-timestamp.sh`):
+
+- **File:** `/root/timestamp.txt` (override with `RESULT_TIMESTAMP_FILE`). Append on each oneshot run / reboot. **First numeric unix field** = boot (non-numeric header lines are skipped). Data lines: `unix_utc, YYYY-MM-DDTHH:MM:SSZ` (UTC).
+- **Collector:** when `RESULT_SERVER_URL` and `VSTORM_BATCH_ID` are set, the unit POSTs a `record_type: "heartbeat"` / `workload_kind: "boot"` payload with `boot_timestamp`. The dashboard indexes that for create→boot charts/CSV even when no fio (or other) **result** has arrived yet.
+- **Fio:** still embeds `boot_timestamp` on its result POST (reads the same file; does not own the write). Other profiles (stress-ng, dirty-mem, default) rely on the boot heartbeat for collector boot times.
+- **DV created:** vstorm queries `oc get datavolume -A -l batch-id=…` and adds `dv_created_at` (earliest), `dv_created` (list), and `vm_dv_created` (per-VM root DV) to the host **manifest**. The dashboard histogram/summary uses **DV create → boot** when those fields exist (else vstorm `started_at` → boot). Boot-times CSV includes both `boot_duration_s` (script start→boot) and `dv_to_boot_s`.
+
+Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) (keep embedded `write_files` copies in sync).
 
 ## Host-side manifest (vstorm)
 
@@ -195,6 +202,14 @@ One `record_type: "manifest"` / `source: "vstorm"` POST after successful create 
   "reported_at": "2026-07-22T05:50:00Z",
   "started_at": "2026-07-22T05:48:20Z",
   "stopped_at": "2026-07-22T05:50:00Z",
+  "dv_created_at": "2026-07-22T05:48:45Z",
+  "vm_dv_created": {
+    "rhel9-8a494b-1": "2026-07-22T05:48:45Z",
+    "rhel9-8a494b-2": "2026-07-22T05:48:46Z"
+  },
+  "dv_created": [
+    {"namespace": "vm-8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:45Z"}
+  ],
   "batch_id": "8a494b",
   "basename": "rhel9",
   "total_vms": 10,
@@ -446,7 +461,7 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 | Last stopped | Last cycle end time |
 | Boot | Boot timestamp when known |
 
-**Charts:** histogram of **create → guest boot** duration (batch `started_at` to per-VM `boot_timestamp`), with min / avg / max.
+**Charts:** histogram of **DV create → guest boot** duration (per-VM or batch `dv_created_at` from the manifest, falling back to batch `started_at`) to per-VM `boot_timestamp`, with min / avg / max. CSV download includes `dv_created_at_utc` and `dv_to_boot_s`.
 
 ### 3. VM detail
 
@@ -491,7 +506,8 @@ See **[Simple path (recommended)](#simple-path-recommended)** above. Cap jobs wi
 | Area | Status |
 |------|--------|
 | [`vstorm`](../vstorm) | POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; optional truncated `log_text` |
-| [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Policy poll + cycle runner; capture/POST/spool; status heartbeats; default idle when URL set |
+| [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Fio one-shot; result POST; reads shared boot timestamp |
+| [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) | Shared boot file + optional boot heartbeat POST (embedded in all cloud-inits) |
 | `monitoring/workload-result/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
 | [`monitoring/workload-result/static/`](../monitoring/workload-result/static/) | Browse batches / VMs / payloads; helpers in `dashboard-lib.js` |
 | [`docs/cloud-init-fio-workload.md`](cloud-init-fio-workload.md) | Env table includes `RESULT_SERVER_*` / `WORKLOAD_RUN_*` |

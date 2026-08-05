@@ -1013,10 +1013,14 @@ class Store:
             ).fetchall()
 
             summary = self._vm_summary(vms, meta.get("total_vms"))
+            dv_created_at = None
+            if batch_payload:
+                dv_created_at = _payload_unix(batch_payload, "dv_created_at")
             return {
                 **meta,
                 **stats,
                 "batch_payload": batch_payload,
+                "dv_created_at": dv_created_at,
                 "vms": vms,
                 "vm_summary": summary,
                 "series": [dict(r) for r in series],
@@ -1043,6 +1047,7 @@ class Store:
                     "latest_iops": None,
                     "latest_bw_bytes": None,
                     "boot_timestamp_unix": None,
+                    "dv_created_at_unix": None,
                     "cpu_count": None,
                     "mem_total_kb": None,
                     "hostname": None,
@@ -1108,6 +1113,50 @@ class Store:
                 r["bw_bytes"] if r["bw_bytes"] is not None else cur.get("latest_bw_bytes")
             )
             named[name] = cur
+
+        # Boot heartbeats (shared across workloads) fill boot_timestamp when no result yet.
+        for r in self._conn.execute(
+            """
+            SELECT vm_name, hostname, boot_timestamp_unix
+            FROM results
+            WHERE batch_id = ?
+              AND record_type IN ('heartbeat', 'status')
+              AND boot_timestamp_unix IS NOT NULL
+            ORDER BY reported_at ASC, created_at ASC
+            """,
+            (batch_id,),
+        ):
+            name = r["vm_name"] or r["hostname"] or "unknown"
+            cur = named.get(name) or {
+                "vm_name": name,
+                "namespace": None,
+                "from_metadata": False,
+                "cycle_count": 0,
+                "last_stopped_at": None,
+                "latest_iops": None,
+                "latest_bw_bytes": None,
+                "boot_timestamp_unix": None,
+                "cpu_count": None,
+                "mem_total_kb": None,
+                "hostname": None,
+            }
+            cur["hostname"] = r["hostname"] or cur.get("hostname")
+            if cur.get("boot_timestamp_unix") is None:
+                cur["boot_timestamp_unix"] = r["boot_timestamp_unix"]
+            named[name] = cur
+
+        batch_dv_unix = (
+            _payload_unix(batch_payload, "dv_created_at") if batch_payload else None
+        )
+        vm_dv_map: dict[str, int] = {}
+        if batch_payload and isinstance(batch_payload.get("vm_dv_created"), dict):
+            for key, val in batch_payload["vm_dv_created"].items():
+                parsed = _coerce_unix(val)
+                if parsed is not None:
+                    vm_dv_map[str(key)] = parsed
+
+        for name, cur in named.items():
+            cur["dv_created_at_unix"] = vm_dv_map.get(name, batch_dv_unix)
 
         # Attach policy / agent status for each VM
         now = int(time.time())
@@ -1226,13 +1275,34 @@ class Store:
                         ),
                         "fio_rc": r["fio_rc"],
                         "status": r["status"] if "status" in r.keys() else None,
-                        "error_message": r["error_message"] if "error_message" in r.keys() else None,
+                        "error_message": r["error_message"]
+                        if "error_message" in r.keys()
+                        else None,
                         "iops": r["iops"],
                         "bw_bytes": r["bw_bytes"],
                         "lat_ns": r["lat_ns"],
+                        "fingerprint": r["fingerprint"],
                         "reported_at": r["reported_at"],
                     }
                 )
+
+            if identity.get("boot_timestamp_unix") is None:
+                hb = self._conn.execute(
+                    """
+                    SELECT boot_timestamp_unix, hostname
+                    FROM results
+                    WHERE batch_id = ?
+                      AND record_type IN ('heartbeat', 'status')
+                      AND boot_timestamp_unix IS NOT NULL
+                      AND (vm_name = ? OR hostname = ?)
+                    ORDER BY reported_at ASC, created_at ASC
+                    LIMIT 1
+                    """,
+                    (batch_id, vm_name, vm_name),
+                ).fetchone()
+                if hb:
+                    identity["boot_timestamp_unix"] = hb["boot_timestamp_unix"]
+                    identity["hostname"] = hb["hostname"] or identity.get("hostname")
 
             first_report = min((c["reported_at"] for c in cycles if c.get("reported_at")), default=None)
             boot = identity.get("boot_timestamp_unix")
