@@ -519,6 +519,8 @@ setup_file() {
   [[ "$output" == *"20G"* ]]
   [[ "$output" == *"-data"* ]]
   [[ "$output" == *"name: vda"* ]]
+  # Blank data DV carries batch-id so collector can list it with other DVs.
+  [[ "$output" == *"batch-id: cmb026"* ]]
 }
 
 @test "combo: --data-disk-size=50Gi overrides default data disk" {

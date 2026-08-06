@@ -124,11 +124,11 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,boot_timestamp_utc,boot_duration_s,dv_to_boot_s"
+      "batch_id,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("a1b2c3,vm-a,ns1,"));
-    assert.ok(lines[1].endsWith(",45,25"));
-    assert.ok(lines[2].endsWith(",100,70"));
+    assert.ok(lines[1].includes("vm-a"));
+    assert.ok(lines[2].includes("vm-b"));
     assert.ok(lines[3].includes("vm-c"));
   });
 
@@ -142,18 +142,23 @@ describe("boot durations and CSV", () => {
         namespace: "ns1",
         batch_started_at: 1000,
         dv_created_at: 1020,
+        dv_ready_at: 1022,
+        pvc_created_at: 1025,
+        pvc_bound_at: 1026,
+        data_dv_created_at: 1028,
+        data_dv_ready_at: 1029,
+        data_pvc_created_at: 1030,
+        data_pvc_bound_at: 1031,
         boot_timestamp: 1100,
-        boot_duration_s: 100,
-        dv_to_boot_s: 80,
       },
     ]);
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,boot_timestamp_utc,boot_duration_s,dv_to_boot_s"
+      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("b1,rhel9,workload/x.yaml,vm-a,ns1,"));
-    assert.ok(lines[1].endsWith(",100,80"));
+    assert.ok(lines[1].endsWith(lib.fmtTs(1100)));
   });
 
   it("escapes CSV fields", () => {

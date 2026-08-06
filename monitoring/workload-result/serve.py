@@ -976,22 +976,13 @@ class Store:
             for v in detail.get("vms") or []:
                 boot = v.get("boot_timestamp_unix")
                 dv = v.get("dv_created_at_unix")
-                boot_duration_s = None
-                dv_to_boot_s = None
-                if boot is not None and batch_started is not None:
-                    try:
-                        s = int(boot) - int(batch_started)
-                        if s >= 0:
-                            boot_duration_s = s
-                    except (TypeError, ValueError):
-                        pass
-                if boot is not None and dv is not None:
-                    try:
-                        s = int(boot) - int(dv)
-                        if s >= 0:
-                            dv_to_boot_s = s
-                    except (TypeError, ValueError):
-                        pass
+                dv_ready = v.get("dv_ready_at_unix")
+                pvc = v.get("pvc_created_at_unix")
+                pvc_bound = v.get("pvc_bound_at_unix")
+                data_dv = v.get("data_dv_created_at_unix")
+                data_dv_ready = v.get("data_dv_ready_at_unix")
+                data_pvc = v.get("data_pvc_created_at_unix")
+                data_pvc_bound = v.get("data_pvc_bound_at_unix")
                 items.append(
                     {
                         "batch_id": bid,
@@ -1001,9 +992,14 @@ class Store:
                         "vm_name": v.get("vm_name"),
                         "batch_started_at": batch_started,
                         "dv_created_at": dv,
+                        "dv_ready_at": dv_ready,
+                        "pvc_created_at": pvc,
+                        "pvc_bound_at": pvc_bound,
+                        "data_dv_created_at": data_dv,
+                        "data_dv_ready_at": data_dv_ready,
+                        "data_pvc_created_at": data_pvc,
+                        "data_pvc_bound_at": data_pvc_bound,
                         "boot_timestamp": boot,
-                        "boot_duration_s": boot_duration_s,
-                        "dv_to_boot_s": dv_to_boot_s,
                     }
                 )
         return {"items": items, "total": len(items)}
@@ -1096,13 +1092,24 @@ class Store:
 
             summary = self._vm_summary(vms, meta.get("total_vms"))
             dv_created_at = None
+            dv_ready_at = None
+            pvc_created_at = None
+            pvc_bound_at = None
             if batch_payload:
                 dv_created_at = _payload_unix(batch_payload, "dv_created_at")
+                dv_ready_at = _payload_unix(batch_payload, "dv_ready_at")
+                pvc_created_at = _payload_unix(batch_payload, "pvc_created_at")
+                pvc_bound_at = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
+                    batch_payload, "dv_bound_at"
+                )
             return {
                 **meta,
                 **stats,
                 "batch_payload": batch_payload,
                 "dv_created_at": dv_created_at,
+                "dv_ready_at": dv_ready_at,
+                "pvc_created_at": pvc_created_at,
+                "pvc_bound_at": pvc_bound_at,
                 "vms": vms,
                 "vm_summary": summary,
                 "series": [dict(r) for r in series],
@@ -1130,6 +1137,13 @@ class Store:
                     "latest_bw_bytes": None,
                     "boot_timestamp_unix": None,
                     "dv_created_at_unix": None,
+                    "dv_ready_at_unix": None,
+                    "pvc_created_at_unix": None,
+                    "pvc_bound_at_unix": None,
+                    "data_dv_created_at_unix": None,
+                    "data_dv_ready_at_unix": None,
+                    "data_pvc_created_at_unix": None,
+                    "data_pvc_bound_at_unix": None,
                     "cpu_count": None,
                     "mem_total_kb": None,
                     "hostname": None,
@@ -1230,15 +1244,50 @@ class Store:
         batch_dv_unix = (
             _payload_unix(batch_payload, "dv_created_at") if batch_payload else None
         )
-        vm_dv_map: dict[str, int] = {}
-        if batch_payload and isinstance(batch_payload.get("vm_dv_created"), dict):
-            for key, val in batch_payload["vm_dv_created"].items():
+        batch_dv_ready_unix = (
+            _payload_unix(batch_payload, "dv_ready_at") if batch_payload else None
+        )
+        batch_pvc_unix = (
+            _payload_unix(batch_payload, "pvc_created_at") if batch_payload else None
+        )
+        batch_pvc_bound_unix = None
+        if batch_payload:
+            batch_pvc_bound_unix = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
+                batch_payload, "dv_bound_at"
+            )
+
+        def _unix_map(key: str) -> dict[str, int]:
+            out: dict[str, int] = {}
+            if not batch_payload or not isinstance(batch_payload.get(key), dict):
+                return out
+            for map_key, val in batch_payload[key].items():
                 parsed = _coerce_unix(val)
                 if parsed is not None:
-                    vm_dv_map[str(key)] = parsed
+                    out[str(map_key)] = parsed
+            return out
+
+        vm_dv_map = _unix_map("vm_dv_created")
+        vm_dv_ready_map = _unix_map("vm_dv_ready")
+        vm_pvc_map = _unix_map("vm_pvc_created")
+        vm_pvc_bound_map = _unix_map("vm_pvc_bound")
+        if not vm_pvc_bound_map:
+            vm_pvc_bound_map = _unix_map("vm_dv_bound")
+        vm_data_dv_map = _unix_map("vm_data_dv_created")
+        vm_data_dv_ready_map = _unix_map("vm_data_dv_ready")
+        vm_data_pvc_map = _unix_map("vm_data_pvc_created")
+        vm_data_pvc_bound_map = _unix_map("vm_data_pvc_bound")
+        if not vm_data_pvc_bound_map:
+            vm_data_pvc_bound_map = _unix_map("vm_data_dv_bound")
 
         for name, cur in named.items():
             cur["dv_created_at_unix"] = vm_dv_map.get(name, batch_dv_unix)
+            cur["dv_ready_at_unix"] = vm_dv_ready_map.get(name, batch_dv_ready_unix)
+            cur["pvc_created_at_unix"] = vm_pvc_map.get(name, batch_pvc_unix)
+            cur["pvc_bound_at_unix"] = vm_pvc_bound_map.get(name, batch_pvc_bound_unix)
+            cur["data_dv_created_at_unix"] = vm_data_dv_map.get(name)
+            cur["data_dv_ready_at_unix"] = vm_data_dv_ready_map.get(name)
+            cur["data_pvc_created_at_unix"] = vm_data_pvc_map.get(name)
+            cur["data_pvc_bound_at_unix"] = vm_data_pvc_bound_map.get(name)
 
         # Attach policy / agent status for each VM
         now = int(time.time())

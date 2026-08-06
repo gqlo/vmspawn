@@ -157,25 +157,27 @@
       "namespace",
       "batch_started_at_utc",
       "dv_created_at_utc",
+      "dv_ready_at_utc",
+      "pvc_created_at_utc",
+      "pvc_bound_at_utc",
+      "data_dv_created_at_utc",
+      "data_dv_ready_at_utc",
+      "data_pvc_created_at_utc",
+      "data_pvc_bound_at_utc",
       "boot_timestamp_utc",
-      "boot_duration_s",
-      "dv_to_boot_s",
     ];
     const startedIso = fmtTs(batchStartedAt);
     const rows = [header.join(",")];
     for (const v of vms || []) {
       const boot = v.boot_timestamp_unix;
       const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
-      let bootDuration = "";
-      let dvToBoot = "";
-      if (boot != null && batchStartedAt != null) {
-        const s = Number(boot) - Number(batchStartedAt);
-        if (Number.isFinite(s) && s >= 0) bootDuration = String(Math.round(s));
-      }
-      if (boot != null && dv != null) {
-        const s = Number(boot) - Number(dv);
-        if (Number.isFinite(s) && s >= 0) dvToBoot = String(Math.round(s));
-      }
+      const dvReady = v.dv_ready_at_unix;
+      const pvc = v.pvc_created_at_unix;
+      const pvcBound = v.pvc_bound_at_unix;
+      const dataDv = v.data_dv_created_at_unix;
+      const dataDvReady = v.data_dv_ready_at_unix;
+      const dataPvc = v.data_pvc_created_at_unix;
+      const dataPvcBound = v.data_pvc_bound_at_unix;
       rows.push(
         [
           csvEscape(batchId),
@@ -183,9 +185,14 @@
           csvEscape(v.namespace || ""),
           csvEscape(startedIso === "—" ? "" : startedIso),
           csvEscape(dv != null ? fmtTs(dv) : ""),
+          csvEscape(dvReady != null ? fmtTs(dvReady) : ""),
+          csvEscape(pvc != null ? fmtTs(pvc) : ""),
+          csvEscape(pvcBound != null ? fmtTs(pvcBound) : ""),
+          csvEscape(dataDv != null ? fmtTs(dataDv) : ""),
+          csvEscape(dataDvReady != null ? fmtTs(dataDvReady) : ""),
+          csvEscape(dataPvc != null ? fmtTs(dataPvc) : ""),
+          csvEscape(dataPvcBound != null ? fmtTs(dataPvcBound) : ""),
           csvEscape(boot != null ? fmtTs(boot) : ""),
-          csvEscape(bootDuration),
-          csvEscape(dvToBoot),
         ].join(",")
       );
     }
@@ -233,9 +240,14 @@
       "namespace",
       "batch_started_at_utc",
       "dv_created_at_utc",
+      "dv_ready_at_utc",
+      "pvc_created_at_utc",
+      "pvc_bound_at_utc",
+      "data_dv_created_at_utc",
+      "data_dv_ready_at_utc",
+      "data_pvc_created_at_utc",
+      "data_pvc_bound_at_utc",
       "boot_timestamp_utc",
-      "boot_duration_s",
-      "dv_to_boot_s",
     ];
     const rows = [header.join(",")];
     for (const it of items || []) {
@@ -248,9 +260,14 @@
           csvEscape(it.namespace || ""),
           csvEscape(it.batch_started_at != null ? fmtTs(it.batch_started_at) : ""),
           csvEscape(it.dv_created_at != null ? fmtTs(it.dv_created_at) : ""),
+          csvEscape(it.dv_ready_at != null ? fmtTs(it.dv_ready_at) : ""),
+          csvEscape(it.pvc_created_at != null ? fmtTs(it.pvc_created_at) : ""),
+          csvEscape(it.pvc_bound_at != null ? fmtTs(it.pvc_bound_at) : ""),
+          csvEscape(it.data_dv_created_at != null ? fmtTs(it.data_dv_created_at) : ""),
+          csvEscape(it.data_dv_ready_at != null ? fmtTs(it.data_dv_ready_at) : ""),
+          csvEscape(it.data_pvc_created_at != null ? fmtTs(it.data_pvc_created_at) : ""),
+          csvEscape(it.data_pvc_bound_at != null ? fmtTs(it.data_pvc_bound_at) : ""),
           csvEscape(it.boot_timestamp != null ? fmtTs(it.boot_timestamp) : ""),
-          csvEscape(it.boot_duration_s != null ? String(it.boot_duration_s) : ""),
-          csvEscape(it.dv_to_boot_s != null ? String(it.dv_to_boot_s) : ""),
         ].join(",")
       );
     }

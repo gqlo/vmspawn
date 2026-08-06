@@ -310,9 +310,40 @@ class TestStoreIngest(unittest.TestCase):
                 "total_namespaces": 1,
                 "started_at": "2026-07-22T05:48:00Z",
                 "dv_created_at": "2026-07-22T05:49:00Z",
+                "dv_ready_at": "2026-07-22T05:49:02Z",
                 "vm_dv_created": {
                     "rhel9-dv1-1": "2026-07-22T05:49:10Z",
                     "rhel9-dv1-2": "2026-07-22T05:49:20Z",
+                },
+                "vm_dv_ready": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:12Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:22Z",
+                },
+                "pvc_created_at": "2026-07-22T05:49:05Z",
+                "pvc_bound_at": "2026-07-22T05:49:06Z",
+                "vm_pvc_created": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:12Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:22Z",
+                },
+                "vm_pvc_bound": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:13Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:23Z",
+                },
+                "vm_data_dv_created": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:14Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:24Z",
+                },
+                "vm_data_dv_ready": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:14Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:24Z",
+                },
+                "vm_data_pvc_created": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:15Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:25Z",
+                },
+                "vm_data_pvc_bound": {
+                    "rhel9-dv1-1": "2026-07-22T05:49:16Z",
+                    "rhel9-dv1-2": "2026-07-22T05:49:26Z",
                 },
                 "reported_at": "2026-07-22T05:50:00Z",
                 "vms": ["ns1/rhel9-dv1-1", "ns1/rhel9-dv1-2"],
@@ -321,9 +352,26 @@ class TestStoreIngest(unittest.TestCase):
         batch = self.store.get_batch("dv1")
         assert batch is not None
         self.assertEqual(batch["dv_created_at"], 1784699340)
+        self.assertEqual(batch["dv_ready_at"], 1784699342)
+        self.assertEqual(batch["pvc_created_at"], 1784699345)
+        self.assertEqual(batch["pvc_bound_at"], 1784699346)
         vms = {v["vm_name"]: v for v in batch["vms"]}
         self.assertEqual(vms["rhel9-dv1-1"]["dv_created_at_unix"], 1784699350)
         self.assertEqual(vms["rhel9-dv1-2"]["dv_created_at_unix"], 1784699360)
+        self.assertEqual(vms["rhel9-dv1-1"]["dv_ready_at_unix"], 1784699352)
+        self.assertEqual(vms["rhel9-dv1-2"]["dv_ready_at_unix"], 1784699362)
+        self.assertEqual(vms["rhel9-dv1-1"]["pvc_created_at_unix"], 1784699352)
+        self.assertEqual(vms["rhel9-dv1-2"]["pvc_created_at_unix"], 1784699362)
+        self.assertEqual(vms["rhel9-dv1-1"]["pvc_bound_at_unix"], 1784699353)
+        self.assertEqual(vms["rhel9-dv1-2"]["pvc_bound_at_unix"], 1784699363)
+        self.assertEqual(vms["rhel9-dv1-1"]["data_dv_created_at_unix"], 1784699354)
+        self.assertEqual(vms["rhel9-dv1-2"]["data_dv_created_at_unix"], 1784699364)
+        self.assertEqual(vms["rhel9-dv1-1"]["data_dv_ready_at_unix"], 1784699354)
+        self.assertEqual(vms["rhel9-dv1-2"]["data_dv_ready_at_unix"], 1784699364)
+        self.assertEqual(vms["rhel9-dv1-1"]["data_pvc_created_at_unix"], 1784699355)
+        self.assertEqual(vms["rhel9-dv1-2"]["data_pvc_created_at_unix"], 1784699365)
+        self.assertEqual(vms["rhel9-dv1-1"]["data_pvc_bound_at_unix"], 1784699356)
+        self.assertEqual(vms["rhel9-dv1-2"]["data_pvc_bound_at_unix"], 1784699366)
 
     def test_ingest_requires_batch_id(self) -> None:
         with self.assertRaises(ValueError):
@@ -665,8 +713,6 @@ class TestStoreQueries(unittest.TestCase):
         self.assertIn("vm-a", by_vm)
         self.assertIn("vm-b", by_vm)
         self.assertIsNotNone(by_vm["vm-a"]["boot_timestamp"])
-        self.assertIsNotNone(by_vm["vm-a"]["boot_duration_s"])
-        self.assertGreaterEqual(by_vm["vm-a"]["boot_duration_s"], 0)
         filtered = self.store.list_vm_timestamps(batch_id="ts1")
         self.assertEqual(filtered["total"], 1)
         self.assertEqual(filtered["items"][0]["batch_id"], "ts1")

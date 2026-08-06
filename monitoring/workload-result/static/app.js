@@ -538,6 +538,9 @@ async function renderRun(app, batchId) {
         <dl class="kv">
           <dt>Started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
           <dt>DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_created_at))}</dd>
+          <dt>DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_ready_at))}</dd>
+          <dt>PVC created</dt><dd class="mono">${escapeHtml(fmtTs(b.pvc_created_at))}</dd>
+          <dt>PVC bound</dt><dd class="mono">${escapeHtml(fmtTs(b.pvc_bound_at))}</dd>
           <dt>Stopped</dt><dd class="mono">${escapeHtml(fmtTs(b.stopped_at))}</dd>
           <dt>Created VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
           <dt>Cycles</dt><dd>${escapeHtml(String(b.cycle_count ?? 0))} / ${escapeHtml(String(b.vms_reporting ?? 0))} VMs reporting
@@ -577,7 +580,7 @@ async function renderRun(app, batchId) {
       ${
         vmList.length
           ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>DV created</th><th>Boot</th></tr></thead>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>DV created</th><th>DV ready</th><th>PVC created</th><th>PVC bound</th><th>Boot</th></tr></thead>
         <tbody>
           ${vmList
             .map(
@@ -591,6 +594,9 @@ async function renderRun(app, batchId) {
               <td>${escapeHtml(String(v.cycle_count || 0))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.last_stopped_at))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.dv_created_at_unix))}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.dv_ready_at_unix))}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.pvc_created_at_unix))}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.pvc_bound_at_unix))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
             </tr>`
             )
