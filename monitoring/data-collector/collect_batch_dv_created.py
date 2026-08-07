@@ -405,12 +405,20 @@ def collect_batch_timestamps(
     return out
 
 
+def load_json_env_or_file(env_key: str, file_key: str, default: Any = None) -> Any:
+    """Prefer a JSON file path env (large payloads) over inline JSON env."""
+    path = (os.environ.get(file_key) or "").strip()
+    if path:
+        return load_json_file(path, default)
+    return load_env_json(env_key, default)
+
+
 def collect_from_env() -> dict:
     return collect_batch_timestamps(
         basename=os.environ.get("BASENAME") or "",
         batch_id=os.environ.get("BATCH_ID") or "",
-        vms=load_env_json("VM_JSON", []),
-        ns_list=load_env_json("NS_JSON", []),
+        vms=load_json_env_or_file("VM_JSON", "VM_JSON_FILE", []),
+        ns_list=load_json_env_or_file("NS_JSON", "NS_JSON_FILE", []),
         dv_doc=load_json_file_env("DV_JSON_FILE"),
         pvc_doc=load_json_file_env("PVC_JSON_FILE"),
         vs_doc=load_json_file_env("VS_JSON_FILE"),

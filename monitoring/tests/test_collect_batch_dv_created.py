@@ -340,6 +340,41 @@ class TestCollectBatchTimestamps(unittest.TestCase):
             self.assertEqual(out["base_dv_created_at"], "2026-07-22T05:48:30Z")
             self.assertEqual(out["snapshot_ready_at"], "2026-07-22T05:48:55Z")
 
+    def test_cli_prefers_vm_ns_json_files_over_inline_env(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            vm_path = Path(td) / "vms.json"
+            ns_path = Path(td) / "ns.json"
+            dv_path = Path(td) / "dv.json"
+            pvc_path = Path(td) / "pvc.json"
+            vs_path = Path(td) / "vs.json"
+            vm_path.write_text(json.dumps([f"{NS}/{VM}"]), encoding="utf-8")
+            ns_path.write_text(json.dumps([NS]), encoding="utf-8")
+            dv_path.write_text(json.dumps({"items": []}), encoding="utf-8")
+            pvc_path.write_text(json.dumps({"items": []}), encoding="utf-8")
+            vs_path.write_text(json.dumps({"items": []}), encoding="utf-8")
+            env = {
+                "BASENAME": BASENAME,
+                "BATCH_ID": BATCH,
+                "VM_JSON": "not-json",
+                "NS_JSON": "not-json",
+                "VM_JSON_FILE": str(vm_path),
+                "NS_JSON_FILE": str(ns_path),
+                "DV_JSON_FILE": str(dv_path),
+                "PVC_JSON_FILE": str(pvc_path),
+                "VS_JSON_FILE": str(vs_path),
+            }
+            old = {k: os.environ.get(k) for k in env}
+            try:
+                os.environ.update(env)
+                out = col.collect_from_env()
+            finally:
+                for k, v in old.items():
+                    if v is None:
+                        os.environ.pop(k, None)
+                    else:
+                        os.environ[k] = v
+            self.assertIsInstance(out, dict)
+
 
 if __name__ == "__main__":
     unittest.main()
