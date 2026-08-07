@@ -95,8 +95,8 @@ vstorm --udn-l2 --service --containerdisk --vms=6 --namespaces=3
 
 # 12. UDN + ClusterIP (defaults: port 22, targetPort 22; access via pod network from a debug pod in the namespace)
 vstorm --udn-l2 --service=clusterip --vms=20 --namespaces=4
-# oc -n vm-<batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
-# ssh -o PubkeyAuthentication=no root@svc-clusterip-vm-<batch-id>.vm-<batch-id>-ns-1.svc.cluster.local  (password: password)
+# oc -n <batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
+# ssh -o PubkeyAuthentication=no root@svc-clusterip-vm-<batch-id>.<batch-id>-ns-1.svc.cluster.local  (password: password)
 
 # 13. UDN + NodePort: service port 8080, VM targetPort 8080 (nodeport:SERVICE_PORT)
 vstorm --udn-l2 --service=nodeport:8080 --vms=10 --namespaces=2
@@ -240,7 +240,7 @@ NodePort values are auto-allocated from 32222 upward (one per namespace). OVN lo
 
 `--volume-mode=Block|Filesystem` sets PVC `volumeMode` (default `Block`). Use `Filesystem` for NFS/NAS storage classes. Access mode is still auto-detected from the StorageProfile for the chosen volume mode unless you pass `--access-mode`.
 
-`--data-disk-size=N` attaches a **blank** second disk (`vdb`) via a DataVolume (default **20G**). Pass `--data-disk-size=0` to disable. The fio cloud-init formats and mounts it on `/root/data` when present. Root/OS disk size remains `--storage-size`.
+`--data-disk-size=N` attaches a **blank** second disk (`vdb`) via a DataVolume (opt-in; e.g. `20G`). Omit the flag (or pass `0`) for no data disk. The fio cloud-init formats and mounts it on `/root/data` when present. Root/OS disk size remains `--storage-size`.
 
 KubeVirt sets **no resource limits** by default — only requests. The guest VM cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
@@ -248,11 +248,11 @@ Use `--create-existing-vm` with `--batch-id` to re-apply VM YAML for an existing
 
 ## How it works
 
-Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). This ID is embedded in every resource name and applied as a Kubernetes label, making each run fully isolated.
+Each invocation auto-generates a **batch ID** as `vstorm-` plus 6 hex digits (e.g. `vstorm-a3f7b2`), so it always starts with letters. Override with `--batch-id=ID`. This ID is embedded in every resource name and applied as a Kubernetes label, making each run fully isolated.
 
 The tool performs these steps in order:
 
-1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
+1. **Create namespaces** -- `{batch}-ns-1`, `{batch}-ns-2`, ...
 2. **Create UDN** *(optional, `--udn-l2`)* -- `UserDefinedNetwork` CR per namespace with the chosen subnet
 3. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
 4. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode

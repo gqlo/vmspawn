@@ -250,7 +250,7 @@ readability (a real POST includes every VM’s per-VM timestamps).
   "ssh_ready_at": "2026-07-22T05:49:10Z",
   "ssh_ready_status": "ok",
   "dv_created": [
-    {"namespace": "vm-8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:45Z", "ready_at": "2026-07-22T05:48:47Z", "role": "root", "phase": "Succeeded"}
+    {"namespace": "8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:45Z", "ready_at": "2026-07-22T05:48:47Z", "role": "root", "phase": "Succeeded"}
   ],
   "pvc_created_at": "2026-07-22T05:48:46Z",
   "vm_pvc_created": {
@@ -261,16 +261,16 @@ readability (a real POST includes every VM’s per-VM timestamps).
     "rhel9-8a494b-1": "2026-07-22T05:48:48Z"
   },
   "pvc_created": [
-    {"namespace": "vm-8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:46Z", "role": "root"}
+    {"namespace": "8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:46Z", "role": "root"}
   ],
   "batch_id": "8a494b",
   "basename": "rhel9",
   "total_vms": 10,
   "total_namespaces": 2,
-  "namespaces": ["vm-8a494b-ns-1", "vm-8a494b-ns-2"],
+  "namespaces": ["8a494b-ns-1", "8a494b-ns-2"],
   "vms": [
-    "vm-8a494b-ns-1/rhel9-8a494b-1",
-    "vm-8a494b-ns-1/rhel9-8a494b-2"
+    "8a494b-ns-1/rhel9-8a494b-1",
+    "8a494b-ns-1/rhel9-8a494b-2"
   ],
   "cores": 4,
   "memory": "8Gi",

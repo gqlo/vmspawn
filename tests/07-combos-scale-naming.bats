@@ -35,8 +35,8 @@ setup_file() {
   [[ "$output" == *"sourceRef"* ]]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-cmb025-ns-1"* ]]
-  [[ "$output" == *"name: vm-cmb025-ns-2"* ]]
+  [[ "$output" == *"name: cmb025-ns-1"* ]]
+  [[ "$output" == *"name: cmb025-ns-2"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -213,8 +213,8 @@ setup_file() {
   [[ "$output" == *"name: myvm-cmb033-4"* ]]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-cmb033-ns-1"* ]]
-  [[ "$output" == *"name: vm-cmb033-ns-2"* ]]
+  [[ "$output" == *"name: cmb033-ns-1"* ]]
+  [[ "$output" == *"name: cmb033-ns-2"* ]]
 
   # --- DataSource clone ---
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
@@ -257,7 +257,7 @@ setup_file() {
   [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
 
   # --- VM snapshot source points to the per-namespace snapshot ---
-  [[ "$output" == *"name: myvm-vm-cmb034a-ns-1"* ]]
+  [[ "$output" == *"name: myvm-cmb034a-ns-1"* ]]
 
   # --- Base DV is named myvm-base ---
   [[ "$output" == *"name: myvm-base"* ]]
@@ -292,7 +292,7 @@ setup_file() {
 
   # --- VM uses snapshot clone path ---
   [[ "$output" == *"snapshot:"* ]]
-  [[ "$output" == *"name: vm-vm-cmb034b-ns-1"* ]]
+  [[ "$output" == *"name: vm-cmb034b-ns-1"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -314,8 +314,8 @@ setup_file() {
   dv_count=$(echo "$output" | grep -c "kind: DataVolume")
   # 2 base DVs + 4 inline DataVolumeTemplates = but we just check base DVs
   # appear in both namespaces
-  [[ "$output" == *"namespace: vm-cmb034c-ns-1"* ]]
-  [[ "$output" == *"namespace: vm-cmb034c-ns-2"* ]]
+  [[ "$output" == *"namespace: cmb034c-ns-1"* ]]
+  [[ "$output" == *"namespace: cmb034c-ns-2"* ]]
 
   # --- 2 VolumeSnapshots ---
   local snap_count

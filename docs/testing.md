@@ -89,7 +89,7 @@ Host manifest POST is best-effort: create still succeeds and JSON is kept under 
 ### Core functionality
 
 - **Batch ID** -- auto-generated 6-character hex ID
-- **Namespace naming** -- `vm-{batch}-ns-{N}` pattern
+- **Namespace naming** -- `{batch}-ns-{N}` pattern
 - **VM distribution** -- even spread with remainder in first namespaces
 
 ### Validation / error handling

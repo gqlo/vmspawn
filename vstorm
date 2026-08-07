@@ -19,7 +19,7 @@ DATASOURCE=
 DATASOURCE_NS="openshift-virtualization-os-images"
 DV_URL="http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow"
 STORAGE_SIZE="32Gi"
-DATA_DISK_SIZE="20G"
+DATA_DISK_SIZE=""
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
 VOLUME_MODE="Block"
@@ -63,12 +63,13 @@ VSTORM_ARGV=("$@")
 STARTED_AT=
 # Ordered VM list for this batch (survives wait_for_all_vms unsetting expected_vms)
 BATCH_VMS_ORDERED=()
-# Generate a random 6-character hex batch ID (16.7M unique values)
+# Auto batch ID: "vstorm-" + 6 hex chars so it always starts with letters (YAML-safe).
+# Override with --batch-id=ID.
 if [[ -z "$(type -t xxd)" ]] ; then
     echo "Error: xxd command is not installed (needed to generate batch IDs)"
     exit 1
 fi
-BATCH_ID=$(head -c 3 /dev/urandom | xxd -p)
+BATCH_ID="vstorm-$(head -c 3 /dev/urandom | xxd -p)"
 BATCH_ID_SET=0
 NUM_VMS=1
 NUM_VMS_PER_NAMESPACE=
@@ -246,11 +247,11 @@ validate_args() {
 	    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
 	fi
 
-	# --data-disk-size=0 disables the blank data disk (default is 20G).
+	# Blank data disk is opt-in via --data-disk-size=N; 0 clears it if set.
 	if [[ "$DATA_DISK_SIZE" == "0" ]] ; then
 	    DATA_DISK_SIZE=""
 	elif [[ -n "$DATA_DISK_SIZE" ]] && [[ ! "$DATA_DISK_SIZE" =~ ^[0-9]+([KMGT]i?)?$ ]]; then
-	    usage_error "Invalid --data-disk-size '$DATA_DISK_SIZE' (example: 20G or 50Gi; use 0 to disable)"
+	    usage_error "Invalid --data-disk-size '$DATA_DISK_SIZE' (example: 20G or 50Gi; omit or use 0 for none)"
 	fi
     fi
 }
@@ -295,7 +296,7 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --datasource=NAME       Clone from OCP DataSource (overrides default URL)
         --dv-url=URL            Import disk from URL (default: $DV_URL)
         --storage-size=N        Root / OS disk size ($STORAGE_SIZE)
-        --data-disk-size=N      Blank data disk as vdb (default 20G; 0 disables)
+        --data-disk-size=N      Blank data disk as vdb (opt-in; e.g. 20G; 0=none)
         --storage-class=class   Storage class ($STORAGE_CLASS)
                                 | | | (auto-disables snapshots unless
                                 | | | --snapshot-class is also provided)
@@ -968,7 +969,7 @@ create_namespaces() {
 	done <<< "$(oc get namespace --no-headers 2>/dev/null | awk '{print $1}')"
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
 
         # Check if namespace already exists
 		if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
@@ -1035,7 +1036,7 @@ create_vm_service() {
 	init_service_nodeport_next
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-	namespace="vm-${BATCH_ID}-ns-${ns}"
+	namespace="${BATCH_ID}-ns-${ns}"
 	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
 	    SVC_TYPE=NodePort
 	    SVC_NAME_SUFFIX=nodeport
@@ -1103,7 +1104,7 @@ wait_for_all_datavolumes() {
 
     local -i ns
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_datavolume_status "$namespace"; then
             fatal "Failed to create DataVolume in namespace ${C_VAL}$namespace${C_RST}"
@@ -1128,7 +1129,7 @@ wait_for_batch_datavolumes_for_timestamps() {
 
     local ns_json='[]'
     if ((NUM_NAMESPACES > 0)); then
-	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
+	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
     fi
 
     log_message "${C_BOLD}Waiting for batch DataVolumes to Succeed (timestamp collect)...${C_RST}"
@@ -1216,7 +1217,7 @@ create_datavolumes() {
     local -i ns
     local dv_file="${TEMPLATE_CACHE[dv]}"
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
 
         log_message "Creating DataVolume for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$dv_file" | oc_apply
@@ -1262,7 +1263,7 @@ wait_for_all_volumesnapshots() {
 
     local -i ns
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_volumesnapshot_status "$namespace"; then
             fatal "Failed to create VolumeSnapshot in namespace ${C_VAL}$namespace${C_RST}"
@@ -1277,7 +1278,7 @@ create_volumesnapshots() {
     local -i ns
     local vs_file="${TEMPLATE_CACHE[volumesnapshot]}"
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$vs_file" | oc_apply
     done
@@ -1304,7 +1305,7 @@ collect_batch_dv_created_json() {
 
     local ns_json='[]'
     if ((NUM_NAMESPACES > 0)); then
-	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
+	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
     fi
 
     # Write cluster-wide DV/PVC JSON to temp files.
@@ -1373,7 +1374,7 @@ post_batch_result_metadata() {
 import json, os
 bid = os.environ["BID"]
 n = int(os.environ["NNS"])
-print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1, n + 1)]))
+print(json.dumps([f"{bid}-ns-{i}" for i in range(1, n + 1)]))
 PY
 )
 
@@ -1812,7 +1813,7 @@ firmware:
   metadata:
     name: __DATA_DV_NAME__
     labels:
-      batch-id: ${BATCH_ID}
+      batch-id: \"${BATCH_ID}\"
   spec:
     source:
       blank: {}
@@ -1838,7 +1839,7 @@ ${data_dv_template}"
 	done <<< "$(oc get vm -A --no-headers | awk '{printf "%s/%s\n", $1, $2}')"
     fi
     for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+        namespace="${BATCH_ID}-ns-${ns}"
 
 	# Create cloud-init Secret in this namespace if needed
 	if [[ -n "$cloudinit_secret_file" ]] ; then
@@ -2163,8 +2164,8 @@ delete_batch() {
     # may have been manually tagged with a batch-id label.
     local ns_name
     while read -r ns_name ; do
-	if [[ -n "$ns_name" && ! "$ns_name" =~ ^vm-[a-zA-Z0-9._-]+-ns-[0-9]+$ ]] ; then
-	    fatal "Refusing to delete namespace '$ns_name': does not match vstorm naming pattern (vm-{batch}-ns-{N})"
+	if [[ -n "$ns_name" && ! "$ns_name" =~ ^${batch}-ns-[0-9]+$ ]] ; then
+	    fatal "Refusing to delete namespace '$ns_name': does not match vstorm naming pattern ({batch}-ns-{N})"
 	fi
     done <<< "$ns_list"
 
@@ -2209,14 +2210,14 @@ delete_all_batches() {
 	  oc get ns -l batch-id --no-headers
 
 	This finds all namespaces with a batch-id label matching
-	the vstorm naming pattern (vm-{batch}-ns-{N}) and deletes them.
+	the vstorm naming pattern ({batch}-ns-{N}) and deletes them.
 	EOF
 	return 0
     fi
 
     all_batches=$(oc get ns -l batch-id --no-headers 2>/dev/null |
 	awk '{print $1}' |
-	grep -oP '^vm-\K[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
+	grep -oP '^[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
 	sort -u) || true
 
     if [[ -z "$all_batches" ]] ; then
@@ -2528,7 +2529,7 @@ main() {
 	ssh_ready_status_line=$(SSH_JSON="${BATCH_SSH_JSON:-}" python3 -c 'import json,os; d=json.loads(os.environ.get("SSH_JSON") or "{}"); print(d.get("ssh_ready_status") or "")' 2>/dev/null || true)
 	ssh_failed_line=$(SSH_JSON="${BATCH_SSH_JSON:-}" python3 -c 'import json,os; d=json.loads(os.environ.get("SSH_JSON") or "{}"); print(",".join(d.get("vm_ssh_failed") or []))' 2>/dev/null || true)
 	for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-	    local ns_name="vm-${BATCH_ID}-ns-${ns}"
+	    local ns_name="${BATCH_ID}-ns-${ns}"
 	    ns_list="${ns_list:+${ns_list}, }${ns_name}"
 	done
 	for key in "${BATCH_VMS_ORDERED[@]+"${BATCH_VMS_ORDERED[@]}"}" ; do

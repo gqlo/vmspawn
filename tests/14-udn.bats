@@ -182,9 +182,9 @@ setup_file() {
   [[ "$output" == *"kind: UserDefinedNetwork"* ]]
   [[ "$output" == *"name: l2bridge"* ]]
   [[ "$output" == *"containerDisk:"* ]]
-  # Root is containerDisk; blank data-disk DataVolume (vdb) is expected by default
-  [[ "$output" == *"blank: {}"* ]]
-  [[ "$output" == *"name: vdb"* ]]
+  # Root is containerDisk; blank data disk is opt-in via --data-disk-size
+  [[ "$output" != *"blank: {}"* ]]
+  [[ "$output" != *"name: vdb"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -325,7 +325,7 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"name: svc-clusterip-vm-udn013"* ]]
-  [[ "$output" == *"namespace: vm-udn013-ns-1"* ]]
+  [[ "$output" == *"namespace: udn013-ns-1"* ]]
   [[ "$output" == *"Creating ClusterIP Service svc-clusterip-vm-udn013"* ]]
 }
 

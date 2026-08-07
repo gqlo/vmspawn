@@ -18,26 +18,27 @@ setup_file() {
 # ---------------------------------------------------------------
 # Batch ID auto-generation
 # ---------------------------------------------------------------
-@test "auto-generates a 6-character hex batch ID" {
+@test "auto-generates a vstorm-prefixed hex batch ID" {
   run bash "$VSTORM" -q --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   local batch_id
   batch_id=$(echo "$output" | grep "Batch ID:" | head -1 | awk '{print $NF}')
-  [[ "$batch_id" =~ ^[0-9a-f]{6}$ ]]
+  # "vstorm-" + 6 hex — always starts with letters (never YAML-numeric)
+  [[ "$batch_id" =~ ^vstorm-[0-9a-f]{6}$ ]]
 }
 
 # ---------------------------------------------------------------
 # Namespace naming
 # ---------------------------------------------------------------
-@test "namespaces follow vm-{batch}-ns-{N} pattern" {
+@test "namespaces follow {batch}-ns-{N} pattern" {
   run bash "$VSTORM" -q --batch-id=ff0011 --vms=4 --namespaces=3
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"vm-ff0011-ns-1"* ]]
-  [[ "$output" == *"vm-ff0011-ns-2"* ]]
-  [[ "$output" == *"vm-ff0011-ns-3"* ]]
-  [[ "$output" != *"vm-ff0011-ns-4"* ]]
+  [[ "$output" == *"ff0011-ns-1"* ]]
+  [[ "$output" == *"ff0011-ns-2"* ]]
+  [[ "$output" == *"ff0011-ns-3"* ]]
+  [[ "$output" != *"ff0011-ns-4"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -48,8 +49,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   local ns1_count ns2_count
-  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-aabb11-ns-1")
-  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-aabb11-ns-2")
+  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: aabb11-ns-1")
+  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: aabb11-ns-2")
 
   [ "$ns1_count" -eq 3 ]
   [ "$ns2_count" -eq 2 ]

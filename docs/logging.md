@@ -56,15 +56,15 @@ Log messages are written to both the terminal (stdout) and the log file simultan
 2026-02-11T14:30:05Z Cloud-init:    helpers/cloudinit-default.yaml
 2026-02-11T14:30:05Z Run strategy:  Always
 2026-02-11T14:30:05Z Creating namespaces...
-2026-02-11T14:30:06Z Creating namespace: vm-a3f7b2-ns-1
-2026-02-11T14:30:06Z Creating namespace: vm-a3f7b2-ns-2
+2026-02-11T14:30:06Z Creating namespace: a3f7b2-ns-1
+2026-02-11T14:30:06Z Creating namespace: a3f7b2-ns-2
 2026-02-11T14:30:06Z Creating DataVolumes...
 ...
 2026-02-11T14:31:20Z All DataVolumes are completed successfully!
 2026-02-11T14:31:20Z Creating VolumeSnapshots...
 ...
 2026-02-11T14:31:45Z Creating VirtualMachines...
-2026-02-11T14:31:45Z Creating VirtualMachine 1 for namespace: vm-a3f7b2-ns-1
+2026-02-11T14:31:45Z Creating VirtualMachine 1 for namespace: a3f7b2-ns-1
 ...
 2026-02-11T14:31:50Z Resource creation completed successfully!
 2026-02-11T14:31:50Z Created 2 namespaces, 2 DataVolumes, 2 VolumeSnapshots, and 10 total VirtualMachines
@@ -90,8 +90,8 @@ created: 2026-02-11T14:30:05Z
 basename: rhel9
 total-vms: 10
 total-namespaces: 2
-namespaces: vm-a3f7b2-ns-1, vm-a3f7b2-ns-2
-vms: vm-a3f7b2-ns-1/rhel9-a3f7b2-1, vm-a3f7b2-ns-1/rhel9-a3f7b2-2, ...
+namespaces: a3f7b2-ns-1, a3f7b2-ns-2
+vms: a3f7b2-ns-1/rhel9-a3f7b2-1, a3f7b2-ns-1/rhel9-a3f7b2-2, ...
 ```
 
 When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the data-collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).

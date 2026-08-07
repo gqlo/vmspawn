@@ -26,17 +26,18 @@ setup_file() {
   # --- correct disk source shown ---
   [[ "$output" == *"Disk source: ContainerDisk quay.io/containerdisks/fedora:latest"* ]]
 
-  # --- no OS base DataVolume wait / VolumeSnapshot; blank data disk DV is OK ---
+  # --- no OS base DataVolume wait / VolumeSnapshot; no blank data disk by default ---
   [[ "$output" != *"Creating DataVolumes"* ]]
   [[ "$output" != *"Creating VolumeSnapshots"* ]]
   [[ "$output" != *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"blank: {}"* ]]
-  [[ "$output" == *"name: vdb"* ]]
+  [[ "$output" != *"blank: {}"* ]]
+  [[ "$output" != *"name: vdb"* ]]
 
   # --- VM uses containerDisk volume for root ---
   [[ "$output" == *"kind: VirtualMachine"* ]]
   [[ "$output" == *"containerDisk:"* ]]
   [[ "$output" == *"image: quay.io/containerdisks/fedora:latest"* ]]
+  [[ "$output" != *"kind: DataVolume"* ]]
 
   # --- storage-related fields show N/A for root disk mode ---
   [[ "$output" == *"Storage Class: N/A (container disk)"* ]]
@@ -101,9 +102,9 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- two namespaces created ---
-  [[ "$output" == *"name: vm-cdk006-ns-1"* ]]
-  [[ "$output" == *"name: vm-cdk006-ns-2"* ]]
-  [[ "$output" != *"vm-cdk006-ns-3"* ]]
+  [[ "$output" == *"name: cdk006-ns-1"* ]]
+  [[ "$output" == *"name: cdk006-ns-2"* ]]
+  [[ "$output" != *"cdk006-ns-3"* ]]
 
   # --- 4 VMs total ---
   local vm_count

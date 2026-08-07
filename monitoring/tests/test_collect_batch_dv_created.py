@@ -30,7 +30,7 @@ def _load():
 
 col = _load()
 
-NS = "vm-abcd12-ns-1"
+NS = "abcd12-ns-1"
 BASENAME = "rhel9"
 BATCH = "abcd12"
 VM = "rhel9-abcd12-1"

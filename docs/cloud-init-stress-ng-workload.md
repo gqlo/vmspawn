@@ -99,7 +99,7 @@ From the host, use **helpers/log-vm** (uses `virtctl ssh`; set `STRESS_WORKLOAD_
 ```bash
 helpers/log-vm <vm-name> <namespace> [lines]
 helpers/log-vm -u <unit> <vm-name> <namespace> [lines]
-# Example: helpers/log-vm rhel9-abc123-1 vm-abc123-ns-1 30
+# Example: helpers/log-vm rhel9-abc123-1 abc123-ns-1 30
 # Set password: STRESS_WORKLOAD_PASSWORD=<your-vm-root-password> helpers/log-vm <vm> <ns>
 ```
 

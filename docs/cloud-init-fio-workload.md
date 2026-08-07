@@ -60,7 +60,7 @@ Override with `--env KEY=VAL` (repeat as needed):
 
 | Parameter | Description |
 |-----------|-------------|
-| `FIO_DIRECTORY` | Job file directory (default `/root/data`). With `--data-disk-size` (default `20G`), mounts `/dev/vdb` here (by mount **source**) and records UUID in `/etc/fstab`. Boot time comes from shared `vstorm-boot-timestamp.service` (`/root/timestamp.txt`); fio reads it for result payloads. |
+| `FIO_DIRECTORY` | Job file directory (default `/root/data`). With `--data-disk-size=N` (opt-in blank `vdb`), mounts `/dev/vdb` here (by mount **source**) and records UUID in `/etc/fstab`. Boot time comes from shared `vstorm-boot-timestamp.service` (`/root/timestamp.txt`); fio reads it for result payloads. |
 | `FIO_DATA_DEVICE` | Block device for optional data disk (default `/dev/vdb`); formatted + mounted onto `FIO_DIRECTORY` when present |
 | `FIO_SIZE` | File size per job (default `1G`) |
 | `FIO_BS` | Block size (overrides preset default) |
@@ -99,7 +99,7 @@ vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --env RESULT_SERVER_URL=http://<reachable-host>:8080/v1/results \
   --cores=4 --memory=8Gi --vms=10 --wait
 
-# Same with an explicit 50Gi data disk (default is 20G; use --data-disk-size=0 to disable)
+# Same with an explicit 50Gi data disk (omit --data-disk-size for none)
 vstorm --cloudinit=workload/cloudinit-fio-workload.yaml \
   --data-disk-size=50Gi \
   --env FIO_SIZE=10G --env WORKLOAD_TYPE=randrw \
@@ -113,7 +113,7 @@ From the host, use **helpers/log-vm** (uses `virtctl ssh`; set `STRESS_WORKLOAD_
 
 ```bash
 helpers/log-vm -u fio-workload.service <vm-name> <namespace> [lines]
-# Example: helpers/log-vm -u fio-workload.service rhel9-abc123-1 vm-abc123-ns-1 30
+# Example: helpers/log-vm -u fio-workload.service rhel9-abc123-1 abc123-ns-1 30
 ```
 
 Inside a VM (e.g. via `virtctl console` or SSH):

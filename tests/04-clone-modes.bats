@@ -96,8 +96,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-dc0005-ns-1"* ]]
-  [[ "$output" == *"name: vm-dc0005-ns-2"* ]]
+  [[ "$output" == *"name: dc0005-ns-1"* ]]
+  [[ "$output" == *"name: dc0005-ns-2"* ]]
 
   # --- No base DV for any namespace ---
   [[ "$output" == *"Skipping base DataVolume creation"* ]]

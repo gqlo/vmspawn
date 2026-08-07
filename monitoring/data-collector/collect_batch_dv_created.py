@@ -106,7 +106,7 @@ def collect_batch_timestamps(
         ns, _, name = entry_s.partition("/")
         if ns:
             ns_set.add(ns)
-    ns_prefix = f"vm-{batch_id}-ns-" if batch_id else None
+    ns_prefix = f"{batch_id}-ns-" if batch_id else None
 
     vm_names: set[str] = set()
     for entry in vms or []:

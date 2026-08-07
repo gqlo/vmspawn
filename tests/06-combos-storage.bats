@@ -261,9 +261,9 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 3 namespaces ---
-  [[ "$output" == *"name: vm-cmb012-ns-1"* ]]
-  [[ "$output" == *"name: vm-cmb012-ns-2"* ]]
-  [[ "$output" == *"name: vm-cmb012-ns-3"* ]]
+  [[ "$output" == *"name: cmb012-ns-1"* ]]
+  [[ "$output" == *"name: cmb012-ns-2"* ]]
+  [[ "$output" == *"name: cmb012-ns-3"* ]]
 
   # --- 3 Secrets (one per namespace) ---
   local secret_count
@@ -506,24 +506,20 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# COMBO-26: --data-disk-size (default 20G blank vdb; 0 disables)
+# COMBO-26: --data-disk-size (opt-in blank vdb; omit/0 = none)
 # ---------------------------------------------------------------
-@test "combo: default data disk is 20G blank vdb" {
+@test "combo: default has no blank data disk" {
   run bash "$VSTORM" -n --batch-id=cmb026 --datasource=rhel9 \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"Data disk:     20G (blank vdb)"* ]]
-  [[ "$output" == *"name: vdb"* ]]
-  [[ "$output" == *"blank: {}"* ]]
-  [[ "$output" == *"20G"* ]]
-  [[ "$output" == *"-data"* ]]
+  [[ "$output" != *"Data disk:"* ]]
+  [[ "$output" != *"name: vdb"* ]]
+  [[ "$output" != *"blank: {}"* ]]
   [[ "$output" == *"name: vda"* ]]
-  # Blank data DV carries batch-id so collector can list it with other DVs.
-  [[ "$output" == *"batch-id: cmb026"* ]]
 }
 
-@test "combo: --data-disk-size=50Gi overrides default data disk" {
+@test "combo: --data-disk-size=50Gi attaches blank vdb" {
   run bash "$VSTORM" -n --batch-id=cmb026b --datasource=rhel9 --data-disk-size=50Gi \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
@@ -531,6 +527,18 @@ setup_file() {
   [[ "$output" == *"Data disk:     50Gi (blank vdb)"* ]]
   [[ "$output" == *"blank: {}"* ]]
   [[ "$output" == *"50Gi"* ]]
+  [[ "$output" == *"name: vdb"* ]]
+  [[ "$output" == *"-data"* ]]
+  # Blank data DV carries batch-id (quoted) so collector can list it with other DVs.
+  [[ "$output" == *"batch-id: \"cmb026b\""* ]] || [[ "$output" == *"batch-id: cmb026b"* ]]
+}
+
+@test "combo: numeric batch-id on data disk is YAML-quoted" {
+  run bash "$VSTORM" -n --batch-id=625156 --datasource=rhel9 --data-disk-size=20G \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"batch-id: \"625156\""* ]]
 }
 
 @test "combo: --data-disk-size=0 disables blank vdb" {
@@ -541,5 +549,48 @@ setup_file() {
   [[ "$output" != *"blank: {}"* ]]
   [[ "$output" != *"name: vdb"* ]]
   [[ "$output" != *"Data disk:"* ]]
+}
+
+@test "combo: --data-disk-size=20G attaches blank vdb with expected DV name" {
+  run bash "$VSTORM" -n --batch-id=cmb028 --datasource=rhel9 --data-disk-size=20G \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"Data disk:     20G (blank vdb)"* ]]
+  [[ "$output" == *"Data disk enabled: 20G blank volume as vdb"* ]]
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"name: vdb"* ]]
+  [[ "$output" == *"name: rhel9-cmb028-1-data"* ]] || [[ "$output" == *"rhel9-cmb028-1-data"* ]]
+  [[ "$output" == *"batch-id: \"cmb028\""* ]]
+}
+
+@test "combo: containerdisk with --data-disk-size gets blank vdb only" {
+  run bash "$VSTORM" -n --batch-id=cmb029 --containerdisk --data-disk-size=10G \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"containerDisk:"* ]]
+  [[ "$output" == *"Data disk:     10G (blank vdb)"* ]]
+  [[ "$output" == *"blank: {}"* ]]
+  [[ "$output" == *"name: vdb"* ]]
+  [[ "$output" == *"kind: DataVolume"* ]]
+  [[ "$output" != *"Creating VolumeSnapshots"* ]]
+}
+
+@test "combo: invalid --data-disk-size is rejected" {
+  run bash "$VSTORM" -n --batch-id=cmb030 --datasource=rhel9 --data-disk-size=bogus \
+    --vms=1 --namespaces=1
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"Invalid --data-disk-size"* ]]
+}
+
+@test "combo: vstorm-prefixed batch-id on data disk stays quoted" {
+  run bash "$VSTORM" -n --batch-id=vstorm-f9f39c --datasource=rhel9 --data-disk-size=20G \
+    --vms=1 --namespaces=1
+  [ "$status" -eq 0 ]
+
+  [[ "$output" == *"batch-id: \"vstorm-f9f39c\""* ]]
+  [[ "$output" == *"name: vstorm-f9f39c-ns-1"* ]]
+  [[ "$output" == *"blank: {}"* ]]
 }
 
