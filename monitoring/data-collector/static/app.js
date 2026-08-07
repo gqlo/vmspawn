@@ -803,7 +803,7 @@ async function renderRun(app, batchId) {
       ${
         vmList.length
           ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>Cycles</th><th>Last stopped</th><th>DV created</th><th>DV ready</th><th>PVC created</th><th>PVC bound</th><th>Boot</th></tr></thead>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>DV created</th><th>DV ready</th><th>PVC created</th><th>PVC bound</th><th>Boot</th></tr></thead>
         <tbody>
           ${vmList
             .map(
@@ -814,8 +814,6 @@ async function renderRun(app, batchId) {
                 v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
               }</td>
               <td class="mono">${escapeHtml(v.namespace || "—")}</td>
-              <td>${escapeHtml(String(v.cycle_count || 0))}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.last_stopped_at))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.dv_created_at_unix))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.dv_ready_at_unix))}</td>
               <td class="mono">${escapeHtml(fmtTs(v.pvc_created_at_unix))}</td>
@@ -1158,7 +1156,7 @@ function setupRefresh() {
 }
 
 function setupBrandHome() {
-  const brand = document.querySelector(".brand a");
+  const brand = document.querySelector(".brand-title");
   if (!brand) return;
   brand.addEventListener("click", (e) => {
     e.preventDefault();

@@ -147,10 +147,10 @@ setup_file() {
   vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
   [ "$vm_count" -eq 10 ]
 
-  # --- No auto cloud-init in URL mode ---
-  [[ "$output" != *"applying default cloud-init"* ]]
-  [[ "$output" != *"kind: Secret"* ]]
-  [[ "$output" != *"cloudInitNoCloud"* ]]
+  # --- Default cloud-init auto-applied (SSH + boot timestamp) ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
 
   # --- VMs clone from snapshot ---
   [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]

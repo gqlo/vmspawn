@@ -276,9 +276,9 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# COMBO-13: --dv-url + --snapshot (no --cloudinit) → no auto cloud-init
+# COMBO-13: --dv-url + --snapshot (no --cloudinit) → default cloud-init
 # ---------------------------------------------------------------
-@test "combo: dv-url + snapshot without cloudinit has no auto cloud-init" {
+@test "combo: dv-url + snapshot without cloudinit applies default cloud-init" {
   run bash "$VSTORM" -n --batch-id=cmb013 --datasource=rhel9 \
     --dv-url=http://example.com/disk.qcow2 --snapshot-class=ocs-storagecluster-rbdplugin-snapclass \
     --vms=1 --namespaces=1
@@ -288,10 +288,10 @@ setup_file() {
   [[ "$output" == *"http://example.com/disk.qcow2"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
 
-  # --- No cloud-init ---
-  [[ "$output" != *"applying default cloud-init"* ]]
-  [[ "$output" != *"kind: Secret"* ]]
-  [[ "$output" != *"cloudInitNoCloud"* ]]
+  # --- Default cloud-init ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
 }
 
 # ---------------------------------------------------------------

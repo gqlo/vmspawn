@@ -506,7 +506,7 @@ SLOWMOCK
 }
 
 # ---------------------------------------------------------------
-# OPT: --env without --cloudinit does not crash (default cloud-init has no placeholder)
+# OPT: --env without --cloudinit uses default profile (has {VSTORM_GUEST_ENV})
 # ---------------------------------------------------------------
 @test "OPT: --env without custom cloud-init runs successfully" {
   run bash "$VSTORM" -n --batch-id=env03 --datasource=rhel9 --vms=1 --namespaces=1 \

@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Workload results</title>
+  <title>vstorm workload results</title>
   <link rel="stylesheet" href="/style.css" />
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"
           integrity="sha384-9nhczxUqK87bcKHh20fSQcTGD4qq5GhayNYSYWqwBkINBhOfQLg/P5HG5lF1urn4"
@@ -15,7 +15,12 @@
 <body>
   <header class="top">
     <div class="brand">
-      <a href="#/runs">Workload results</a>
+      <a class="brand-title" href="#/runs">vstorm workload results</a>
+      <p class="brand-desc">
+        Collect and browse batch VM create / boot / workload timings from
+        <a href="https://github.com/gqlo/vstorm" target="_blank" rel="noopener noreferrer">vstorm</a>
+        (spawn VMs in a batch on OpenShift Virtualization).
+      </p>
     </div>
     <div class="top-actions">
       <button type="button" id="btn-refresh" class="btn">Refresh</button>

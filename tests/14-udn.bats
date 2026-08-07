@@ -248,16 +248,18 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# UDN-9: dv-url without cloud-init has no networkData
+# UDN-9: dv-url without --cloudinit still gets default profile + UDN networkData
 # ---------------------------------------------------------------
-@test "UDN: dv-url without cloud-init omits networkData" {
+@test "UDN: dv-url without cloud-init applies default profile with networkData" {
   run bash "$VSTORM" -n --batch-id=udn009 --udn-l2 \
     --dv-url=http://example.com/disk.qcow --no-snapshot \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"name: l2bridge"* ]]
-  [[ "$output" != *"networkData:"* ]]
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"networkData:"* ]]
+  [[ "$output" == *"dhcp4: true"* ]]
 }
 
 # ===============================================================

@@ -36,7 +36,7 @@ One test per README Quick Start example. Each validates the full YAML output end
 |---|---|---|
 | QS-1 | `--vms=10 --namespaces=2` | DataSource DV, snapshot, 10 VMs, auto cloud-init, labels, VM spec |
 | QS-2 | `--datasource=fedora --vms=5` | Fedora DataSource in DV, snapshot path, auto cloud-init |
-| QS-3 | `--dv-url=... --vms=10` | URL import DV with explicit size, snapshot, 10 VMs, no auto cloud-init |
+| QS-3 | `--dv-url=... --vms=10` | URL import DV with explicit size, snapshot, 10 VMs, default cloud-init auto-applied |
 | QS-4 | `--cloudinit=...stress... --vms=10` | Custom cloud-init Secret per namespace, secretRef, not auto-applied |
 | QS-5 | `--datasource=centos-stream9 --vms=5` | Different DataSource with default cloud-init auto-applied |
 | QS-6 | `--storage-class=my-nfs-sc --vms=10` | Non-OCS storage class auto-disables snapshots, direct DataSource clone (no base DV) |
@@ -225,7 +225,7 @@ Multi-option combination tests that validate interactions between 3+ options use
 | COMBO-10 | `--dv-url=... --snapshot-class=... --cloudinit=FILE` | URL + snapshot + custom cloud-init |
 | COMBO-11 | `--dv-url=... --no-snapshot --cloudinit=FILE` | URL + no-snapshot + custom cloud-init |
 | COMBO-12 | `--no-snapshot --cloudinit=FILE --namespaces=3` | Secret created per namespace in DataSource clone |
-| COMBO-13 | `--dv-url=... --snapshot-class=...` (no `--cloudinit`) | URL+snapshot: no auto cloud-init applied |
+| COMBO-13 | `--dv-url=... --snapshot-class=...` (no `--cloudinit`) | URL+snapshot: default cloud-init auto-applied |
 | COMBO-14 | `--no-snapshot --basename=fedora --cloudinit=FILE` | Custom basename affects Secret name + DataSource clone |
 
 #### Category 3: Clone path x VM resource requests (COMBO-15 through COMBO-18)
@@ -322,7 +322,7 @@ Tests in `tests/14-udn.bats` cover the `--udn-l2[=CIDR]` and `--service` flags. 
 | UDN-6 | (no UDN flags) | Default masquerade networking unchanged |
 | UDN-7 | `--udn-l2 --containerdisk` | Auto cloud-init includes DHCP `networkData` |
 | UDN-8 | `--udn-l2 --cloudinit=...` | Explicit cloud-init includes DHCP `networkData` |
-| UDN-9 | `--udn-l2 --dv-url=... --no-snapshot` | No `networkData` when cloud-init not applied |
+| UDN-9 | `--udn-l2 --dv-url=... --no-snapshot` | Default cloud-init auto-applied with DHCP `networkData` |
 | UDN-10 | `--udn-l2 --service --namespaces=2` | NodePort Service per namespace, port 22 (32222+) |
 | UDN-11 | `--udn-l2 --service=clusterip` | ClusterIP Service, port 22, no `nodePort` |
 | UDN-12 | `--udn-l2 --service --namespaces=2` | NodePort auto-increment logged per namespace |

@@ -796,6 +796,19 @@ validate_delete_and_profile_options() {
     fi
 }
 
+# Apply workload/cloudinit-default.yaml when --cloudinit was omitted.
+# Safe to call more than once; no-ops if CLOUDINIT_FILE is already set.
+apply_default_cloudinit_if_needed() {
+    if [[ -n "$CLOUDINIT_FILE" ]] ; then
+	return 0
+    fi
+    CLOUDINIT_FILE="$(dirname "$0")/workload/cloudinit-default.yaml"
+    if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
+	fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
+    fi
+    log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST}, boot timestamp only)"
+}
+
 prepare_creation() {
     # Skip creation-specific checks when deleting
     [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) && return
@@ -809,6 +822,7 @@ prepare_creation() {
     fi
 
     validate_required_templates
+    apply_default_cloudinit_if_needed
 
     # Calculate VMs per namespace
     VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
@@ -1642,15 +1656,8 @@ create_virtualmachines() {
 	else
 		vm_file="${TEMPLATE_CACHE[vm]}"
 	fi
-    # Auto-apply default cloud-init when using DataSource or container disk
-    # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
-    if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
-	CLOUDINIT_FILE="$(dirname "$0")/workload/cloudinit-default.yaml"
-	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
-	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
-	fi
-	log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST})"
-    fi
+    # Default profile when --cloudinit omitted (SSH + boot timestamp; no workload).
+    apply_default_cloudinit_if_needed
     local requeststr=
     local -A requests=()
     if [[ -n "${VM_CPU_REQUEST:-}" ]] ; then requests[cpu]=$VM_CPU_REQUEST; fi

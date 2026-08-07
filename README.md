@@ -121,23 +121,22 @@ vstorm --memory=8Gi --cores=2 \
 
 Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
 
-### Default cloud-init (DataSource and container disk modes)
+### Default cloud-init
 
-When using `--datasource` or `--containerdisk`, a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
+When `--cloudinit` is omitted, vstorm injects [`workload/cloudinit-default.yaml`](workload/cloudinit-default.yaml) in every create mode (URL, DataSource, container disk). It configures:
 
 - **Root password**: `password`
-- **PasswordAuthentication**: enabled in sshd
-- **PermitRootLogin**: enabled in sshd
+- **PasswordAuthentication** / **PermitRootLogin**: enabled in sshd
+- **Boot timestamp**: `vstorm-boot-timestamp.service` writes `/root/timestamp.txt` and optionally POSTs a boot heartbeat when `RESULT_SERVER_URL` is set via `--env` (no workload job)
 
 ```bash
-# DataSource VMs reachable via: ssh root@<vm-ip>  (password: password)
+# Any mode: default profile (SSH + boot timestamp only)
 vstorm --vms=10 --namespaces=2
-
-# Container disk VMs work the same way -- no storage class required
 vstorm --containerdisk --vms=5 --namespaces=1
+vstorm --dv-url=http://example.com/disk.qcow2 --vms=5
 ```
 
-To override, pass your own file with `--cloudinit=FILE`. In default (URL) mode, no cloud-init is injected unless you pass `--cloudinit`.
+Override with `--cloudinit=FILE` for fio / stress-ng / dirty-mem or a custom profile.
 
 ### Custom cloud-init
 
@@ -265,7 +264,7 @@ vstorm auto-detects most storage settings from the cluster. Here are the common 
 | VolumeSnapshot never becomes ready | No matching VolumeSnapshotClass for your storage | Pass `--snapshot-class=CLASS`, or omit it to auto-disable snapshots |
 | VMs can't live-migrate | PVCs use ReadWriteOnce (local storage) | Expected -- use shared storage (Ceph/NFS) with RWX for live migration |
 
-In DataSource and container disk modes, a cloud-init is auto-injected (root password: `password`). In default (URL) mode, no cloud-init is injected unless you pass `--cloudinit`.
+In every create mode, when `--cloudinit` is omitted, [`workload/cloudinit-default.yaml`](workload/cloudinit-default.yaml) is auto-injected (root password `password`, boot-timestamp heartbeat only; no fio/stress workload). Override with `--cloudinit=FILE`.
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
