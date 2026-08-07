@@ -1142,13 +1142,10 @@ create_volumesnapshots() {
 # Never fails the create path. DV/PVC lists are scoped to batch namespaces (not label-only),
 # because per-VM snapshot clone DVs and CDI PVCs often lack batch-id labels.
 collect_batch_dv_created_json() {
-    local dv_raw="" pvc_raw=""
     if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
 	echo '{}'
 	return 0
     fi
-    dv_raw=$(oc get datavolume -A -o json 2>/dev/null || true)
-    pvc_raw=$(oc get pvc -A -o json 2>/dev/null || true)
 
     local vm_json='[]'
     if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
@@ -1160,9 +1157,24 @@ collect_batch_dv_created_json() {
 	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
     fi
 
-    BASENAME="$VM_BASENAME" BATCH_ID="$BATCH_ID" VM_JSON="$vm_json" NS_JSON="$ns_json" \
-    DV_JSON="${dv_raw:-{}}" PVC_JSON="${pvc_raw:-{}}" python3 -c '
-import json, os, sys
+    # Write cluster-wide DV/PVC JSON to temp files.
+    # 1) Avoid Linux MAX_ARG_STRLEN (~128KiB) — large env values cause
+    #    "Argument list too long" and a silent {} fallback (empty CSV columns).
+    # 2) Avoid bash "${var:-{}}" which parses as default "{" plus a literal "}"
+    #    and corrupts JSON with a trailing brace.
+    local dv_file pvc_file py_rc=0 out_json=""
+    dv_file=$(mktemp)
+    pvc_file=$(mktemp)
+    if ! oc get datavolume -A -o json > "$dv_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$dv_file"
+    fi
+    if ! oc get pvc -A -o json > "$pvc_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$pvc_file"
+    fi
+    out_json=$(
+	BASENAME="$VM_BASENAME" BATCH_ID="$BATCH_ID" VM_JSON="$vm_json" NS_JSON="$ns_json" \
+	DV_JSON_FILE="$dv_file" PVC_JSON_FILE="$pvc_file" python3 -c '
+import json, os
 from datetime import datetime, timezone
 
 def to_iso_z(ts):
@@ -1183,6 +1195,22 @@ def to_iso_z(ts):
 
 def load_env_json(key, default=None):
     raw = os.environ.get(key) or ""
+    if not raw.strip():
+        return {} if default is None else default
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return {} if default is None else default
+
+def load_json_file(path_key, default=None):
+    path = (os.environ.get(path_key) or "").strip()
+    if not path:
+        return {} if default is None else default
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            raw = f.read()
+    except OSError:
+        return {} if default is None else default
     if not raw.strip():
         return {} if default is None else default
     try:
@@ -1309,8 +1337,8 @@ def collect_dv_items(doc):
     out.sort(key=lambda d: (d["created_at"], d["namespace"], d["name"]))
     return out
 
-dv_doc = load_env_json("DV_JSON")
-pvc_doc = load_env_json("PVC_JSON")
+dv_doc = load_json_file("DV_JSON_FILE")
+pvc_doc = load_json_file("PVC_JSON_FILE")
 dv_created = collect_dv_items(dv_doc)
 pvc_created = collect_pvc_items(pvc_doc)
 
@@ -1480,7 +1508,13 @@ if vm_data_pvc_bound:
     out["vm_data_pvc_bound"] = vm_data_pvc_bound
 
 print(json.dumps(out))
-' 2>/dev/null || echo '{}'
+' 2>/dev/null) || py_rc=$?
+    rm -f "$dv_file" "$pvc_file"
+    if [[ "$py_rc" -ne 0 || -z "$out_json" ]]; then
+	echo '{}'
+	return 0
+    fi
+    printf '%s\n' "$out_json"
 }
 
 post_batch_result_metadata() {
