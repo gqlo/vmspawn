@@ -1,7 +1,10 @@
 #!/bin/bash
 # Shared guest boot timestamp: append /root/timestamp.txt and optionally POST a
 # heartbeat with boot_timestamp when RESULT_SERVER_URL + VSTORM_BATCH_ID are set.
-# Embedded into cloud-init profiles (keep in sync with write_files copies).
+#
+# Single source of truth for the guest boot agent. Cloud-init profiles embed a
+# copy under write_files (path /opt/vstorm-boot-timestamp.sh); keep those embeds
+# identical (tests/15-boot-timestamp.bats checks byte-for-byte parity).
 set -euo pipefail
 
 BOOT_TIMESTAMP_FILE="${RESULT_TIMESTAMP_FILE:-/root/timestamp.txt}"
@@ -82,13 +85,15 @@ PY
 
 RESULT_RETRY="${RESULT_RETRY:-3}"
 RESULT_TIMEOUT="${RESULT_TIMEOUT:-30}"
+auth_args=()
+[[ -n "${RESULT_SERVER_TOKEN:-}" ]] && auth_args+=(-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}")
 attempt=1
 while (( attempt <= RESULT_RETRY )); do
     http_code=$(curl -sS -X POST -H "Content-Type: application/json" \
         --data-binary @"$payload_file" \
         --connect-timeout "$RESULT_TIMEOUT" \
         --max-time "$RESULT_TIMEOUT" \
-        ${RESULT_SERVER_TOKEN:+-H "Authorization: Bearer ${RESULT_SERVER_TOKEN}"} \
+        "${auth_args[@]}" \
         -o /tmp/vstorm-boot-post.body -w '%{http_code}' \
         "$RESULT_SERVER_URL" 2>/tmp/vstorm-boot-post.err) || true
     if [[ "$http_code" =~ ^2[0-9][0-9]$ ]]; then

@@ -134,10 +134,23 @@ describe("boot durations and CSV", () => {
       lines[0],
       "batch_id,vm_name,namespace,base_dv_creation_s,snapshot_creation_s,dv_creation_s,data_dv_creation_s,vm_ready_s,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
     );
-    assert.ok(lines[1].startsWith("a1b2c3,vm-a,ns1,"));
-    assert.ok(lines[1].includes("vm-a"));
-    assert.ok(lines[2].includes("vm-b"));
-    assert.ok(lines[3].includes("vm-c"));
+    const a = lines[1].split(",");
+    const b = lines[2].split(",");
+    const c = lines[3].split(",");
+    assert.equal(a[0], "a1b2c3");
+    assert.equal(a[1], "vm-a");
+    assert.equal(a[2], "ns1");
+    assert.equal(a[7], "25"); // vm_ready_s: 1045-1020
+    assert.equal(a[8], lib.fmtTs(started));
+    assert.equal(a[14], lib.fmtTs(1020));
+    assert.equal(a[23], lib.fmtTs(1045));
+    assert.equal(b[1], "vm-b");
+    assert.equal(b[7], "70"); // 1100-1030
+    assert.equal(b[14], lib.fmtTs(1030));
+    assert.equal(b[23], lib.fmtTs(1100));
+    assert.equal(c[1], "vm-c");
+    assert.equal(c[7], ""); // no boot → empty vm_ready_s
+    assert.equal(c[23], ""); // null boot → empty cell
   });
 
   it("fills base DV and snapshot columns in boot times CSV", () => {

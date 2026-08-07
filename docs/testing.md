@@ -70,6 +70,8 @@ Guest scripts keep working when `RESULT_SERVER_URL` cannot be reached
 |---|---|---|
 | boot-ts unreachable | `tests/15-boot-timestamp.bats` | Timestamp file written; exit 0; POST failure logged (no spool) |
 | boot-ts missing batch id | `tests/15-boot-timestamp.bats` | File written; POST skipped when `VSTORM_BATCH_ID` unset |
+| boot-ts mock 2xx / non-2xx | `tests/15-boot-timestamp.bats` | Payload fields on success; file intact + exit 0 on HTTP 503 |
+| boot-ts embed parity | `tests/15-boot-timestamp.bats` | Each cloud-init embed matches `workload/vstorm-boot-timestamp.sh` |
 | FIO unreachable spool | `tests/14-fio-workload-script.bats` | Job finishes; result kept under `results/` and `results/pending/`; `post_error` recorded |
 | FIO local success | `tests/14-fio-workload-script.bats` | Unreachable collector does not fail the fio job itself |
 

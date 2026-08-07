@@ -190,9 +190,13 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
 - **DV ready (clone completed):** from DV `status.conditions` — prefer `Ready=True` `lastTransitionTime`, else `Running` reason `Completed`. Exposed as `dv_ready_at`, per-entry `ready_at`, and `vm_dv_ready` / `vm_data_dv_ready`. Smart snapshot clones often complete in ~1–2s.
 - **SSH port ready (host probe):** with `--wait-ssh`, vstorm probes guest port 22 (or `--service` targetPort) via `virtctl port-forward` + `nc` — no password/key. Each VM has a 30s timeout; any still down fails the run after the manifest POST. Fields: `vm_ssh_ready`, `vm_ssh_failed`, `ssh_ready_at`, `ssh_ready_status`.
 - **PVC created:** vstorm lists PVCs in batch namespaces and adds `pvc_created_at`, `pvc_created`, `vm_pvc_created` (root), and `vm_data_pvc_created` (blank data disk). Blank data DataVolumes are labeled `batch-id` so they appear in the DV list.
-- The dashboard histogram/summary uses **DV create → boot** when those fields exist
-  (else vstorm `started_at` → boot). Boot-times / all-timestamps CSVs include absolute
-  UTC columns: `batch_started_at_utc`, `base_dv_created_at_utc`, `base_dv_ready_at_utc`,
+- **DV→boot histogram / summary (per VM):** create→boot seconds use this fallback order for each VM independently:
+  1. `vm_dv_created[vm]` / per-VM `dv_created_at_unix` when present
+  2. else batch `dv_created_at` (earliest DV in the batch)
+  3. else vstorm `started_at`
+  That way a single earliest DV timestamp is **not** applied to every VM when per-VM create times exist.
+- Boot-times / all-timestamps CSVs include absolute UTC columns:
+  `batch_started_at_utc`, `base_dv_created_at_utc`, `base_dv_ready_at_utc`,
   `base_dv_bound_at_utc`, `snapshot_created_at_utc`, `snapshot_ready_at_utc`,
   `dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`, `pvc_bound_at_utc`,
   `data_dv_created_at_utc`, `data_dv_ready_at_utc`, `data_pvc_created_at_utc`,
@@ -203,13 +207,18 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
   `vm_ready_s` (boot−dv created). Blank when either endpoint is missing. PVC bound time
   comes from the owning DV `Bound=True` condition (`lastTransitionTime`).
 
-Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) (keep embedded `write_files` copies in sync).
+Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh)
+(single source of truth; embedded `write_files` copies must stay identical — covered by bats).
 
 ## Host-side manifest (vstorm)
 
 One `record_type: "manifest"` / `source: "vstorm"` POST after successful create (and after `--wait`), with names, sizing, cmdline, etc. Auto-inject `VSTORM_BATCH_ID`. This is the collector counterpart of the local `logs/batch-{id}.manifest` inventory — same facts, different place. See fields in the example below.
 
 ### Manifest payload example
+
+Abbreviated example: `total_vms` / `total_namespaces` describe the full batch, while
+`vms`, `vm_*`, `dv_created`, and `pvc_created` below show only a few entries for
+readability (a real POST includes every VM’s per-VM timestamps).
 
 ```json
 {

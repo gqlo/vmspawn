@@ -1299,7 +1299,7 @@ collect_batch_dv_created_json() {
 
     local vm_json='[]'
     if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
-	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')
+	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]')
     fi
 
     local ns_json='[]'
@@ -1378,7 +1378,7 @@ PY
 )
 
     if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
-	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))')
+	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]')
     else
 	vm_json='[]'
     fi
