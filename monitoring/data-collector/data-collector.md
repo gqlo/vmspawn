@@ -154,7 +154,9 @@ That script:
 1. Copies `vstorm-data-collector.service` into `/etc/systemd/system/` when it
    differs from the checkout, then `daemon-reload`
 2. `systemctl restart vstorm-data-collector.service`
-3. Probes `/healthz` (skip with `--no-health`; skip unit sync with `--no-sync-unit`)
+3. Probes `/healthz` with short retries (skip with `--no-health`; skip unit
+   sync with `--no-sync-unit`). Override wait with `HEALTH_ATTEMPTS` /
+   `HEALTH_INTERVAL_SEC` if needed.
 
 Static dashboard JS/CSS is read from disk per request; a browser refresh is
 enough for UI-only changes, but restarting still refreshes `serve.py`.
