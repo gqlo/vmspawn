@@ -21,7 +21,8 @@ Code and **installation steps** (foreground + systemd):
 [`monitoring/data-collector/data-collector.md`](data-collector/data-collector.md).
 
 ```bash
-python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./data-collector-data
+python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 \
+  --data-dir monitoring/data-collector/workload-result-data
 # Dashboard: http://<host>:8080/
 # Ingest:    POST http://<host>:8080/v1/results
 ```

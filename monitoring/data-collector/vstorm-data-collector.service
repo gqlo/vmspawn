@@ -6,13 +6,14 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Optional: run as a non-root user (create data dir owned by that user first).
+# Optional: run as a non-root user (ensure DATA_DIR is writable by that user).
 #   sudo systemctl edit vstorm-data-collector
 #   [Service]
 #   User=otus
 #   Group=otus
 EnvironmentFile=/etc/vstorm/data-collector.env
-WorkingDirectory=/var/lib/vstorm-data-collector
+# Checkout + data live under VSTORM_HOME (see data-collector.env).
+WorkingDirectory=${VSTORM_HOME}/monitoring/data-collector
 ExecStart=/bin/bash ${VSTORM_HOME}/monitoring/data-collector/run-serve.sh
 Restart=on-failure
 RestartSec=5

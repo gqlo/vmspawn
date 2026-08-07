@@ -30,7 +30,7 @@ From the **vstorm repo root**:
 ```bash
 python3 monitoring/data-collector/serve.py \
   --listen 0.0.0.0:8080 \
-  --data-dir ./data-collector-data
+  --data-dir monitoring/data-collector/workload-result-data
 ```
 
 | URL | Purpose |
@@ -44,19 +44,18 @@ Optional auth:
 ```bash
 python3 monitoring/data-collector/serve.py \
   --listen 0.0.0.0:8080 \
-  --data-dir ./data-collector-data \
+  --data-dir monitoring/data-collector/workload-result-data \
   --token SECRET
 ```
 
 Use the same secret as `RESULT_SERVER_TOKEN` in `vstorm --env` and as the
 dashboard Bearer token.
 
-Or via the wrapper:
+Or via the wrapper (defaults `DATA_DIR` to `…/monitoring/data-collector/workload-result-data`):
 
 ```bash
 export VSTORM_HOME=/path/to/vstorm
 export LISTEN=0.0.0.0:8080
-export DATA_DIR=/path/to/data
 # export TOKEN=SECRET
 ./monitoring/data-collector/run-serve.sh
 ```
@@ -67,10 +66,10 @@ Commands below assume you are in the **vstorm repo root** on the host that will
 run the collector (for example the PerfScale lab machine that vstorm’s default
 `RESULT_SERVER_URL` points at).
 
-### 1. Create directories and env file
+### 1. Create env file
 
 ```bash
-sudo mkdir -p /etc/vstorm /var/lib/vstorm-data-collector
+sudo mkdir -p /etc/vstorm
 sudo cp monitoring/data-collector/data-collector.env.example \
   /etc/vstorm/data-collector.env
 sudo edit /etc/vstorm/data-collector.env
@@ -80,10 +79,13 @@ Set at least:
 
 | Variable | Meaning | Example |
 |----------|---------|---------|
-| `VSTORM_HOME` | Absolute path to this git checkout (**required**) | `/home/otus/work/vstorm` |
+| `VSTORM_HOME` | Absolute path to this git checkout (**required**) | `/root/workload-collector/vstorm` |
 | `LISTEN` | Bind `HOST:PORT` | `0.0.0.0:8080` |
-| `DATA_DIR` | Persistent SQLite + JSON store | `/var/lib/vstorm-data-collector` |
+| `DATA_DIR` | SQLite + JSON under this directory | `$VSTORM_HOME/monitoring/data-collector/workload-result-data` |
 | `TOKEN` | Optional bearer token (empty = no auth) | leave blank or a secret |
+
+`DATA_DIR` stays inside the checkout’s `monitoring/data-collector/` tree (gitignored
+as `workload-result-data/`). If unset, `run-serve.sh` uses that path by default.
 
 `EnvironmentFile=/etc/vstorm/data-collector.env` is required by the unit; the
 service will not start without that file.
@@ -111,8 +113,8 @@ Open `http://<host>:8080/` for the dashboard.
 ### 4. Run as a non-root user (optional)
 
 ```bash
-sudo mkdir -p /var/lib/vstorm-data-collector
-sudo chown otus:otus /var/lib/vstorm-data-collector
+sudo chown -R otus:otus /root/workload-collector/vstorm/monitoring/data-collector/workload-result-data
+# (use your real DATA_DIR path)
 
 sudo systemctl edit vstorm-data-collector
 ```
