@@ -1,0 +1,194 @@
+# Data collector + dashboard
+
+Ingests guest and vstorm JSON (`POST /v1/results`), indexes it in SQLite, and serves
+the browser dashboard. Design notes:
+[`docs/workload-result-sync-and-dashboard.md`](../../docs/workload-result-sync-and-dashboard.md).
+
+| Path | Role |
+|------|------|
+| [`serve.py`](serve.py) | HTTP server (ingest API + static UI) |
+| [`run-serve.sh`](run-serve.sh) | Env-based launcher for systemd / manual runs |
+| [`vstorm-data-collector.service`](vstorm-data-collector.service) | systemd unit |
+| [`data-collector.env.example`](data-collector.env.example) | Env file template |
+| [`static/`](static/) | Dashboard assets |
+| [`seed_dummy.py`](seed_dummy.py) | Optional dummy data for UI demos |
+| [`collect_batch_dv_created.py`](collect_batch_dv_created.py) | Used by vstorm for DV/PVC timestamps |
+
+Default listen: `0.0.0.0:8080`. Binding there exposes plain HTTP ingest/control
+APIs — use only on trusted or lab networks, or set a bearer `TOKEN`.
+
+## Prerequisites
+
+- Python 3 (stdlib only; no pip packages required for `serve.py`)
+- A writable data directory for SQLite + JSON payloads
+- From a vstorm git checkout (this directory’s repo root)
+
+## Quick start (foreground)
+
+From the **vstorm repo root**:
+
+```bash
+python3 monitoring/data-collector/serve.py \
+  --listen 0.0.0.0:8080 \
+  --data-dir ./data-collector-data
+```
+
+| URL | Purpose |
+|-----|---------|
+| `http://<host>:8080/` | Dashboard |
+| `http://<host>:8080/v1/results` | Ingest (`POST`) |
+| `http://<host>:8080/healthz` | Liveness (no auth) |
+
+Optional auth:
+
+```bash
+python3 monitoring/data-collector/serve.py \
+  --listen 0.0.0.0:8080 \
+  --data-dir ./data-collector-data \
+  --token SECRET
+```
+
+Use the same secret as `RESULT_SERVER_TOKEN` in `vstorm --env` and as the
+dashboard Bearer token.
+
+Or via the wrapper:
+
+```bash
+export VSTORM_HOME=/path/to/vstorm
+export LISTEN=0.0.0.0:8080
+export DATA_DIR=/path/to/data
+# export TOKEN=SECRET
+./monitoring/data-collector/run-serve.sh
+```
+
+## Install as a systemd service
+
+Commands below assume you are in the **vstorm repo root** on the host that will
+run the collector (for example the PerfScale lab machine that vstorm’s default
+`RESULT_SERVER_URL` points at).
+
+### 1. Create directories and env file
+
+```bash
+sudo mkdir -p /etc/vstorm /var/lib/vstorm-data-collector
+sudo cp monitoring/data-collector/data-collector.env.example \
+  /etc/vstorm/data-collector.env
+sudo edit /etc/vstorm/data-collector.env
+```
+
+Set at least:
+
+| Variable | Meaning | Example |
+|----------|---------|---------|
+| `VSTORM_HOME` | Absolute path to this git checkout (**required**) | `/home/otus/work/vstorm` |
+| `LISTEN` | Bind `HOST:PORT` | `0.0.0.0:8080` |
+| `DATA_DIR` | Persistent SQLite + JSON store | `/var/lib/vstorm-data-collector` |
+| `TOKEN` | Optional bearer token (empty = no auth) | leave blank or a secret |
+
+`EnvironmentFile=/etc/vstorm/data-collector.env` is required by the unit; the
+service will not start without that file.
+
+### 2. Install and enable the unit
+
+```bash
+sudo cp monitoring/data-collector/vstorm-data-collector.service \
+  /etc/systemd/system/vstorm-data-collector.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now vstorm-data-collector.service
+```
+
+### 3. Verify
+
+```bash
+systemctl status vstorm-data-collector.service
+journalctl -u vstorm-data-collector.service -e
+curl -sS http://127.0.0.1:8080/healthz
+```
+
+Expected health response includes a JSON body with `"ok": true` (or similar).
+Open `http://<host>:8080/` for the dashboard.
+
+### 4. Run as a non-root user (optional)
+
+```bash
+sudo mkdir -p /var/lib/vstorm-data-collector
+sudo chown otus:otus /var/lib/vstorm-data-collector
+
+sudo systemctl edit vstorm-data-collector
+```
+
+Drop-in example:
+
+```ini
+[Service]
+User=otus
+Group=otus
+```
+
+Then:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart vstorm-data-collector.service
+```
+
+### 5. Update after a git pull
+
+The unit runs `serve.py` and `run-serve.sh` from `VSTORM_HOME`. After updating
+the checkout:
+
+```bash
+sudo systemctl restart vstorm-data-collector.service
+```
+
+If you change the unit file in the repo, re-copy it to
+`/etc/systemd/system/` and `daemon-reload` before restarting.
+
+### 6. Stop / disable
+
+```bash
+sudo systemctl stop vstorm-data-collector.service
+sudo systemctl disable vstorm-data-collector.service
+```
+
+## Wire vstorm to this collector
+
+vstorm defaults `RESULT_SERVER_URL` to the lab collector ingest URL when unset.
+Override or clear as needed:
+
+```bash
+# Override
+vstorm --vms=5 --env RESULT_SERVER_URL=http://<this-host>:8080/v1/results
+
+# Disable POSTs
+vstorm --vms=5 --env RESULT_SERVER_URL=
+```
+
+With a token:
+
+```bash
+vstorm --vms=5 \
+  --env RESULT_SERVER_URL=http://<this-host>:8080/v1/results \
+  --env RESULT_SERVER_TOKEN=SECRET
+```
+
+## Seed dummy data (optional)
+
+With the server running:
+
+```bash
+python3 monitoring/data-collector/seed_dummy.py \
+  --url http://127.0.0.1:8080/v1/results
+# add --token SECRET if required
+```
+
+## Troubleshooting
+
+| Symptom | Check |
+|---------|--------|
+| `status=203/EXEC` or missing script | `VSTORM_HOME` in `/etc/vstorm/data-collector.env` points at the real checkout; `run-serve.sh` is executable |
+| Permission denied on data dir | `chown` `DATA_DIR` to the service `User=` |
+| Port already in use | Change `LISTEN` or stop the other process on that port |
+| Guests / vstorm cannot POST | Firewall / security groups; URL must be reachable from guests and the create host |
+| `401 Unauthorized` | `TOKEN` set on the server but client missing `RESULT_SERVER_TOKEN` / Bearer header |
+| Empty dashboard | Confirm POSTs with `journalctl -u vstorm-data-collector` and files under `DATA_DIR/results/` |

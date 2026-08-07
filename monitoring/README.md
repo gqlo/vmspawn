@@ -15,9 +15,10 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 
 ## Data collector + dashboard
 
-Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom). Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md). Code lives under [`monitoring/data-collector/`](data-collector/).
-
-**Simple flow:** set `FIO_*` at `vstorm` create with `RESULT_SERVER_URL`; each guest runs **one** fio job and POSTs **one** result; dashboard browses batches / VMs / payloads.
+Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom).
+Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md).
+Code and **installation steps** (foreground + systemd):
+[`monitoring/data-collector/data-collector.md`](data-collector/data-collector.md).
 
 ```bash
 python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./data-collector-data
@@ -26,33 +27,6 @@ python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./da
 ```
 
 Binding to `0.0.0.0` serves plain HTTP and exposes unauthenticated ingest/control APIs — use only on trusted or lab networks. Pass `--token SECRET` (and the matching `RESULT_SERVER_TOKEN` / dashboard Bearer token) when authentication is required.
-
-### Run as a systemd service
-
-Unit and helper live under [`monitoring/data-collector/`](data-collector/):
-
-- [`vstorm-data-collector.service`](data-collector/vstorm-data-collector.service)
-- [`run-serve.sh`](data-collector/run-serve.sh)
-- [`data-collector.env.example`](data-collector/data-collector.env.example)
-
-```bash
-# 1) Env file (set VSTORM_HOME to this checkout)
-sudo mkdir -p /etc/vstorm /var/lib/vstorm-data-collector
-sudo cp monitoring/data-collector/data-collector.env.example /etc/vstorm/data-collector.env
-sudo edit /etc/vstorm/data-collector.env   # VSTORM_HOME, LISTEN, DATA_DIR, optional TOKEN
-
-# 2) Install unit
-sudo cp monitoring/data-collector/vstorm-data-collector.service \
-  /etc/systemd/system/vstorm-data-collector.service
-sudo systemctl daemon-reload
-sudo systemctl enable --now vstorm-data-collector.service
-
-# 3) Check
-systemctl status vstorm-data-collector.service
-journalctl -u vstorm-data-collector.service -f
-```
-
-To run as a non-root user: `sudo systemctl edit vstorm-data-collector` and set `User=` / `Group=`, and chown `DATA_DIR` to that user.
 
 ## Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)
 
