@@ -367,6 +367,44 @@
     return rows.join("\n") + "\n";
   }
 
+  /** Default rows per page for dashboard tables. */
+  const DEFAULT_PAGE_SIZE = 100;
+
+  function pagerMeta(total, page, pageSize) {
+    const size = Math.max(1, Math.floor(Number(pageSize) || DEFAULT_PAGE_SIZE));
+    const n = Math.max(0, Math.floor(Number(total) || 0));
+    const totalPages = Math.max(1, Math.ceil(n / size) || 1);
+    let p = Math.floor(Number(page) || 1);
+    if (!Number.isFinite(p) || p < 1) p = 1;
+    if (p > totalPages) p = totalPages;
+    const start = n === 0 ? 0 : (p - 1) * size;
+    const end = Math.min(start + size, n);
+    return { page: p, pageSize: size, total: n, totalPages, start, end };
+  }
+
+  function slicePage(items, page, pageSize) {
+    const list = items || [];
+    const meta = pagerMeta(list.length, page, pageSize);
+    return { meta, items: list.slice(meta.start, meta.end) };
+  }
+
+  function normalizeApiBase(raw) {
+    let s = String(raw == null ? "" : raw).trim();
+    if (!s) return "";
+    s = s.replace(/\/+$/, "");
+    if (!/^https?:\/\//i.test(s)) {
+      s = "http://" + s;
+    }
+    return s;
+  }
+
+  /** Build an absolute or same-origin API URL from optional base + path. */
+  function apiUrl(path, base) {
+    const b = normalizeApiBase(base);
+    const p = path.startsWith("/") ? path : "/" + path;
+    return b ? b + p : p;
+  }
+
   const api = {
     escapeHtml,
     fmtTs,
@@ -385,6 +423,11 @@
     buildBootTimesCsv,
     buildCrossBatchTimestampsCsv,
     histogramBins,
+    DEFAULT_PAGE_SIZE,
+    pagerMeta,
+    slicePage,
+    normalizeApiBase,
+    apiUrl,
   };
 
   root.WorkloadDashboardLib = api;

@@ -27,6 +27,8 @@ python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 \
 # Ingest:    POST http://<host>:8080/v1/results
 ```
 
+Standalone UI (laptop) against a remote collector: `./monitoring/data-collector/run-dashboard.sh`, then set the header **API** field to `http://<collector>:8080` (see data-collector.md).
+
 Binding to `0.0.0.0` serves plain HTTP and exposes unauthenticated ingest/control APIs — use only on trusted or lab networks. Pass `--token SECRET` (and the matching `RESULT_SERVER_TOKEN` / dashboard Bearer token) when authentication is required.
 
 ## Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)

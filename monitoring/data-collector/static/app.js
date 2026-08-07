@@ -17,6 +17,7 @@ const state = {
 };
 
 const TOKEN_KEY = "workload-result-token";
+const API_BASE_KEY = "workload-result-api-base";
 
 const {
   escapeHtml,
@@ -34,6 +35,10 @@ const {
   buildBootTimesCsv,
   buildCrossBatchTimestampsCsv,
   histogramBins,
+  DEFAULT_PAGE_SIZE,
+  slicePage,
+  normalizeApiBase,
+  apiUrl,
 } = globalThis.WorkloadDashboardLib;
 
 function getStoredToken() {
@@ -53,6 +58,46 @@ function setStoredToken(token) {
   }
 }
 
+function getStoredApiBase() {
+  try {
+    return normalizeApiBase(localStorage.getItem(API_BASE_KEY) || "");
+  } catch {
+    return "";
+  }
+}
+
+function setStoredApiBase(base) {
+  try {
+    const n = normalizeApiBase(base);
+    if (n) localStorage.setItem(API_BASE_KEY, n);
+    else localStorage.removeItem(API_BASE_KEY);
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Apply ?api= once on load (persists to localStorage). */
+function consumeApiQueryParam() {
+  try {
+    const u = new URL(window.location.href);
+    if (!u.searchParams.has("api")) return;
+    setStoredApiBase(u.searchParams.get("api") || "");
+    u.searchParams.delete("api");
+    const qs = u.searchParams.toString();
+    history.replaceState(
+      null,
+      "",
+      u.pathname + (qs ? "?" + qs : "") + u.hash
+    );
+  } catch {
+    /* ignore */
+  }
+}
+
+function currentApiBase() {
+  return getStoredApiBase();
+}
+
 async function api(path, opts = {}) {
   const headers = {
     Accept: "application/json",
@@ -64,8 +109,10 @@ async function api(path, opts = {}) {
     headers.Authorization = `Bearer ${token}`;
   }
 
+  const url = apiUrl(path, currentApiBase());
+
   const doFetch = async (hdrs) => {
-    const res = await fetch(path, { ...opts, headers: hdrs });
+    const res = await fetch(url, { ...opts, headers: hdrs });
     const text = await res.text();
     let data = null;
     try {
@@ -194,21 +241,112 @@ function fmtTsCell(ts) {
   return s === "—" ? "—" : escapeHtml(s);
 }
 
-function renderTimestampsTableHtml(headers, rows) {
-  if (!rows.length) {
-    return `<div class="empty">No VM timestamps for the current filters.</div>`;
+/** Render First/Prev/Next/Last controls into `el` (hidden when ≤1 page). */
+function renderPagerControls(el, meta, onPage) {
+  if (!el) return;
+  if (!meta || meta.total <= meta.pageSize) {
+    el.innerHTML = "";
+    el.hidden = true;
+    return;
   }
-  return `<div class="table-wrap timestamps-wrap"><table class="timestamps-table">
+  el.hidden = false;
+  const from = meta.start + 1;
+  const to = meta.end;
+  const atFirst = meta.page <= 1;
+  const atLast = meta.page >= meta.totalPages;
+  el.innerHTML = `
+    <div class="pager-info muted">
+      ${escapeHtml(String(from))}–${escapeHtml(String(to))} of ${escapeHtml(String(meta.total))}
+      · page ${escapeHtml(String(meta.page))} / ${escapeHtml(String(meta.totalPages))}
+      · ${escapeHtml(String(meta.pageSize))} / page
+    </div>
+    <div class="pager-actions">
+      <button type="button" class="btn" data-pager="first" ${atFirst ? "disabled" : ""}>First</button>
+      <button type="button" class="btn" data-pager="prev" ${atFirst ? "disabled" : ""}>Prev</button>
+      <button type="button" class="btn" data-pager="next" ${atLast ? "disabled" : ""}>Next</button>
+      <button type="button" class="btn" data-pager="last" ${atLast ? "disabled" : ""}>Last</button>
+    </div>`;
+  el.querySelectorAll("[data-pager]").forEach((btn) => {
+    btn.onclick = () => {
+      const action = btn.getAttribute("data-pager");
+      let next = meta.page;
+      if (action === "first") next = 1;
+      else if (action === "prev") next = meta.page - 1;
+      else if (action === "next") next = meta.page + 1;
+      else if (action === "last") next = meta.totalPages;
+      onPage(next);
+    };
+  });
+}
+
+/**
+ * Client-side table pagination.
+ * @param {{
+ *   tbody: HTMLElement,
+ *   pagers?: HTMLElement[],
+ *   rowHtmls: string[],
+ *   pageSize?: number,
+ *   page?: number,
+ *   onRendered?: (meta: object) => void,
+ * }} opts
+ */
+function bindPaginatedTable({ tbody, pagers = [], rowHtmls, pageSize = DEFAULT_PAGE_SIZE, page = 1, onRendered }) {
+  let current = page;
+  const paint = (nextPage) => {
+    const { meta, items } = slicePage(rowHtmls, nextPage, pageSize);
+    current = meta.page;
+    tbody.innerHTML = items.join("");
+    for (const pager of pagers) {
+      renderPagerControls(pager, meta, paint);
+    }
+    if (onRendered) onRendered(meta);
+  };
+  paint(current);
+  return { go: paint, getPage: () => current };
+}
+
+function bindClickableRows(root) {
+  (root || document).querySelectorAll("tr.clickable").forEach((tr) => {
+    tr.onclick = (e) => {
+      if (e.target.closest("a")) return;
+      if (e.target.closest("input")) return;
+      if (e.target.closest("button")) return;
+      if (tr.dataset.href) location.hash = tr.dataset.href;
+    };
+  });
+}
+
+function renderTimestampsTableShell(headers, { emptyMessage } = {}) {
+  return `<div class="pager" data-pager-slot="top" hidden></div>
+    <div class="table-wrap timestamps-wrap"><table class="timestamps-table">
     <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
-    <tbody>
-      ${rows
-        .map(
-          (cells) =>
-            `<tr>${cells.map((c) => `<td class="mono">${c}</td>`).join("")}</tr>`
-        )
-        .join("")}
-    </tbody>
-  </table></div>`;
+    <tbody data-pager-body></tbody>
+  </table></div>
+  <div class="pager" data-pager-slot="bottom" hidden></div>
+  <div class="empty" data-pager-empty style="display:none">${escapeHtml(
+    emptyMessage || "No VM timestamps for the current filters."
+  )}</div>`;
+}
+
+function mountTimestampsTable(panel, headers, rows) {
+  const rowHtmls = (rows || []).map(
+    (cells) => `<tr>${cells.map((c) => `<td class="mono">${c}</td>`).join("")}</tr>`
+  );
+  panel.innerHTML = renderTimestampsTableShell(headers);
+  const empty = panel.querySelector("[data-pager-empty]");
+  const tbody = panel.querySelector("[data-pager-body]");
+  const pagers = [...panel.querySelectorAll("[data-pager-slot]")];
+  const tableWrap = panel.querySelector(".table-wrap");
+  if (!rowHtmls.length) {
+    if (empty) empty.style.display = "";
+    if (tableWrap) tableWrap.style.display = "none";
+    pagers.forEach((p) => {
+      p.hidden = true;
+    });
+    return;
+  }
+  if (empty) empty.style.display = "none";
+  bindPaginatedTable({ tbody, pagers, rowHtmls });
 }
 
 function crossBatchTimestampRow(it) {
@@ -370,9 +508,9 @@ async function renderTimestamps(app) {
         </div>
       </div>
     </div>
-    <div class="panel">
-      ${renderTimestampsTableHtml(CROSS_BATCH_TS_HEADERS, rows)}
-    </div>`;
+    <div class="panel" id="timestamps-table-panel"></div>`;
+
+  mountTimestampsTable($("#timestamps-table-panel"), CROSS_BATCH_TS_HEADERS, rows);
 
   const btn = $("#btn-download-timestamps-csv");
   if (btn && items.length) {
@@ -411,9 +549,9 @@ async function renderBatchTimestamps(app, batchId) {
         </div>
       </div>
     </div>
-    <div class="panel">
-      ${renderTimestampsTableHtml(BATCH_TS_HEADERS, rows)}
-    </div>`;
+    <div class="panel" id="batch-timestamps-table-panel"></div>`;
+
+  mountTimestampsTable($("#batch-timestamps-table-panel"), BATCH_TS_HEADERS, rows);
 
   const btn = $("#btn-download-batch-timestamps-csv");
   if (btn && vmList.length) {
@@ -762,11 +900,6 @@ async function renderRun(app, batchId) {
       <div class="grid-2" style="margin-top:1rem">
         <dl class="kv">
           <dt>Batch started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
-          <dt>Base DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_created_at))}</dd>
-          <dt>Base DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_ready_at))}</dd>
-          <dt>Base DV bound</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_bound_at))}</dd>
-          <dt>Snapshot created</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_created_at))}</dd>
-          <dt>Snapshot ready</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_ready_at))}</dd>
           <dt>VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
           <dt>Namespaces</dt><dd>${escapeHtml(String(b.total_namespaces ?? "—"))}</dd>
           <dt>DVs</dt><dd>${escapeHtml(String(b.dv_count ?? "—"))}</dd>
@@ -799,31 +932,17 @@ async function renderRun(app, batchId) {
     </div>
 
     <div class="panel">
-      <h3 style="margin-top:0">VMs</h3>
+      <h3 style="margin-top:0">VMs${
+        vmList.length ? ` <span class="muted" style="font-weight:normal">(${escapeHtml(String(vmList.length))})</span>` : ""
+      }</h3>
       ${
         vmList.length
-          ? `<div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>Namespace</th><th>DV created</th><th>DV ready</th><th>PVC created</th><th>PVC bound</th><th>Boot</th></tr></thead>
-        <tbody>
-          ${vmList
-            .map(
-              (v) => `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
-              <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
-              <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
-              <td class="mono">${escapeHtml(v.policy_mode || "—")}${
-                v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
-              }</td>
-              <td class="mono">${escapeHtml(v.namespace || "—")}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.dv_created_at_unix))}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.dv_ready_at_unix))}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.pvc_created_at_unix))}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.pvc_bound_at_unix))}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
-            </tr>`
-            )
-            .join("")}
-        </tbody>
-      </table></div>`
+          ? `<div class="pager" id="vms-pager-top" hidden></div>
+        <div class="table-wrap"><table>
+        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>dv_creation_s</th><th>data_dv_creation_s</th><th>vm_ready_s</th><th>Boot</th></tr></thead>
+        <tbody id="vms-tbody"></tbody>
+      </table></div>
+      <div class="pager" id="vms-pager-bottom" hidden></div>`
           : `<div class="empty">No VMs listed yet.</div>`
       }
     </div>
@@ -870,13 +989,32 @@ async function renderRun(app, batchId) {
     });
     render();
   };
-  app.querySelectorAll("tr.clickable").forEach((tr) => {
-    tr.onclick = (e) => {
-      if (e.target.closest("a")) return;
-      if (e.target.closest("input")) return;
-      location.hash = tr.dataset.href;
-    };
-  });
+
+  const vmsTbody = $("#vms-tbody");
+  if (vmsTbody && vmList.length) {
+    const rowHtmls = vmList.map((v) => {
+      const dvCreation = durationSeconds(v.pvc_bound_at_unix, v.dv_created_at_unix);
+      const dataDvCreation = durationSeconds(v.data_pvc_bound_at_unix, v.data_dv_created_at_unix);
+      const vmReady = durationSeconds(v.boot_timestamp_unix, v.dv_created_at_unix);
+      return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
+              <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
+              <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
+              <td class="mono">${escapeHtml(v.policy_mode || "—")}${
+                v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
+              }</td>
+              <td class="mono">${dvCreation === "" ? "—" : escapeHtml(dvCreation)}</td>
+              <td class="mono">${dataDvCreation === "" ? "—" : escapeHtml(dataDvCreation)}</td>
+              <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
+            </tr>`;
+    });
+    bindPaginatedTable({
+      tbody: vmsTbody,
+      pagers: [$("#vms-pager-top"), $("#vms-pager-bottom")].filter(Boolean),
+      rowHtmls,
+      onRendered: () => bindClickableRows(vmsTbody),
+    });
+  }
 }
 
 function downloadTextFile(filename, text, mime) {
@@ -1003,18 +1141,28 @@ async function renderVm(app, batchId, vm) {
       </div>
     </div>
     <div class="panel">
-      <h3 style="margin-top:0">Cycles</h3>
+      <h3 style="margin-top:0">Cycles${
+        cycles.length ? ` <span class="muted" style="font-weight:normal">(${escapeHtml(String(cycles.length))})</span>` : ""
+      }</h3>
       ${
         cycles.length
-          ? `<div class="table-wrap"><table>
+          ? `<div class="pager" id="cycles-pager-top" hidden></div>
+        <div class="table-wrap"><table>
         <thead><tr><th>Cycle</th><th>Type</th><th>Status</th><th>fio start</th><th>fio stop</th><th>Duration</th><th>fio_rc</th><th>IOPS avg</th><th>BW avg</th><th>Error</th><th></th></tr></thead>
-        <tbody>
-          ${cycles
-            .map((c) => {
-              const bad =
-                (c.status && c.status !== "ok") ||
-                (c.fio_rc != null && Number(c.fio_rc) !== 0);
-              return `<tr class="clickable${bad ? " row-error" : ""}" data-href="#/runs/${encodeURIComponent(batchId)}/payload/${encodeURIComponent(c.result_id)}">
+        <tbody id="cycles-tbody"></tbody>
+      </table></div>
+      <div class="pager" id="cycles-pager-bottom" hidden></div>`
+          : `<div class="empty">Waiting for guest results.</div>`
+      }
+    </div>`;
+
+  const cyclesTbody = $("#cycles-tbody");
+  if (cyclesTbody && cycles.length) {
+    const rowHtmls = cycles.map((c) => {
+      const bad =
+        (c.status && c.status !== "ok") ||
+        (c.fio_rc != null && Number(c.fio_rc) !== 0);
+      return `<tr class="clickable${bad ? " row-error" : ""}" data-href="#/runs/${encodeURIComponent(batchId)}/payload/${encodeURIComponent(c.result_id)}">
               <td>${escapeHtml(String(c.cycle ?? "—"))}</td>
               <td class="mono">${escapeHtml(c.record_type || "result")}</td>
               <td>${statusBadge(c.status, c.fio_rc)}</td>
@@ -1027,20 +1175,14 @@ async function renderVm(app, batchId, vm) {
               <td class="muted">${escapeHtml(c.error_message || "—")}</td>
               <td><a href="#/runs/${encodeURIComponent(batchId)}/payload/${encodeURIComponent(c.result_id)}">Payload</a></td>
             </tr>`;
-            })
-            .join("")}
-        </tbody>
-      </table></div>`
-          : `<div class="empty">Waiting for guest results.</div>`
-      }
-    </div>`;
-
-  app.querySelectorAll("tr.clickable").forEach((tr) => {
-    tr.onclick = (e) => {
-      if (e.target.closest("a")) return;
-      location.hash = tr.dataset.href;
-    };
-  });
+    });
+    bindPaginatedTable({
+      tbody: cyclesTbody,
+      pagers: [$("#cycles-pager-top"), $("#cycles-pager-bottom")].filter(Boolean),
+      rowHtmls,
+      onRendered: () => bindClickableRows(cyclesTbody),
+    });
+  }
 }
 
 async function renderCycle(app, batchId, vm, cycle) {
@@ -1136,6 +1278,25 @@ function clearFilters() {
   state.selectedBatches.clear();
 }
 
+function setupApiBase() {
+  const input = $("#api-base");
+  const btn = $("#btn-api-apply");
+  if (!input || !btn) return;
+  input.value = currentApiBase();
+  const apply = () => {
+    setStoredApiBase(input.value);
+    input.value = currentApiBase();
+    render();
+  };
+  btn.onclick = apply;
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      apply();
+    }
+  });
+}
+
 function setupRefresh() {
   $("#btn-refresh").onclick = () => render();
   const box = $("#auto-refresh");
@@ -1171,7 +1332,9 @@ function setupBrandHome() {
 
 window.addEventListener("hashchange", () => render());
 window.addEventListener("DOMContentLoaded", () => {
+  consumeApiQueryParam();
   if (!location.hash) location.hash = "#/runs";
+  setupApiBase();
   setupRefresh();
   setupBrandHome();
   render();

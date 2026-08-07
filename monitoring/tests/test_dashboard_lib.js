@@ -304,6 +304,37 @@ describe("histogramBins", () => {
   });
 });
 
+describe("pagination", () => {
+  it("defaults to 100 rows per page", () => {
+    assert.equal(lib.DEFAULT_PAGE_SIZE, 100);
+  });
+
+  it("pagerMeta clamps page and computes slice bounds", () => {
+    const m = lib.pagerMeta(250, 2, 100);
+    assert.deepEqual(m, {
+      page: 2,
+      pageSize: 100,
+      total: 250,
+      totalPages: 3,
+      start: 100,
+      end: 200,
+    });
+    assert.equal(lib.pagerMeta(250, 0, 100).page, 1);
+    assert.equal(lib.pagerMeta(250, 99, 100).page, 3);
+    assert.equal(lib.pagerMeta(0, 1, 100).totalPages, 1);
+  });
+
+  it("slicePage returns the requested window", () => {
+    const items = Array.from({ length: 105 }, (_, i) => i + 1);
+    const first = lib.slicePage(items, 1, 100);
+    assert.equal(first.meta.page, 1);
+    assert.deepEqual(first.items, items.slice(0, 100));
+    const last = lib.slicePage(items, 2, 100);
+    assert.equal(last.meta.page, 2);
+    assert.deepEqual(last.items, items.slice(100));
+  });
+});
+
 describe("escapeHtml / statusBadge", () => {
   it("escapes HTML", () => {
     assert.equal(lib.escapeHtml('<a "x">'), "&lt;a &quot;x&quot;&gt;");
@@ -313,5 +344,32 @@ describe("escapeHtml / statusBadge", () => {
     assert.equal(lib.statusBadge("ok"), '<span class="badge ok">ok</span>');
     assert.ok(lib.statusBadge("post_error").includes("warn"));
     assert.ok(lib.statusBadge(null, 1).includes("fio_error"));
+  });
+});
+
+describe("normalizeApiBase / apiUrl", () => {
+  it("normalizes empty and strips trailing slashes", () => {
+    assert.equal(lib.normalizeApiBase(""), "");
+    assert.equal(lib.normalizeApiBase("  "), "");
+    assert.equal(lib.normalizeApiBase("http://lab:8080/"), "http://lab:8080");
+    assert.equal(lib.normalizeApiBase("http://lab:8080///"), "http://lab:8080");
+  });
+
+  it("adds http:// when scheme missing", () => {
+    assert.equal(lib.normalizeApiBase("127.0.0.1:8080"), "http://127.0.0.1:8080");
+    assert.equal(lib.normalizeApiBase("lab.example:8080"), "http://lab.example:8080");
+  });
+
+  it("builds same-origin or absolute API URLs", () => {
+    assert.equal(lib.apiUrl("/v1/batches", ""), "/v1/batches");
+    assert.equal(lib.apiUrl("v1/batches", ""), "/v1/batches");
+    assert.equal(
+      lib.apiUrl("/v1/batches", "http://lab:8080"),
+      "http://lab:8080/v1/batches"
+    );
+    assert.equal(
+      lib.apiUrl("/healthz", "http://lab:8080/"),
+      "http://lab:8080/healthz"
+    );
   });
 });

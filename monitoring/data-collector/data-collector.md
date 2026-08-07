@@ -7,6 +7,7 @@ the browser dashboard. Design notes:
 | Path | Role |
 |------|------|
 | [`serve.py`](serve.py) | HTTP server (ingest API + static UI) |
+| [`run-dashboard.sh`](run-dashboard.sh) | Serve **UI only** (point API at local or remote collector) |
 | [`restart-service.sh`](restart-service.sh) | After `git pull`: sync unit if needed, `daemon-reload`, restart, healthz |
 | [`vstorm-data-collector.service`](vstorm-data-collector.service) | systemd unit |
 | [`data-collector.env.example`](data-collector.env.example) | Env file template |
@@ -38,6 +39,26 @@ python3 monitoring/data-collector/serve.py \
 | `http://<host>:8080/` | Dashboard |
 | `http://<host>:8080/v1/results` | Ingest (`POST`) |
 | `http://<host>:8080/healthz` | Liveness (no auth) |
+
+## Standalone dashboard (UI only)
+
+Run the static UI on your laptop and point it at a local or remote collector API
+(CORS is enabled on `serve.py`):
+
+```bash
+# Terminal A — collector on the lab (or locally) with data
+python3 monitoring/data-collector/serve.py \
+  --listen 0.0.0.0:8080 \
+  --data-dir monitoring/data-collector/workload-result-data
+
+# Terminal B — UI only on the laptop
+./monitoring/data-collector/run-dashboard.sh
+# → http://127.0.0.1:5500/
+```
+
+In the header **API** field, set `http://<collector-host>:8080` and click **Apply**
+(or open `http://127.0.0.1:5500/?api=http://<collector-host>:8080`).  
+Leave API empty when the UI is served by the same `serve.py` process (same origin).
 
 Optional auth:
 

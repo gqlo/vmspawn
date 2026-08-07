@@ -64,8 +64,27 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 
-.top-actions { display: flex; gap: 0.75rem; align-items: center; }
+.top-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
 .auto { font-size: 0.9rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
+
+.api-base {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.85rem;
+  color: var(--muted);
+}
+
+.api-base input {
+  width: min(18rem, 42vw);
+  padding: 0.35rem 0.5rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font-family: var(--mono);
+  font-size: 0.8rem;
+  color: var(--text);
+  background: var(--bg);
+}
 
 .crumbs {
   padding: 0.5rem 1.5rem;
@@ -91,10 +110,32 @@ a:hover { text-decoration: underline; }
   margin-bottom: 1rem;
 }
 
-.table-wrap {
-  width: 100%;
-  overflow-x: auto;
-  -webkit-overflow-scrolling: touch;
+.pager {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.65rem 1rem;
+  align-items: center;
+  justify-content: space-between;
+  margin: 0.65rem 0;
+}
+
+.pager[hidden] {
+  display: none !important;
+}
+
+.pager-info {
+  font-size: 0.9rem;
+}
+
+.pager-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  align-items: center;
+}
+
+.pager-actions .btn {
+  min-width: 3.6rem;
 }
 
 .row {

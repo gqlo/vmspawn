@@ -486,9 +486,10 @@ Everything for one vstorm batch on one page.
 **boot time avg / min / max** (create → guest boot) with
 **Download detailed object creation timestamps**, and **VMs / Namespaces / DVs / PVCs**
 counts (from manifest `total_vms` / `total_namespaces` and `dv_created` / `pvc_created`
-lists). Once-per-batch timing (snapshot create path): **Batch started**, **Base DV**
-created/ready/bound, **Snapshot** created/ready. Per-VM clone DV/PVC times stay on the
-VMs table / CSV, not this summary. On the **Batches** list: **Timestamps** opens an
+lists). Summary also shows **Batch started** plus VM/namespace/DV/PVC counts.
+Base DV / VolumeSnapshot times (often one per namespace) live in the Timestamps /
+CSV views, not this summary. Per-VM clone DV/PVC durations are on the VMs table.
+On the **Batches** list: **Timestamps** opens an
 in-browser table (`#/timestamps`); use **Download CSV** on that page when you want a file.
 aggregates VM timing rows across batches matching the current filters (`GET /v1/timestamps`).
 
@@ -511,23 +512,21 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 
 **vstorm metadata panel:** API server, worker/master node counts, `oc version`, namespaces, cmdline, **guest_env (FIO launch params)**, storage, notes/label — from `record_type: "manifest"`. Button: **View manifest**. Archive / Delete.
 
-**VMs table:**
+**VMs table:** paginated at **100 rows / page** (First / Prev / Next / Last). Same
+controls on Timestamps tables and the VM Cycles table when there are more than 100 rows.
 
 | Column | Meaning |
 |--------|---------|
 | VM | Link to VM detail |
 | Workload status | `running` (mid-fio) or `idle` (everything else) |
-| Policy | mode + remaining (read-only; set at boot or via API) |
-| Namespace | From batch `namespace/vm` list when known |
-| Cycles | Count received |
-| Last stopped | Last cycle end time |
-| DV created | Per-VM (or batch) DataVolume `creationTimestamp` |
-| DV ready | Per-VM DV clone/import completed (`Ready` condition) |
-| PVC created | Per-VM root PVC `creationTimestamp` (data PVC in CSV only) |
+| Mode | Policy mode + remaining (read-only; set at boot or via API) |
+| `dv_creation_s` | Root PVC bound − DV created (seconds) |
+| `data_dv_creation_s` | Data PVC bound − data DV created (seconds); blank when no data disk |
+| `vm_ready_s` | Boot − DV created (seconds) |
 | Boot | Boot timestamp when known |
 
-Once-per-batch **Base DV** / **VolumeSnapshot** times are shown only in the run summary
-(not repeated per VM row).
+Base DV / VolumeSnapshot absolute timestamps remain in the Timestamps / CSV views
+(not on the run summary or VMs table).
 
 **Charts:** histogram of **DV create → guest boot** duration (per-VM or batch
 `dv_created_at` from the manifest, falling back to batch `started_at`) to per-VM

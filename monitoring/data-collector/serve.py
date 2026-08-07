@@ -1662,6 +1662,23 @@ def make_handler(app: App):
             self._json(401, {"error": "unauthorized"})
             return False
 
+        def _cors_headers(self) -> None:
+            """Allow standalone dashboard origins to call this API (lab use)."""
+            origin = (self.headers.get("Origin") or "").strip()
+            self.send_header(
+                "Access-Control-Allow-Origin", origin if origin else "*"
+            )
+            self.send_header("Vary", "Origin")
+            self.send_header(
+                "Access-Control-Allow-Methods",
+                "GET, POST, PUT, PATCH, DELETE, OPTIONS",
+            )
+            self.send_header(
+                "Access-Control-Allow-Headers",
+                "Authorization, Content-Type, Accept",
+            )
+            self.send_header("Access-Control-Max-Age", "86400")
+
         def _read_json(self) -> dict[str, Any]:
             length = int(self.headers.get("Content-Length") or 0)
             raw = self.rfile.read(length) if length else b"{}"
@@ -1678,6 +1695,7 @@ def make_handler(app: App):
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(data)))
             self.send_header("Cache-Control", "no-store")
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(data)
 
@@ -1685,8 +1703,15 @@ def make_handler(app: App):
             self.send_response(status)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
+            self._cors_headers()
             self.end_headers()
             self.wfile.write(data)
+
+        def do_OPTIONS(self) -> None:  # noqa: N802
+            self.send_response(204)
+            self._cors_headers()
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         def do_GET(self) -> None:  # noqa: N802
             parsed = urlparse(self.path)

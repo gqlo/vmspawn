@@ -999,6 +999,34 @@ class TestHTTPApi(unittest.TestCase):
         self.assertEqual(row["snapshot_created_at"], 1784699330)
         self.assertEqual(row["snapshot_ready_at"], 1784699335)
 
+    def test_cors_preflight_and_get(self) -> None:
+        origin = "http://127.0.0.1:5500"
+        req = urllib.request.Request(
+            self.base + "/v1/batches",
+            method="OPTIONS",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+                "Access-Control-Request-Headers": "authorization,content-type",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 204)
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+            allow = (resp.headers.get("Access-Control-Allow-Headers") or "").lower()
+            self.assertIn("authorization", allow)
+            methods = (resp.headers.get("Access-Control-Allow-Methods") or "").upper()
+            self.assertIn("GET", methods)
+
+        req = urllib.request.Request(
+            self.base + "/healthz",
+            method="GET",
+            headers={"Origin": origin},
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Access-Control-Allow-Origin"), origin)
+
 
 if __name__ == "__main__":
     unittest.main()
