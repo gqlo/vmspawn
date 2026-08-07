@@ -7,7 +7,7 @@ the browser dashboard. Design notes:
 | Path | Role |
 |------|------|
 | [`serve.py`](serve.py) | HTTP server (ingest API + static UI) |
-| [`run-serve.sh`](run-serve.sh) | Env-based launcher for systemd / manual runs |
+| [`restart-service.sh`](restart-service.sh) | After `git pull`: sync unit if needed, `daemon-reload`, restart, healthz |
 | [`vstorm-data-collector.service`](vstorm-data-collector.service) | systemd unit |
 | [`data-collector.env.example`](data-collector.env.example) | Env file template |
 | [`static/`](static/) | Dashboard assets |
@@ -134,15 +134,29 @@ sudo systemctl restart vstorm-data-collector.service
 
 ### 5. Update after a git pull
 
-The unit runs `serve.py` and `run-serve.sh` from `VSTORM_HOME`. After updating
-the checkout:
+The unit runs `serve.py` and `run-serve.sh` from `VSTORM_HOME`. Python code is
+loaded at process start, so restart after updating the checkout:
+
+```bash
+# From the vstorm repo root (or any cwd):
+./monitoring/data-collector/restart-service.sh
+```
+
+That script:
+
+1. Copies `vstorm-data-collector.service` into `/etc/systemd/system/` when it
+   differs from the checkout, then `daemon-reload`
+2. `systemctl restart vstorm-data-collector.service`
+3. Probes `/healthz` (skip with `--no-health`; skip unit sync with `--no-sync-unit`)
+
+Static dashboard JS/CSS is read from disk per request; a browser refresh is
+enough for UI-only changes, but restarting still refreshes `serve.py`.
+
+Manual equivalent:
 
 ```bash
 sudo systemctl restart vstorm-data-collector.service
 ```
-
-If you change the unit file in the repo, re-copy it to
-`/etc/systemd/system/` and `daemon-reload` before restarting.
 
 ### 6. Stop / disable
 
