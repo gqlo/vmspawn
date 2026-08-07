@@ -80,9 +80,14 @@ Set at least:
 | Variable | Meaning | Example |
 |----------|---------|---------|
 | `VSTORM_HOME` | Absolute path to this git checkout (**required**) | `/root/workload-collector/vstorm` |
+| `PYTHON` | Interpreter for `serve.py` (**≥ 3.7**) | `/usr/bin/python3.11` |
 | `LISTEN` | Bind `HOST:PORT` | `0.0.0.0:8080` |
 | `DATA_DIR` | SQLite + JSON under this directory | `$VSTORM_HOME/monitoring/data-collector/workload-result-data` |
 | `TOKEN` | Optional bearer token (empty = no auth) | leave blank or a secret |
+
+On RHEL 8 lab hosts, `/usr/bin/python3` is often 3.6 and will fail with
+`future feature annotations is not defined`. Set `PYTHON=/usr/bin/python3.11`
+(or another ≥ 3.7 binary).
 
 `DATA_DIR` stays inside the checkout’s `monitoring/data-collector/` tree (gitignored
 as `workload-result-data/`). If unset, `run-serve.sh` uses that path by default.
@@ -203,6 +208,7 @@ python3 monitoring/data-collector/seed_dummy.py \
 | Symptom | Check |
 |---------|--------|
 | `bad-setting` / `WorkingDirectory= path is not absolute` | Re-copy the unit from the checkout (older units used `${VSTORM_HOME}` in `WorkingDirectory=`, which systemd rejects), then `daemon-reload` |
+| `future feature annotations is not defined` / Python too old | Set `PYTHON=/usr/bin/python3.11` (or ≥ 3.7) in `/etc/vstorm/data-collector.env`, then restart |
 | `status=203/EXEC` or missing script | `VSTORM_HOME` in `/etc/vstorm/data-collector.env` points at the real checkout; `run-serve.sh` is executable |
 | Permission denied on data dir | `chown` `DATA_DIR` to the service `User=` |
 | Port already in use | Change `LISTEN` or stop the other process on that port |
