@@ -1110,6 +1110,9 @@ class Store:
             base_dv_bound_at = None
             snapshot_created_at = None
             snapshot_ready_at = None
+            dv_count = None
+            pvc_count = None
+            snapshot_count = None
             if batch_payload:
                 dv_created_at = _payload_unix(batch_payload, "dv_created_at")
                 dv_ready_at = _payload_unix(batch_payload, "dv_ready_at")
@@ -1122,6 +1125,12 @@ class Store:
                 base_dv_bound_at = _payload_unix(batch_payload, "base_dv_bound_at")
                 snapshot_created_at = _payload_unix(batch_payload, "snapshot_created_at")
                 snapshot_ready_at = _payload_unix(batch_payload, "snapshot_ready_at")
+                if isinstance(batch_payload.get("dv_created"), list):
+                    dv_count = len(batch_payload["dv_created"])
+                if isinstance(batch_payload.get("pvc_created"), list):
+                    pvc_count = len(batch_payload["pvc_created"])
+                if isinstance(batch_payload.get("snapshots"), list):
+                    snapshot_count = len(batch_payload["snapshots"])
             return {
                 **meta,
                 **stats,
@@ -1135,6 +1144,9 @@ class Store:
                 "base_dv_bound_at": base_dv_bound_at,
                 "snapshot_created_at": snapshot_created_at,
                 "snapshot_ready_at": snapshot_ready_at,
+                "dv_count": dv_count,
+                "pvc_count": pvc_count,
+                "snapshot_count": snapshot_count,
                 "vms": vms,
                 "vm_summary": summary,
                 "series": [dict(r) for r in series],

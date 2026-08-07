@@ -350,6 +350,48 @@ class TestStoreIngest(unittest.TestCase):
                     "rhel9-dv1-1": "2026-07-22T05:49:16Z",
                     "rhel9-dv1-2": "2026-07-22T05:49:26Z",
                 },
+                "dv_created": [
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-base",
+                        "created_at": "2026-07-22T05:48:30Z",
+                        "role": "base",
+                    },
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-dv1-1",
+                        "created_at": "2026-07-22T05:49:10Z",
+                        "role": "root",
+                    },
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-dv1-2",
+                        "created_at": "2026-07-22T05:49:20Z",
+                        "role": "root",
+                    },
+                ],
+                "pvc_created": [
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-dv1-1",
+                        "created_at": "2026-07-22T05:49:12Z",
+                        "role": "root",
+                    },
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-dv1-2",
+                        "created_at": "2026-07-22T05:49:22Z",
+                        "role": "root",
+                    },
+                ],
+                "snapshots": [
+                    {
+                        "namespace": "ns1",
+                        "name": "rhel9-snap",
+                        "created_at": "2026-07-22T05:48:50Z",
+                        "ready": True,
+                    }
+                ],
                 "reported_at": "2026-07-22T05:50:00Z",
                 "vms": ["ns1/rhel9-dv1-1", "ns1/rhel9-dv1-2"],
             }
@@ -361,6 +403,10 @@ class TestStoreIngest(unittest.TestCase):
         self.assertEqual(batch["base_dv_bound_at"], 1784699321)
         self.assertEqual(batch["snapshot_created_at"], 1784699330)
         self.assertEqual(batch["snapshot_ready_at"], 1784699335)
+        self.assertEqual(batch["dv_count"], 3)
+        self.assertEqual(batch["pvc_count"], 2)
+        self.assertEqual(batch["snapshot_count"], 1)
+        self.assertEqual(batch["total_vms"], 2)
         self.assertEqual(batch["dv_created_at"], 1784699340)
         self.assertEqual(batch["dv_ready_at"], 1784699342)
         self.assertEqual(batch["pvc_created_at"], 1784699345)
@@ -413,6 +459,9 @@ class TestStoreIngest(unittest.TestCase):
         self.assertIsNone(batch["base_dv_bound_at"])
         self.assertIsNone(batch["snapshot_created_at"])
         self.assertIsNone(batch["snapshot_ready_at"])
+        self.assertIsNone(batch["dv_count"])
+        self.assertIsNone(batch["pvc_count"])
+        self.assertIsNone(batch["snapshot_count"])
         vm = batch["vms"][0]
         self.assertIsNone(vm["base_dv_created_at_unix"])
         self.assertIsNone(vm["snapshot_created_at_unix"])

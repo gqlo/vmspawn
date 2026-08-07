@@ -525,7 +525,7 @@ async function renderRun(app, batchId) {
           <div class="muted" style="margin-top:0.35rem">${escapeHtml(fmtWorkloadColumn(vs))}</div>
           <div class="muted mono" style="margin-top:0.35rem">
             ${escapeHtml(bootSummary)}
-            · <a href="#" id="btn-boot-csv">Download boot times CSV</a>
+            · <a href="#" id="btn-boot-csv">Download detailed object creation timestamps</a>
           </div>
         </div>
         <div class="actions">
@@ -536,23 +536,16 @@ async function renderRun(app, batchId) {
       </div>
       <div class="grid-2" style="margin-top:1rem">
         <dl class="kv">
-          <dt>Started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
+          <dt>Batch started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
           <dt>Base DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_created_at))}</dd>
           <dt>Base DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_ready_at))}</dd>
           <dt>Base DV bound</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_bound_at))}</dd>
           <dt>Snapshot created</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_created_at))}</dd>
           <dt>Snapshot ready</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_ready_at))}</dd>
-          <dt>DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_created_at))}</dd>
-          <dt>DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_ready_at))}</dd>
-          <dt>PVC created</dt><dd class="mono">${escapeHtml(fmtTs(b.pvc_created_at))}</dd>
-          <dt>PVC bound</dt><dd class="mono">${escapeHtml(fmtTs(b.pvc_bound_at))}</dd>
-          <dt>Stopped</dt><dd class="mono">${escapeHtml(fmtTs(b.stopped_at))}</dd>
-          <dt>Created VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
-          <dt>Cycles</dt><dd>${escapeHtml(String(b.cycle_count ?? 0))} / ${escapeHtml(String(b.vms_reporting ?? 0))} VMs reporting
-            ${b.error_count ? ` · <span class="badge err">${escapeHtml(String(b.error_count))} errors</span>` : ""}
-            ${b.event_count ? ` · <span class="badge warn">${escapeHtml(String(b.event_count))} events</span>` : ""}
-          </dd>
-          <dt>Cores / Mem</dt><dd>${escapeHtml(String(b.cores ?? "—"))} / ${escapeHtml(String(b.memory ?? "—"))}</dd>
+          <dt>VMs</dt><dd>${escapeHtml(String(b.total_vms ?? "—"))}</dd>
+          <dt>Namespaces</dt><dd>${escapeHtml(String(b.total_namespaces ?? "—"))}</dd>
+          <dt>DVs</dt><dd>${escapeHtml(String(b.dv_count ?? "—"))}</dd>
+          <dt>PVCs</dt><dd>${escapeHtml(String(b.pvc_count ?? "—"))}</dd>
         </dl>
         <div>
           <h3 style="margin-top:0">vstorm metadata</h3>
@@ -629,7 +622,7 @@ async function renderRun(app, batchId) {
     bootCsvBtn.onclick = (e) => {
       e.preventDefault();
       const csv = buildBootTimesCsv(batchId, vmList, b.started_at, b.dv_created_at);
-      downloadTextFile(`${batchId}-boot-times.csv`, csv, "text/csv;charset=utf-8");
+      downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
     };
   }
 
