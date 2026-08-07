@@ -12,9 +12,10 @@ Type=simple
 #   User=otus
 #   Group=otus
 EnvironmentFile=/etc/vstorm/data-collector.env
-# Checkout + data live under VSTORM_HOME (see data-collector.env).
-WorkingDirectory=${VSTORM_HOME}/monitoring/data-collector
-ExecStart=/bin/bash ${VSTORM_HOME}/monitoring/data-collector/run-serve.sh
+# VSTORM_HOME comes from the EnvironmentFile. Do not use WorkingDirectory=
+# with ${VSTORM_HOME}: systemd requires an absolute path there and will not
+# expand env vars. run-serve.sh cds to DATA_DIR itself.
+ExecStart=/bin/bash -c 'exec /bin/bash "$VSTORM_HOME/monitoring/data-collector/run-serve.sh"'
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=30

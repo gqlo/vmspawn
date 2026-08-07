@@ -202,6 +202,7 @@ python3 monitoring/data-collector/seed_dummy.py \
 
 | Symptom | Check |
 |---------|--------|
+| `bad-setting` / `WorkingDirectory= path is not absolute` | Re-copy the unit from the checkout (older units used `${VSTORM_HOME}` in `WorkingDirectory=`, which systemd rejects), then `daemon-reload` |
 | `status=203/EXEC` or missing script | `VSTORM_HOME` in `/etc/vstorm/data-collector.env` points at the real checkout; `run-serve.sh` is executable |
 | Permission denied on data dir | `chown` `DATA_DIR` to the service `User=` |
 | Port already in use | Change `LISTEN` or stop the other process on that port |
