@@ -54,6 +54,9 @@ VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
 GUEST_ENV_ARR=()
+# Default collector ingest URL when --env RESULT_SERVER_URL=… is omitted.
+# Override with --env RESULT_SERVER_URL=…, or disable with --env RESULT_SERVER_URL=
+DEFAULT_RESULT_SERVER_URL="http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results"
 # Original argv (for manifest cmdline); set before getopts mutates "$@"
 VSTORM_ARGV=("$@")
 # Epoch when logging/setup starts; filled in setup_logging
@@ -336,7 +339,10 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | quay.io/containerdisks/fedora:latest
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. workload/cloudinit-stress-ng-workload.yaml)
-        --env KEY=VAL           Set env in guest (repeatable; written to /etc/default/vstorm-guest-env)
+        --env KEY=VAL           Set env in guest (repeatable; written to /etc/default/vstorm-guest-env).
+                                | | | RESULT_SERVER_URL defaults to the lab collector
+                                | | | (${DEFAULT_RESULT_SERVER_URL}); override or set
+                                | | | RESULT_SERVER_URL= (empty) to disable POSTs.
         --profile[=COMPONENT]   Profile KubeVirt control plane during
                                 | | | VM creation (CPU, memory, goroutine, etc.)
                                 | | | COMPONENT: virt-api, virt-controller,
@@ -419,7 +425,15 @@ process_option() {
 		       *) fatal "Invalid --wait-ssh value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
 		   esac ;;
 	cloudinit) CLOUDINIT_FILE=$value ;;
-	env)       GUEST_ENV_ARR+=("$value") ;;
+	env)
+	    # Keep full KEY=VAL (including KEY= and KEY=a=b). Do not use $value from
+	    # IFS== read — a trailing '=' is dropped (RESULT_SERVER_URL= → RESULT_SERVER_URL).
+	    if [[ "$optstr" == env=* ]]; then
+		GUEST_ENV_ARR+=("${optstr#env=}")
+	    else
+		GUEST_ENV_ARR+=("$value")
+	    fi
+	    ;;
 	containerdisk) CONTAINERDISK_IMAGE=${value:-quay.io/containerdisks/fedora:latest}
 		   DATASOURCE=; DV_URL= ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
@@ -807,6 +821,18 @@ apply_default_cloudinit_if_needed() {
 	fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
     fi
     log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST}, boot timestamp only)"
+}
+
+# Inject DEFAULT_RESULT_SERVER_URL unless the user already passed RESULT_SERVER_URL=
+# (including empty to disable). Safe to call more than once.
+ensure_default_result_server_url() {
+    local e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL|RESULT_SERVER_URL=*) return 0 ;;
+	esac
+    done
+    GUEST_ENV_ARR+=("RESULT_SERVER_URL=${DEFAULT_RESULT_SERVER_URL}")
 }
 
 prepare_creation() {
@@ -1314,6 +1340,7 @@ collect_batch_dv_created_json() {
 }
 
 post_batch_result_metadata() {
+    ensure_default_result_server_url
     local url="" token="" e
     for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
 	case "$e" in
@@ -1720,6 +1747,8 @@ firmware:
 	    if ((_has_vstorm_batch == 0)); then
 		GUEST_ENV_ARR+=("VSTORM_BATCH_ID=${BATCH_ID}")
 	    fi
+	    # Lab collector URL unless user set/cleared RESULT_SERVER_URL via --env.
+	    ensure_default_result_server_url
 	    # Replace entire line containing placeholder so indentation is uniform (6 spaces per line).
 	    # Use bash while-read to avoid awk multi-line replacement duplicating or corrupting lines.
 	    if [[ "${#GUEST_ENV_ARR[@]}" -gt 0 ]]; then

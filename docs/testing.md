@@ -61,6 +61,20 @@ vstorm -n --batch-id=dr-test --datasource=rhel9 --vms=1 --namespaces=1 \
   --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --env DIRTY_RATE_FRACTION=0.4
 ```
 
+### Result collector unreachable
+
+Guest scripts keep working when `RESULT_SERVER_URL` cannot be reached
+(`http://127.0.0.1:1/…` in tests, with `RESULT_RETRY=1` / `RESULT_TIMEOUT=1`):
+
+| Test | File | What it validates |
+|---|---|---|
+| boot-ts unreachable | `tests/15-boot-timestamp.bats` | Timestamp file written; exit 0; POST failure logged (no spool) |
+| boot-ts missing batch id | `tests/15-boot-timestamp.bats` | File written; POST skipped when `VSTORM_BATCH_ID` unset |
+| FIO unreachable spool | `tests/14-fio-workload-script.bats` | Job finishes; result kept under `results/` and `results/pending/`; `post_error` recorded |
+| FIO local success | `tests/14-fio-workload-script.bats` | Unreachable collector does not fail the fio job itself |
+
+Host manifest POST is best-effort: create still succeeds and JSON is kept under `logs/` (see warning text in `vstorm`).
+
 ### Dry-run YAML file tests
 
 | Test | What it validates |

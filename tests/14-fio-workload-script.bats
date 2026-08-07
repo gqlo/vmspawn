@@ -308,3 +308,46 @@ _fio_prepare() {
     grep -q 'Restart=no' "$YAML"
     ! grep -q 'Restart=always' "$YAML"
 }
+
+@test "FIO: unreachable RESULT_SERVER_URL spools payload and still finishes" {
+    local script_path pending payload
+    script_path=$(_extract_fio_script)
+    unset FIO_CUSTOM_OPTS FIO_TIME_BASED FIO_RW
+    export WORKLOAD_TYPE=randrw FIO_SIZE=16M
+    export RESULT_SERVER_URL="http://127.0.0.1:1/v1/results"
+    export VSTORM_BATCH_ID="fiounreachable"
+    export RESULT_RETRY=1
+    export RESULT_TIMEOUT=1
+    _fio_args_reset
+    run bash "$script_path"
+    rm -f "$script_path"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"One-shot workload finished"* ]]
+    [[ "$output" == *"POST failed"* ]] || [[ "$output" == *"Collector unreachable"* ]]
+    pending="$FIO_DIRECTORY/results/pending/job1-payload.json"
+    payload="$FIO_DIRECTORY/results/job1-payload.json"
+    [[ -f "$pending" ]]
+    [[ -f "$payload" ]]
+    grep -q '"record_type": "result"' "$pending"
+    grep -q '"batch_id": "fiounreachable"' "$pending"
+    # post_error notify may also be spooled when the collector stays down
+    [[ -f "$FIO_DIRECTORY/results/job1-post-error.json" ]] || \
+        [[ -f "$FIO_DIRECTORY/results/pending/job1-post-error.json" ]]
+}
+
+@test "FIO: unreachable RESULT_SERVER_URL does not prevent local fio success" {
+    local script_path
+    script_path=$(_extract_fio_script)
+    unset FIO_CUSTOM_OPTS FIO_TIME_BASED FIO_RW
+    export WORKLOAD_TYPE=randread FIO_SIZE=16M
+    export RESULT_SERVER_URL="http://127.0.0.1:1/v1/results"
+    export VSTORM_BATCH_ID="fiolocalok"
+    export RESULT_RETRY=1
+    export RESULT_TIMEOUT=1
+    _fio_args_reset
+    run bash "$script_path"
+    rm -f "$script_path"
+    [[ "$status" -eq 0 ]]
+    [[ "$output" == *"fio completed successfully"* ]]
+    [[ -f "$FIO_DIRECTORY/results/job1.json" ]]
+}

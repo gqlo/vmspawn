@@ -55,3 +55,27 @@ teardown() {
         grep -q 'vstorm-boot-timestamp.service' "$y"
     done
 }
+
+@test "boot-ts: unreachable RESULT_SERVER_URL still writes file and exits 0" {
+    export RESULT_SERVER_URL="http://127.0.0.1:1/v1/results"
+    export VSTORM_BATCH_ID="btunreachable"
+    export RESULT_RETRY=1
+    export RESULT_TIMEOUT=1
+    run bash "$SCRIPT"
+    [[ "$status" -eq 0 ]]
+    [[ -f "$RESULT_TIMESTAMP_FILE" ]]
+    grep -qE '^[0-9]+,' "$RESULT_TIMESTAMP_FILE"
+    [[ "$output" == *"Boot heartbeat POST failed"* ]]
+}
+
+@test "boot-ts: RESULT_SERVER_URL without VSTORM_BATCH_ID skips POST" {
+    export RESULT_SERVER_URL="http://127.0.0.1:1/v1/results"
+    unset VSTORM_BATCH_ID
+    export RESULT_RETRY=1
+    export RESULT_TIMEOUT=1
+    run bash "$SCRIPT"
+    [[ "$status" -eq 0 ]]
+    [[ -f "$RESULT_TIMESTAMP_FILE" ]]
+    [[ "$output" == *"VSTORM_BATCH_ID unset"* ]]
+    [[ "$output" != *"Boot heartbeat posted"* ]]
+}

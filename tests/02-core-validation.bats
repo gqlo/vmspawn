@@ -526,7 +526,47 @@ SLOWMOCK
   decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
   # Placeholder is always replaced (with env lines or with comment) so YAML stays valid
   [[ "$decoded" == *"# no --env passed"* ]]
+  [[ "$decoded" == *"RESULT_SERVER_URL=http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results"* ]]
+  [[ "$decoded" == *"VSTORM_BATCH_ID=env04"* ]]
   [[ "$decoded" != *"{VSTORM_GUEST_ENV}"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT: default RESULT_SERVER_URL can be overridden or cleared
+# ---------------------------------------------------------------
+@test "OPT: --env RESULT_SERVER_URL overrides default collector URL" {
+  run bash "$VSTORM" -n --batch-id=env04b --datasource=rhel9 --vms=1 --namespaces=1 \
+    --cloudinit=workload/cloudinit-default.yaml \
+    --env RESULT_SERVER_URL=http://example.test:9999/v1/results
+  [ "$status" -eq 0 ]
+  userdata_b64=$(echo "$output" | grep "userdata:" | head -1 | sed 's/.*userdata: *//')
+  decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
+  [[ "$decoded" == *"RESULT_SERVER_URL=http://example.test:9999/v1/results"* ]]
+  [[ "$decoded" != *"n42-h01-b02-mx750c"* ]]
+}
+
+@test "OPT: --env RESULT_SERVER_URL= empty disables default collector URL" {
+  run bash "$VSTORM" -n --batch-id=env04c --datasource=rhel9 --vms=1 --namespaces=1 \
+    --cloudinit=workload/cloudinit-default.yaml \
+    --env RESULT_SERVER_URL=
+  [ "$status" -eq 0 ]
+  userdata_b64=$(echo "$output" | grep "userdata:" | head -1 | sed 's/.*userdata: *//')
+  decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
+  [[ "$decoded" == *"RESULT_SERVER_URL="* ]]
+  [[ "$decoded" != *"n42-h01-b02-mx750c"* ]]
+}
+
+@test "OPT: unreachable RESULT_SERVER_URL override still allows dry-run create" {
+  run bash "$VSTORM" -n --batch-id=env04d --datasource=rhel9 --vms=1 --namespaces=1 \
+    --env RESULT_SERVER_URL=http://127.0.0.1:1/v1/results
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kind: VirtualMachine"* ]]
+  [[ "$output" == *"applying default cloud-init"* ]]
+}
+
+@test "OPT: host manifest POST failure path keeps create-succeeded warning text" {
+  grep -q 'create still succeeded; JSON kept' "$VSTORM"
+  grep -q 'Failed to POST manifest for batch' "$VSTORM"
 }
 
 # ---------------------------------------------------------------

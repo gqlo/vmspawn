@@ -7,7 +7,7 @@ Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and
 ## Simple path (recommended)
 
 1. Start the collector; open the dashboard to **browse** batches / VMs / result payloads.
-2. Create VMs with **fio knobs once** via `vstorm --env FIO_*=…` and `RESULT_SERVER_URL`.
+2. Create VMs with **fio knobs once** via `vstorm --env FIO_*=…` (and optional `RESULT_SERVER_URL` override; lab collector is the default).
 3. Each guest runs **one** fio job at boot, POSTs **one** result when finished, then exits (`Type=oneshot`).
 4. Watch status and drill into JSON on the dashboard.
 
@@ -74,7 +74,7 @@ Status vs this design (as of the current tree).
 | Area | Notes |
 |------|-------|
 | Per-VM `VSTORM_VM_NAME` | Not injected (shared cloud-init Secret per namespace). Guest uses hostname unless user sets `--env VSTORM_VM_NAME=…`. |
-| Unset `RESULT_SERVER_URL` | No POST; guest still runs the one fio job locally. |
+| Unset / empty `RESULT_SERVER_URL` | No POST; guest still runs the one fio job locally. vstorm defaults `RESULT_SERVER_URL` to the lab collector unless overridden or cleared with `--env RESULT_SERVER_URL=`. |
 | Legacy policy API | Collector may still expose `/v1/policy` endpoints from earlier designs; the fio guest no longer polls them. |
 | Full log upload API | Batch POST may include truncated `log_text` (64 KiB); separate log upload not required for v1. |
 

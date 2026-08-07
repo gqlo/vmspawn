@@ -127,7 +127,15 @@ When `--cloudinit` is omitted, vstorm injects [`workload/cloudinit-default.yaml`
 
 - **Root password**: `password`
 - **PasswordAuthentication** / **PermitRootLogin**: enabled in sshd
-- **Boot timestamp**: `vstorm-boot-timestamp.service` writes `/root/timestamp.txt` and optionally POSTs a boot heartbeat when `RESULT_SERVER_URL` is set via `--env` (no workload job)
+- **Boot timestamp**: `vstorm-boot-timestamp.service` writes `/root/timestamp.txt` and POSTs a boot heartbeat to the default lab collector (`RESULT_SERVER_URL`) unless you override or clear it via `--env` (no workload job)
+
+### Result collector URL
+
+By default vstorm injects:
+
+`RESULT_SERVER_URL=http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results`
+
+so host manifests and guest boot/result POSTs go to that data-collector. Override with `--env RESULT_SERVER_URL=http://other:8080/v1/results`, or disable with `--env RESULT_SERVER_URL=`.
 
 ```bash
 # Any mode: default profile (SSH + boot timestamp only)
