@@ -4,7 +4,7 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 
 ## Contents
 
-- [Workload result collector + dashboard](#workload-result-collector--dashboard)
+- [Data collector + dashboard](#data-collector--dashboard)
 - [Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)](#persist-your-json-dashboard-in-dittybopper-provisioning-to-dittybopper)
 - [Run Prometheus queries](#prom-query)
 - [VM dirty rate (libvirt vs KubeVirt)](#vm-dirty-rate-libvirt-vs-kubevirt)
@@ -13,14 +13,14 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 - [Troubleshooting](#troubleshooting)
 - [Appendix](#appendix)
 
-## Workload result collector + dashboard
+## Data collector + dashboard
 
-Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom). Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md).
+Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom). Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md). Code lives under [`monitoring/data-collector/`](data-collector/).
 
 **Simple flow:** set `FIO_*` at `vstorm` create with `RESULT_SERVER_URL`; each guest runs **one** fio job and POSTs **one** result; dashboard browses batches / VMs / payloads.
 
 ```bash
-python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
+python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./data-collector-data
 # Dashboard: http://<host>:8080/
 # Ingest:    POST http://<host>:8080/v1/results
 ```
@@ -95,7 +95,7 @@ python3 scripts/migration-stats.py --summary --start 2026-03-19T10:00:00Z
 python3 scripts/migration-stats.py --eviction-counts --start 2026-03-19T10:00:00Z --end 2026-03-19T11:00:00Z
 ```
 
-Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling, workload-result collector) from repo root:
+Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling, data-collector) from repo root:
 
 ```bash
 pip install -r monitoring/tests/requirements.txt   # PyYAML for prom-query tests

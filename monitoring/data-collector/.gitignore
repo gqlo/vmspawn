@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+data-collector-data/
+
+# leftover local data from earlier runs
+workload-result-data/

@@ -11,9 +11,9 @@ When adding or significantly changing a **function** (or equivalent: method, exp
 
 | Language / area | Put production code in | Put tests in |
 |---|---|---|
-| Python (`monitoring/`) | `monitoring/workload-result/`, `monitoring/scripts/` | `monitoring/tests/test_*.py` (`unittest`) |
-| Dashboard JS helpers | `monitoring/workload-result/static/dashboard-lib.js` | `monitoring/tests/test_dashboard_lib.js` (`node --test`) |
-| Dashboard UI wiring | `monitoring/workload-result/static/app.js` | Prefer extracting pure logic into `dashboard-lib.js` + test there |
+| Python (`monitoring/`) | `monitoring/data-collector/`, `monitoring/scripts/` | `monitoring/tests/test_*.py` (`unittest`) |
+| Dashboard JS helpers | `monitoring/data-collector/static/dashboard-lib.js` | `monitoring/tests/test_dashboard_lib.js` (`node --test`) |
+| Dashboard UI wiring | `monitoring/data-collector/static/app.js` | Prefer extracting pure logic into `dashboard-lib.js` + test there |
 | Bash (`vstorm`, helpers, workload scripts) | `vstorm`, `helpers/`, `workload/`, `tests/helpers.bash` | `tests/*.bats` |
 
 ## Rules

@@ -30,6 +30,7 @@ const {
   statusBadge,
   bootDurationsSeconds,
   fmtBootTimeSummary,
+  durationSeconds,
   buildBootTimesCsv,
   buildCrossBatchTimestampsCsv,
   histogramBins,
@@ -157,6 +158,8 @@ async function render() {
   destroyChart();
   try {
     if (route.name === "runs") await renderRuns(app);
+    else if (route.name === "timestamps") await renderTimestamps(app);
+    else if (route.name === "batch-timestamps") await renderBatchTimestamps(app, route.batchId);
     else if (route.name === "run") await renderRun(app, route.batchId);
     else if (route.name === "vm") await renderVm(app, route.batchId, route.vm);
     else if (route.name === "cycle") await renderCycle(app, route.batchId, route.vm, route.cycle);
@@ -168,8 +171,7 @@ async function render() {
   }
 }
 
-async function renderRuns(app) {
-  setCrumbs([{ label: "Batches" }]);
+function filterQueryParams() {
   const f = state.filters;
   const params = new URLSearchParams();
   if (f.q) params.set("q", f.q);
@@ -179,9 +181,256 @@ async function renderRuns(app) {
   if (f.batch_id) params.set("batch_id", f.batch_id);
   if (f.namespace) params.set("namespace", f.namespace);
   if (f.api_server) params.set("api_server", f.api_server);
+  return params;
+}
+
+function cellDash(val) {
+  if (val == null || val === "") return "—";
+  return escapeHtml(String(val));
+}
+
+function fmtTsCell(ts) {
+  const s = fmtTs(ts);
+  return s === "—" ? "—" : escapeHtml(s);
+}
+
+function renderTimestampsTableHtml(headers, rows) {
+  if (!rows.length) {
+    return `<div class="empty">No VM timestamps for the current filters.</div>`;
+  }
+  return `<div class="table-wrap timestamps-wrap"><table class="timestamps-table">
+    <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join("")}</tr></thead>
+    <tbody>
+      ${rows
+        .map(
+          (cells) =>
+            `<tr>${cells.map((c) => `<td class="mono">${c}</td>`).join("")}</tr>`
+        )
+        .join("")}
+    </tbody>
+  </table></div>`;
+}
+
+function crossBatchTimestampRow(it) {
+  const durations = [
+    durationSeconds(it.base_dv_bound_at, it.base_dv_created_at),
+    durationSeconds(it.snapshot_ready_at, it.snapshot_created_at),
+    durationSeconds(it.pvc_bound_at, it.dv_created_at),
+    durationSeconds(it.data_pvc_bound_at, it.data_dv_created_at),
+    durationSeconds(it.boot_timestamp, it.dv_created_at),
+  ].map((d) => (d === "" ? "—" : escapeHtml(d)));
+  return [
+    cellDash(it.batch_id),
+    cellDash(it.basename || ""),
+    cellDash(it.cloudinit || ""),
+    cellDash(it.vm_name || ""),
+    cellDash(it.namespace || ""),
+    ...durations,
+    fmtTsCell(it.batch_started_at),
+    fmtTsCell(it.base_dv_created_at),
+    fmtTsCell(it.base_dv_ready_at),
+    fmtTsCell(it.base_dv_bound_at),
+    fmtTsCell(it.snapshot_created_at),
+    fmtTsCell(it.snapshot_ready_at),
+    fmtTsCell(it.dv_created_at),
+    fmtTsCell(it.dv_ready_at),
+    fmtTsCell(it.pvc_created_at),
+    fmtTsCell(it.pvc_bound_at),
+    fmtTsCell(it.data_dv_created_at),
+    fmtTsCell(it.data_dv_ready_at),
+    fmtTsCell(it.data_pvc_created_at),
+    fmtTsCell(it.data_pvc_bound_at),
+    fmtTsCell(it.ssh_ready_at),
+    fmtTsCell(it.boot_timestamp),
+  ];
+}
+
+const CROSS_BATCH_TS_HEADERS = [
+  "batch_id",
+  "basename",
+  "cloudinit",
+  "vm_name",
+  "namespace",
+  "base_dv_creation_s",
+  "snapshot_creation_s",
+  "dv_creation_s",
+  "data_dv_creation_s",
+  "vm_ready_s",
+  "batch_started_at_utc",
+  "base_dv_created_at_utc",
+  "base_dv_ready_at_utc",
+  "base_dv_bound_at_utc",
+  "snapshot_created_at_utc",
+  "snapshot_ready_at_utc",
+  "dv_created_at_utc",
+  "dv_ready_at_utc",
+  "pvc_created_at_utc",
+  "pvc_bound_at_utc",
+  "data_dv_created_at_utc",
+  "data_dv_ready_at_utc",
+  "data_pvc_created_at_utc",
+  "data_pvc_bound_at_utc",
+  "ssh_ready_at_utc",
+  "boot_timestamp_utc",
+];
+
+const BATCH_TS_HEADERS = [
+  "batch_id",
+  "vm_name",
+  "namespace",
+  "base_dv_creation_s",
+  "snapshot_creation_s",
+  "dv_creation_s",
+  "data_dv_creation_s",
+  "vm_ready_s",
+  "batch_started_at_utc",
+  "base_dv_created_at_utc",
+  "base_dv_ready_at_utc",
+  "base_dv_bound_at_utc",
+  "snapshot_created_at_utc",
+  "snapshot_ready_at_utc",
+  "dv_created_at_utc",
+  "dv_ready_at_utc",
+  "pvc_created_at_utc",
+  "pvc_bound_at_utc",
+  "data_dv_created_at_utc",
+  "data_dv_ready_at_utc",
+  "data_pvc_created_at_utc",
+  "data_pvc_bound_at_utc",
+  "ssh_ready_at_utc",
+  "boot_timestamp_utc",
+];
+
+function batchTimestampRow(batchId, v, batchStartedAt, batchDvCreatedAt) {
+  const boot = v.boot_timestamp_unix;
+  const baseDv = v.base_dv_created_at_unix;
+  const baseDvBound = v.base_dv_bound_at_unix;
+  const snap = v.snapshot_created_at_unix;
+  const snapReady = v.snapshot_ready_at_unix;
+  const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
+  const pvcBound = v.pvc_bound_at_unix;
+  const dataDv = v.data_dv_created_at_unix;
+  const dataPvcBound = v.data_pvc_bound_at_unix;
+  const durations = [
+    durationSeconds(baseDvBound, baseDv),
+    durationSeconds(snapReady, snap),
+    durationSeconds(pvcBound, dv),
+    durationSeconds(dataPvcBound, dataDv),
+    durationSeconds(boot, dv),
+  ].map((d) => (d === "" ? "—" : escapeHtml(d)));
+  return [
+    cellDash(batchId),
+    cellDash(v.vm_name),
+    cellDash(v.namespace || ""),
+    ...durations,
+    fmtTsCell(batchStartedAt),
+    fmtTsCell(baseDv),
+    fmtTsCell(v.base_dv_ready_at_unix),
+    fmtTsCell(baseDvBound),
+    fmtTsCell(snap),
+    fmtTsCell(snapReady),
+    fmtTsCell(dv),
+    fmtTsCell(v.dv_ready_at_unix),
+    fmtTsCell(v.pvc_created_at_unix),
+    fmtTsCell(pvcBound),
+    fmtTsCell(dataDv),
+    fmtTsCell(v.data_dv_ready_at_unix),
+    fmtTsCell(v.data_pvc_created_at_unix),
+    fmtTsCell(dataPvcBound),
+    fmtTsCell(v.ssh_ready_at_unix),
+    fmtTsCell(boot),
+  ];
+}
+
+async function renderTimestamps(app) {
+  setCrumbs([
+    { label: "Batches", href: "#/runs" },
+    { label: "Timestamps" },
+  ]);
+  const params = filterQueryParams();
+  const data = await api("/v1/timestamps?" + params.toString());
+  const items = data.items || [];
+  const rows = items.map(crossBatchTimestampRow);
+  app.innerHTML = `
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div>
+          <h2 style="margin:0">Timestamps</h2>
+          <div class="muted" style="margin-top:0.35rem">
+            ${escapeHtml(String(items.length))} VM row${items.length === 1 ? "" : "s"}
+            using the current Batches filters.
+            Duration columns are seconds; absolute times are UTC.
+          </div>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#/runs">Back to batches</a>
+          <button type="button" class="btn primary" id="btn-download-timestamps-csv" ${
+            items.length ? "" : "disabled"
+          }>Download CSV</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      ${renderTimestampsTableHtml(CROSS_BATCH_TS_HEADERS, rows)}
+    </div>`;
+
+  const btn = $("#btn-download-timestamps-csv");
+  if (btn && items.length) {
+    btn.onclick = () => {
+      const csv = buildCrossBatchTimestampsCsv(items);
+      const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
+      downloadTextFile(`all-timestamps-${stamp}Z.csv`, csv, "text/csv;charset=utf-8");
+    };
+  }
+}
+
+async function renderBatchTimestamps(app, batchId) {
+  setCrumbs([
+    { label: "Batches", href: "#/runs" },
+    { label: batchId, href: `#/runs/${encodeURIComponent(batchId)}` },
+    { label: "Timestamps" },
+  ]);
+  const b = await api("/v1/batches/" + encodeURIComponent(batchId));
+  const vmList = b.vms || [];
+  const rows = vmList.map((v) => batchTimestampRow(batchId, v, b.started_at, b.dv_created_at));
+  app.innerHTML = `
+    <div class="panel">
+      <div class="row" style="justify-content:space-between;align-items:center">
+        <div>
+          <h2 style="margin:0">Timestamps · ${escapeHtml(batchId)}</h2>
+          <div class="muted" style="margin-top:0.35rem">
+            ${escapeHtml(String(vmList.length))} VM row${vmList.length === 1 ? "" : "s"}.
+            Duration columns are seconds; absolute times are UTC.
+          </div>
+        </div>
+        <div class="actions">
+          <a class="btn" href="#/runs/${encodeURIComponent(batchId)}">Back to batch</a>
+          <button type="button" class="btn primary" id="btn-download-batch-timestamps-csv" ${
+            vmList.length ? "" : "disabled"
+          }>Download CSV</button>
+        </div>
+      </div>
+    </div>
+    <div class="panel">
+      ${renderTimestampsTableHtml(BATCH_TS_HEADERS, rows)}
+    </div>`;
+
+  const btn = $("#btn-download-batch-timestamps-csv");
+  if (btn && vmList.length) {
+    btn.onclick = () => {
+      const csv = buildBootTimesCsv(batchId, vmList, b.started_at, b.dv_created_at);
+      downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
+    };
+  }
+}
+
+async function renderRuns(app) {
+  setCrumbs([{ label: "Batches" }]);
+  const params = filterQueryParams();
   const data = await api("/v1/batches?" + params.toString());
   const items = data.items || [];
   const facets = data.facets || {};
+  const f = state.filters;
   const totals = items.reduce(
     (acc, b) => {
       const s = b.vm_summary || {};
@@ -231,9 +480,7 @@ async function renderRuns(app) {
           ${escapeHtml(String(totals.waiting))} not contacted
           ${totals.error ? ` · ${escapeHtml(String(totals.error))} error` : ""}
         </div>
-        <button type="button" class="btn" id="btn-all-timestamps" ${
-          items.length ? "" : "disabled"
-        }>Download all timestamps CSV</button>
+        <a class="btn" href="#/timestamps">Timestamps</a>
       </div>
       <form id="filter-form" class="filters" autocomplete="off">
         <label class="filter-field">
@@ -405,28 +652,6 @@ async function renderRuns(app) {
     render();
   };
 
-  const btnAllTs = $("#btn-all-timestamps");
-  if (btnAllTs) {
-    btnAllTs.onclick = async () => {
-      try {
-        btnAllTs.disabled = true;
-        const data = await api("/v1/timestamps?" + params.toString());
-        const rows = data.items || [];
-        if (!rows.length) {
-          alert("No VM timestamps for the current filters.");
-          return;
-        }
-        const csv = buildCrossBatchTimestampsCsv(rows);
-        const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
-        downloadTextFile(`all-timestamps-${stamp}Z.csv`, csv, "text/csv;charset=utf-8");
-      } catch (err) {
-        alert(err.message || String(err));
-      } finally {
-        btnAllTs.disabled = !items.length;
-      }
-    };
-  }
-
   // Drop selections that are no longer in the current list.
   const visibleIds = new Set(items.map((b) => b.batch_id));
   for (const id of [...state.selectedBatches]) {
@@ -525,7 +750,7 @@ async function renderRun(app, batchId) {
           <div class="muted" style="margin-top:0.35rem">${escapeHtml(fmtWorkloadColumn(vs))}</div>
           <div class="muted mono" style="margin-top:0.35rem">
             ${escapeHtml(bootSummary)}
-            · <a href="#" id="btn-boot-csv">Download detailed object creation timestamps</a>
+            · <a href="#/runs/${encodeURIComponent(batchId)}/timestamps">View object creation timestamps</a>
           </div>
         </div>
         <div class="actions">
@@ -616,15 +841,6 @@ async function renderRun(app, batchId) {
     </div>`;
 
   drawBootHistogram(vmList, b.started_at, b.dv_created_at);
-
-  const bootCsvBtn = $("#btn-boot-csv");
-  if (bootCsvBtn) {
-    bootCsvBtn.onclick = (e) => {
-      e.preventDefault();
-      const csv = buildBootTimesCsv(batchId, vmList, b.started_at, b.dv_created_at);
-      downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
-    };
-  }
 
   $("#btn-archive").onclick = async () => {
     try {

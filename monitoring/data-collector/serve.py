@@ -2,8 +2,8 @@
 """Workload result collector: ingest guest/vstorm JSON, SQLite index, dashboard.
 
 Usage:
-  python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
-  python3 monitoring/workload-result/serve.py --listen 127.0.0.1:8080 --data-dir ./data --token SECRET
+  python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./data-collector-data
+  python3 monitoring/data-collector/serve.py --listen 127.0.0.1:8080 --data-dir ./data --token SECRET
 """
 
 from __future__ import annotations
@@ -1979,7 +1979,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--data-dir",
         type=Path,
-        default=Path("./workload-result-data"),
+        default=Path("./data-collector-data"),
         help="Directory for SQLite index and raw JSON payloads",
     )
     parser.add_argument(
@@ -1996,7 +1996,7 @@ def main(argv: list[str] | None = None) -> int:
     host, port = args.listen
     handler = make_handler(app)
     server = ThreadingHTTPServer((host, port), handler)
-    print(f"workload-result listening on http://{host}:{port}/")
+    print(f"data-collector listening on http://{host}:{port}/")
     print(f"data dir: {data_dir}")
     print(f"POST results to http://{host}:{port}/v1/results")
     print(f"GET  policy  http://{host}:{port}/v1/policy?batch_id=&vm_name=")

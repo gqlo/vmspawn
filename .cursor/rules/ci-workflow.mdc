@@ -32,5 +32,5 @@ Independent jobs in `.github/workflows/test.yaml`:
 - Adding a new linter (e.g. shellcheck): add it as a **new job**, not inline in an existing one
 - Adding new template YAML files in `templates/`: consider extending yamllint scope
 - Adding Python test deps: put them in `monitoring/tests/requirements.txt` (installed by `test-python`)
-- Adding dashboard JS helpers: put them in `monitoring/workload-result/static/dashboard-lib.js` and cover them in `monitoring/tests/test_dashboard_lib.js` (`test-js` job)
+- Adding dashboard JS helpers: put them in `monitoring/data-collector/static/dashboard-lib.js` and cover them in `monitoring/tests/test_dashboard_lib.js` (`test-js` job)
 - Keep each job focused on one tool for clear failure reporting

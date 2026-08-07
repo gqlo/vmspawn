@@ -203,6 +203,29 @@ th, td {
 
 th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.02em; }
 
+.timestamps-wrap {
+  max-height: min(70vh, 48rem);
+  overflow: auto;
+}
+
+.timestamps-table {
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 0.8rem;
+}
+
+.timestamps-table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--panel);
+  white-space: nowrap;
+}
+
+.timestamps-table td {
+  white-space: nowrap;
+}
+
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #f6f8fa; }
 

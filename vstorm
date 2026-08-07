@@ -1286,7 +1286,7 @@ collect_batch_dv_created_json() {
 	printf '%s\n' '{}' > "$vs_file"
     fi
     local collector
-    collector="$(cd "$(dirname "$0")" && pwd)/monitoring/workload-result/collect_batch_dv_created.py"
+    collector="$(cd "$(dirname "$0")" && pwd)/monitoring/data-collector/collect_batch_dv_created.py"
     out_json=$(
 	BASENAME="$VM_BASENAME" BATCH_ID="$BATCH_ID" VM_JSON="$vm_json" NS_JSON="$ns_json" \
 	DV_JSON_FILE="$dv_file" PVC_JSON_FILE="$pvc_file" VS_JSON_FILE="$vs_file" \

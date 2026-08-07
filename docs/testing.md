@@ -355,11 +355,11 @@ GitHub Actions runs four jobs on every push and PR to `main`:
 | Job | Tool | Scope |
 |---|---|---|
 | `test` | `bats` | All tests in `tests/` |
-| `test-python` | `unittest` | `monitoring/tests/` (workload-result collector, monitoring scripts); installs `monitoring/tests/requirements.txt` |
+| `test-python` | `unittest` | `monitoring/tests/` (data-collector, monitoring scripts); installs `monitoring/tests/requirements.txt` |
 | `lint-yaml` | `yamllint` | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` |
 | `lint-markdown` | `markdownlint-cli2` | All `*.md` files |
 
-Local pre-commit (`hooks/pre-commit`) also runs `python3 -m unittest discover -s monitoring/tests -v` when staged files touch `monitoring/workload-result/`, `monitoring/tests/`, or `monitoring/scripts/`. Full suite: `./helpers/run-all-tests.sh`.
+Local pre-commit (`hooks/pre-commit`) also runs `python3 -m unittest discover -s monitoring/tests -v` when staged files touch `monitoring/data-collector/`, `monitoring/tests/`, or `monitoring/scripts/`. Full suite: `./helpers/run-all-tests.sh`.
 
 Configuration files:
 

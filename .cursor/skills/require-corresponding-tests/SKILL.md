@@ -21,8 +21,8 @@ When implementing new behavior, **do not finish** until a corresponding test exi
 
 | Code | Tests | Run |
 |---|---|---|
-| `monitoring/workload-result/**/*.py`, `monitoring/scripts/*.py` | `monitoring/tests/test_*.py` | `python3 -m unittest discover -s monitoring/tests -v` |
-| `monitoring/workload-result/static/dashboard-lib.js` | `monitoring/tests/test_dashboard_lib.js` | `node --test monitoring/tests/test_dashboard_lib.js` |
+| `monitoring/data-collector/**/*.py`, `monitoring/scripts/*.py` | `monitoring/tests/test_*.py` | `python3 -m unittest discover -s monitoring/tests -v` |
+| `monitoring/data-collector/static/dashboard-lib.js` | `monitoring/tests/test_dashboard_lib.js` | `node --test monitoring/tests/test_dashboard_lib.js` |
 | Pure logic currently in `app.js` | Extract to `dashboard-lib.js`, then test there | same as above |
 | `vstorm`, `helpers/`, `workload/`, bats helpers | `tests/*.bats` | `bats tests/` |
 

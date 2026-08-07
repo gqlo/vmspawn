@@ -2,7 +2,7 @@
 
 Design for capturing guest workload results (initially fio), syncing host-side vstorm **manifests** (run inventory), and browsing collected data in a simple web dashboard.
 
-Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and batch manifests](logging.md). Collector: [`monitoring/workload-result/`](../monitoring/workload-result/). First guest integration: [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml).
+Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and batch manifests](logging.md). Collector: [`monitoring/data-collector/`](../monitoring/data-collector/). First guest integration: [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml).
 
 ## Simple path (recommended)
 
@@ -13,7 +13,7 @@ Related: [cloud-init and fio workload](cloud-init-fio-workload.md), [logging and
 
 ```bash
 # Terminal A — collector
-python3 monitoring/workload-result/serve.py --listen 0.0.0.0:8080 --data-dir ./workload-result-data
+python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 --data-dir ./data-collector-data
 # Open http://<host>:8080/
 
 # Terminal B — fio params at create; one job per VM; POST once
@@ -54,7 +54,7 @@ Dashboard is browse-first (batches → VMs → results → payload). No run-once
 | Transport | **HTTP** JSON over a reachable lab network: guests POST results; vstorm POSTs manifests. Example: `http://<host>:8080/v1/results`. TLS out of scope for v1; optional bearer token still allowed. |
 | Record types | `manifest` (host inventory) \| `result` (finished workload job) \| `error` (incident); join on `batch_id` |
 | Server role | One process: ingest + query + dashboard |
-| Collector | Python (`monitoring/workload-result/serve.py`), stdlib preferred |
+| Collector | Python (`monitoring/data-collector/serve.py`), stdlib preferred |
 
 ## Current gap
 
@@ -196,7 +196,11 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
   `base_dv_bound_at_utc`, `snapshot_created_at_utc`, `snapshot_ready_at_utc`,
   `dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`, `pvc_bound_at_utc`,
   `data_dv_created_at_utc`, `data_dv_ready_at_utc`, `data_pvc_created_at_utc`,
-  `data_pvc_bound_at_utc`, `ssh_ready_at_utc`, `boot_timestamp_utc` (plus identity fields). PVC bound time
+  `data_pvc_bound_at_utc`, `ssh_ready_at_utc`, `boot_timestamp_utc` (plus identity fields).
+  Duration columns (integer seconds, left of the absolute timestamps):
+  `base_dv_creation_s` (bound−created), `snapshot_creation_s` (ready−created),
+  `dv_creation_s` (pvc bound−dv created), `data_dv_creation_s` (data pvc bound−data dv created),
+  `vm_ready_s` (boot−dv created). Blank when either endpoint is missing. PVC bound time
   comes from the owning DV `Bound=True` condition (`lastTransitionTime`).
 
 Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) (keep embedded `write_files` copies in sync).
@@ -394,7 +398,7 @@ One Python process: ingest, **policy store**, query, dashboard.
 | `POST /v1/results` | Ingest manifest / result / error / heartbeat |
 | `GET /healthz` | Liveness |
 | `GET /v1/batches` | List batches (`q`, `archived`, `batch_id`, `namespace`, `api_server`, `today=1`, `date=YYYY-MM-DD`, `date_from` / `date_to`); response includes `items` + `facets` |
-| `GET /v1/timestamps` | Flat VM timing rows across batches (same filters as `GET /v1/batches`); used by **Download all timestamps CSV** |
+| `GET /v1/timestamps` | Flat VM timing rows across batches (same filters as `GET /v1/batches`); used by the **Timestamps** table view (`#/timestamps`) and its optional **Download CSV** |
 | `GET /v1/batches/{id}` | Batch detail + VMs + series |
 | `GET /v1/batches/{id}/results/{result_id}` | One stored payload |
 | `GET /v1/batches/{id}/vms/{vm}` | Per-VM results + **current policy + agent status** |
@@ -475,7 +479,8 @@ Everything for one vstorm batch on one page.
 counts (from manifest `total_vms` / `total_namespaces` and `dv_created` / `pvc_created`
 lists). Once-per-batch timing (snapshot create path): **Batch started**, **Base DV**
 created/ready/bound, **Snapshot** created/ready. Per-VM clone DV/PVC times stay on the
-VMs table / CSV, not this summary. On the **Batches** list: **Download all timestamps CSV**
+VMs table / CSV, not this summary. On the **Batches** list: **Timestamps** opens an
+in-browser table (`#/timestamps`); use **Download CSV** on that page when you want a file.
 aggregates VM timing rows across batches matching the current filters (`GET /v1/timestamps`).
 
 **VM rollup meanings** (same definitions as the VM table `ui_status`):
@@ -568,8 +573,8 @@ See **[Simple path (recommended)](#simple-path-recommended)** above. Cap jobs wi
 | [`vstorm`](../vstorm) | POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; optional truncated `log_text` |
 | [`workload/cloudinit-fio-workload.yaml`](../workload/cloudinit-fio-workload.yaml) | Fio one-shot; result POST; reads shared boot timestamp |
 | [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) | Shared boot file + optional boot heartbeat POST (embedded in all cloud-inits) |
-| `monitoring/workload-result/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
-| [`monitoring/workload-result/static/`](../monitoring/workload-result/static/) | Browse batches / VMs / payloads; helpers in `dashboard-lib.js` |
+| `monitoring/data-collector/serve.py` | Ingest; policy GET/PUT/fan-out; remaining consume on cycle ingest; VM status rollups; ISO filenames |
+| [`monitoring/data-collector/static/`](../monitoring/data-collector/static/) | Browse batches / VMs / payloads; helpers in `dashboard-lib.js` |
 | [`docs/cloud-init-fio-workload.md`](cloud-init-fio-workload.md) | Env table includes `RESULT_SERVER_*` / `WORKLOAD_RUN_*` |
 | `tests/` | `monitoring/tests/test_workload_result.py` — helpers, ingest/record types, policy, queries, HTTP API |
 
@@ -579,4 +584,4 @@ See **[Simple path (recommended)](#simple-path-recommended)** above. Cap jobs wi
 - [logging and batch manifests](logging.md)
 - [workload/cloudinit-fio-workload.yaml](../workload/cloudinit-fio-workload.yaml)
 - [README.md](../README.md) — Cloud-init and `--env`
-- [monitoring/](../monitoring/README.md) — cluster Prom/Grafana; guest collector under `monitoring/workload-result/`
+- [monitoring/](../monitoring/README.md) — cluster Prom/Grafana; guest collector under `monitoring/data-collector/`

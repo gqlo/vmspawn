@@ -278,7 +278,7 @@ GitHub Actions runs four independent jobs on every push and pull request to `mai
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs all unit tests (`bats tests/`) |
-| `test-python` | `unittest` | Monitoring / workload-result Python tests (`monitoring/tests/`; needs `pip install -r monitoring/tests/requirements.txt`) |
+| `test-python` | `unittest` | Monitoring / data-collector Python tests (`monitoring/tests/`; needs `pip install -r monitoring/tests/requirements.txt`) |
 | `lint-yaml` | `yamllint` | Lints plain YAML (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`) |
 | `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
 
@@ -297,7 +297,7 @@ The hook runs only the checks relevant to the files you are committing:
 | Staged files | Check |
 |---|---|
 | `vstorm`, `templates/*`, `helpers/*`, `workload/*`, `tests/*.bats` | `bats tests/` |
-| `monitoring/workload-result/*`, `monitoring/tests/*`, `monitoring/scripts/*` | `python3 -m unittest discover -s monitoring/tests -v` |
+| `monitoring/data-collector/*`, `monitoring/tests/*`, `monitoring/scripts/*` | `python3 -m unittest discover -s monitoring/tests -v` |
 | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` | `yamllint` on changed files |
 | any staged `*.md` / `*.MD` (e.g. `docs/...`, `monitoring/...`) | `markdownlint-cli2` on changed files |
 

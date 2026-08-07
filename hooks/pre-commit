@@ -46,12 +46,12 @@ while IFS= read -r f; do
     esac
 
     case "$f" in
-        monitoring/workload-result/*|monitoring/tests/*|monitoring/scripts/*)
+        monitoring/data-collector/*|monitoring/tests/*|monitoring/scripts/*)
             run_py_tests=1 ;;
     esac
 
     case "$f" in
-        monitoring/workload-result/static/*|monitoring/tests/test_dashboard_lib.js)
+        monitoring/data-collector/static/*|monitoring/tests/test_dashboard_lib.js)
             run_js_tests=1 ;;
     esac
 done <<< "$staged"

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for monitoring/workload-result/collect_batch_dv_created.py."""
+"""Unit tests for monitoring/data-collector/collect_batch_dv_created.py."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from pathlib import Path
 
 _HELPER = (
     Path(__file__).resolve().parent.parent
-    / "workload-result"
+    / "data-collector"
     / "collect_batch_dv_created.py"
 )
 

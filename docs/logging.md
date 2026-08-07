@@ -94,7 +94,7 @@ namespaces: vm-a3f7b2-ns-1, vm-a3f7b2-ns-2
 vms: vm-a3f7b2-ns-1/rhel9-a3f7b2-1, vm-a3f7b2-ns-1/rhel9-a3f7b2-2, ...
 ```
 
-When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the workload-result collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
+When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the data-collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
 
 ### Listing batches
 

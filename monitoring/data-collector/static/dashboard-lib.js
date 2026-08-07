@@ -1,4 +1,4 @@
-/* Pure helpers for the workload-result dashboard (browser + Node tests). */
+/* Pure helpers for the data-collector dashboard (browser + Node tests). */
 
 (function (root) {
   "use strict";
@@ -79,10 +79,12 @@
           : "#/runs";
     const h = raw.replace(/^#/, "");
     const parts = h.split("/").filter(Boolean);
+    if (parts[0] === "timestamps") return { name: "timestamps" };
     if (parts[0] !== "runs") return { name: "runs" };
     if (parts.length === 1) return { name: "runs" };
     const batchId = decodeURIComponent(parts[1]);
     if (parts.length === 2) return { name: "run", batchId };
+    if (parts[2] === "timestamps") return { name: "batch-timestamps", batchId };
     if (parts[2] === "payload" && parts[3]) {
       return { name: "payload", batchId, resultId: decodeURIComponent(parts[3]) };
     }
@@ -150,11 +152,49 @@
     return s;
   }
 
+  /** End − start in whole seconds; empty string if either side is missing. */
+  function durationSeconds(endUnix, startUnix) {
+    if (endUnix == null || startUnix == null) return "";
+    const end = Number(endUnix);
+    const start = Number(startUnix);
+    if (!Number.isFinite(end) || !Number.isFinite(start)) return "";
+    return String(Math.round(end - start));
+  }
+
+  const CSV_DURATION_HEADERS = [
+    "base_dv_creation_s",
+    "snapshot_creation_s",
+    "dv_creation_s",
+    "data_dv_creation_s",
+    "vm_ready_s",
+  ];
+
+  function timingDurationCells({
+    baseDvCreated,
+    baseDvBound,
+    snapshotCreated,
+    snapshotReady,
+    dvCreated,
+    pvcBound,
+    dataDvCreated,
+    dataPvcBound,
+    boot,
+  }) {
+    return [
+      durationSeconds(baseDvBound, baseDvCreated),
+      durationSeconds(snapshotReady, snapshotCreated),
+      durationSeconds(pvcBound, dvCreated),
+      durationSeconds(dataPvcBound, dataDvCreated),
+      durationSeconds(boot, dvCreated),
+    ];
+  }
+
   function buildBootTimesCsv(batchId, vms, batchStartedAt, batchDvCreatedAt) {
     const header = [
       "batch_id",
       "vm_name",
       "namespace",
+      ...CSV_DURATION_HEADERS,
       "batch_started_at_utc",
       "base_dv_created_at_utc",
       "base_dv_ready_at_utc",
@@ -195,6 +235,17 @@
           csvEscape(batchId),
           csvEscape(v.vm_name),
           csvEscape(v.namespace || ""),
+          ...timingDurationCells({
+            baseDvCreated: baseDv,
+            baseDvBound,
+            snapshotCreated: snap,
+            snapshotReady: snapReady,
+            dvCreated: dv,
+            pvcBound,
+            dataDvCreated: dataDv,
+            dataPvcBound,
+            boot,
+          }),
           csvEscape(startedIso === "—" ? "" : startedIso),
           csvEscape(baseDv != null ? fmtTs(baseDv) : ""),
           csvEscape(baseDvReady != null ? fmtTs(baseDvReady) : ""),
@@ -256,6 +307,7 @@
       "cloudinit",
       "vm_name",
       "namespace",
+      ...CSV_DURATION_HEADERS,
       "batch_started_at_utc",
       "base_dv_created_at_utc",
       "base_dv_ready_at_utc",
@@ -282,6 +334,17 @@
           csvEscape(it.cloudinit || ""),
           csvEscape(it.vm_name || ""),
           csvEscape(it.namespace || ""),
+          ...timingDurationCells({
+            baseDvCreated: it.base_dv_created_at,
+            baseDvBound: it.base_dv_bound_at,
+            snapshotCreated: it.snapshot_created_at,
+            snapshotReady: it.snapshot_ready_at,
+            dvCreated: it.dv_created_at,
+            pvcBound: it.pvc_bound_at,
+            dataDvCreated: it.data_dv_created_at,
+            dataPvcBound: it.data_pvc_bound_at,
+            boot: it.boot_timestamp,
+          }),
           csvEscape(it.batch_started_at != null ? fmtTs(it.batch_started_at) : ""),
           csvEscape(it.base_dv_created_at != null ? fmtTs(it.base_dv_created_at) : ""),
           csvEscape(it.base_dv_ready_at != null ? fmtTs(it.base_dv_ready_at) : ""),
@@ -318,6 +381,7 @@
     bootDurationsSeconds,
     fmtBootTimeSummary,
     csvEscape,
+    durationSeconds,
     buildBootTimesCsv,
     buildCrossBatchTimestampsCsv,
     histogramBins,

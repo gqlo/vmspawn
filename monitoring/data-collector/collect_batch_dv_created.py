@@ -4,7 +4,7 @@
 Reads cluster JSON dumps (or paths via env) and prints a JSON object with
 batch-level and per-VM create/ready/bound times. Invoked by ``vstorm`` after
 create; unit-tested without a live cluster. Lives under
-``monitoring/workload-result/`` next to the result server.
+``monitoring/data-collector/`` next to the result server.
 """
 
 from __future__ import annotations

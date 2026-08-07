@@ -2,8 +2,8 @@
 """POST sample manifest / result / heartbeat / error payloads to a local collector.
 
 Usage:
-  python3 monitoring/workload-result/seed_dummy.py
-  python3 monitoring/workload-result/seed_dummy.py --url http://127.0.0.1:8080/v1/results
+  python3 monitoring/data-collector/seed_dummy.py
+  python3 monitoring/data-collector/seed_dummy.py --url http://127.0.0.1:8080/v1/results
 """
 
 from __future__ import annotations

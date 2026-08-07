@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Unit tests for monitoring/workload-result/serve.py (loaded by path).
+Unit tests for monitoring/data-collector/serve.py (loaded by path).
 Run from repo root: python3 -m unittest discover -s monitoring/tests -v
 """
 
@@ -17,7 +17,7 @@ import urllib.request
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
-_SERVE = Path(__file__).resolve().parent.parent / "workload-result" / "serve.py"
+_SERVE = Path(__file__).resolve().parent.parent / "data-collector" / "serve.py"
 
 
 def _load_serve():
