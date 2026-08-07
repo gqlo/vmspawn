@@ -309,6 +309,11 @@ class TestStoreIngest(unittest.TestCase):
                 "total_vms": 2,
                 "total_namespaces": 1,
                 "started_at": "2026-07-22T05:48:00Z",
+                "base_dv_created_at": "2026-07-22T05:48:30Z",
+                "base_dv_ready_at": "2026-07-22T05:48:40Z",
+                "base_dv_bound_at": "2026-07-22T05:48:41Z",
+                "snapshot_created_at": "2026-07-22T05:48:50Z",
+                "snapshot_ready_at": "2026-07-22T05:48:55Z",
                 "dv_created_at": "2026-07-22T05:49:00Z",
                 "dv_ready_at": "2026-07-22T05:49:02Z",
                 "vm_dv_created": {
@@ -351,11 +356,23 @@ class TestStoreIngest(unittest.TestCase):
         )
         batch = self.store.get_batch("dv1")
         assert batch is not None
+        self.assertEqual(batch["base_dv_created_at"], 1784699310)
+        self.assertEqual(batch["base_dv_ready_at"], 1784699320)
+        self.assertEqual(batch["base_dv_bound_at"], 1784699321)
+        self.assertEqual(batch["snapshot_created_at"], 1784699330)
+        self.assertEqual(batch["snapshot_ready_at"], 1784699335)
         self.assertEqual(batch["dv_created_at"], 1784699340)
         self.assertEqual(batch["dv_ready_at"], 1784699342)
         self.assertEqual(batch["pvc_created_at"], 1784699345)
         self.assertEqual(batch["pvc_bound_at"], 1784699346)
         vms = {v["vm_name"]: v for v in batch["vms"]}
+        self.assertEqual(vms["rhel9-dv1-1"]["base_dv_created_at_unix"], 1784699310)
+        self.assertEqual(vms["rhel9-dv1-1"]["base_dv_ready_at_unix"], 1784699320)
+        self.assertEqual(vms["rhel9-dv1-1"]["base_dv_bound_at_unix"], 1784699321)
+        self.assertEqual(vms["rhel9-dv1-1"]["snapshot_created_at_unix"], 1784699330)
+        self.assertEqual(vms["rhel9-dv1-1"]["snapshot_ready_at_unix"], 1784699335)
+        self.assertEqual(vms["rhel9-dv1-2"]["base_dv_created_at_unix"], 1784699310)
+        self.assertEqual(vms["rhel9-dv1-2"]["snapshot_ready_at_unix"], 1784699335)
         self.assertEqual(vms["rhel9-dv1-1"]["dv_created_at_unix"], 1784699350)
         self.assertEqual(vms["rhel9-dv1-2"]["dv_created_at_unix"], 1784699360)
         self.assertEqual(vms["rhel9-dv1-1"]["dv_ready_at_unix"], 1784699352)
@@ -372,6 +389,34 @@ class TestStoreIngest(unittest.TestCase):
         self.assertEqual(vms["rhel9-dv1-2"]["data_pvc_created_at_unix"], 1784699365)
         self.assertEqual(vms["rhel9-dv1-1"]["data_pvc_bound_at_unix"], 1784699356)
         self.assertEqual(vms["rhel9-dv1-2"]["data_pvc_bound_at_unix"], 1784699366)
+
+    def test_manifest_without_base_or_snapshot_leaves_fields_none(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "nobase",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "started_at": "2026-07-22T05:48:00Z",
+                "dv_created_at": "2026-07-22T05:49:00Z",
+                "vm_dv_created": {"rhel9-nobase-1": "2026-07-22T05:49:10Z"},
+                "reported_at": "2026-07-22T05:50:00Z",
+                "vms": ["ns1/rhel9-nobase-1"],
+            }
+        )
+        batch = self.store.get_batch("nobase")
+        assert batch is not None
+        self.assertIsNone(batch["base_dv_created_at"])
+        self.assertIsNone(batch["base_dv_ready_at"])
+        self.assertIsNone(batch["base_dv_bound_at"])
+        self.assertIsNone(batch["snapshot_created_at"])
+        self.assertIsNone(batch["snapshot_ready_at"])
+        vm = batch["vms"][0]
+        self.assertIsNone(vm["base_dv_created_at_unix"])
+        self.assertIsNone(vm["snapshot_created_at_unix"])
+        self.assertEqual(vm["dv_created_at_unix"], 1784699350)
 
     def test_ingest_requires_batch_id(self) -> None:
         with self.assertRaises(ValueError):
@@ -717,6 +762,52 @@ class TestStoreQueries(unittest.TestCase):
         self.assertEqual(filtered["total"], 1)
         self.assertEqual(filtered["items"][0]["batch_id"], "ts1")
 
+    def test_list_vm_timestamps_includes_base_dv_and_snapshot(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "snap1",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns1/rhel9-snap1-1"],
+                "reported_at": "2026-07-22T05:50:00Z",
+                "started_at": "2026-07-22T05:48:00Z",
+                "base_dv_created_at": "2026-07-22T05:48:30Z",
+                "base_dv_ready_at": "2026-07-22T05:48:40Z",
+                "base_dv_bound_at": "2026-07-22T05:48:41Z",
+                "snapshot_created_at": "2026-07-22T05:48:50Z",
+                "snapshot_ready_at": "2026-07-22T05:48:55Z",
+                "dv_created_at": "2026-07-22T05:49:00Z",
+                "vm_dv_created": {"rhel9-snap1-1": "2026-07-22T05:49:10Z"},
+                "cloudinit": "workload/cloudinit-fio-workload.yaml",
+            }
+        )
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "boot",
+                "batch_id": "snap1",
+                "vm_name": "rhel9-snap1-1",
+                "hostname": "rhel9-snap1-1",
+                "boot_timestamp": "2026-07-22T05:50:25Z",
+                "reported_at": "2026-07-22T05:50:25Z",
+            }
+        )
+        out = self.store.list_vm_timestamps(batch_id="snap1")
+        self.assertEqual(out["total"], 1)
+        row = out["items"][0]
+        self.assertEqual(row["base_dv_created_at"], 1784699310)
+        self.assertEqual(row["base_dv_ready_at"], 1784699320)
+        self.assertEqual(row["base_dv_bound_at"], 1784699321)
+        self.assertEqual(row["snapshot_created_at"], 1784699330)
+        self.assertEqual(row["snapshot_ready_at"], 1784699335)
+        self.assertEqual(row["dv_created_at"], 1784699350)
+        self.assertEqual(row["boot_timestamp"], 1784699425)
+
     def test_get_vm_includes_policy(self) -> None:
         detail = self.store.get_vm("q1", "vm1")
         assert detail is not None
@@ -814,6 +905,50 @@ class TestHTTPApi(unittest.TestCase):
         status, pol = self._json("GET", "/v1/batches/h1/vms/vm1/policy")
         self.assertEqual(status, 200)
         self.assertEqual(pol["remaining"], 1)
+
+    def test_batch_and_timestamps_api_expose_base_dv_and_snapshot(self) -> None:
+        status, _ = self._json(
+            "POST",
+            "/v1/results",
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "api1",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns1/rhel9-api1-1"],
+                "reported_at": "2026-07-22T05:50:00Z",
+                "started_at": "2026-07-22T05:48:00Z",
+                "base_dv_created_at": "2026-07-22T05:48:30Z",
+                "base_dv_ready_at": "2026-07-22T05:48:40Z",
+                "base_dv_bound_at": "2026-07-22T05:48:41Z",
+                "snapshot_created_at": "2026-07-22T05:48:50Z",
+                "snapshot_ready_at": "2026-07-22T05:48:55Z",
+                "dv_created_at": "2026-07-22T05:49:00Z",
+                "vm_dv_created": {"rhel9-api1-1": "2026-07-22T05:49:10Z"},
+            },
+        )
+        self.assertEqual(status, 201)
+
+        status, batch = self._json("GET", "/v1/batches/api1")
+        self.assertEqual(status, 200)
+        self.assertEqual(batch["base_dv_created_at"], 1784699310)
+        self.assertEqual(batch["base_dv_ready_at"], 1784699320)
+        self.assertEqual(batch["base_dv_bound_at"], 1784699321)
+        self.assertEqual(batch["snapshot_created_at"], 1784699330)
+        self.assertEqual(batch["snapshot_ready_at"], 1784699335)
+        vm = batch["vms"][0]
+        self.assertEqual(vm["base_dv_created_at_unix"], 1784699310)
+        self.assertEqual(vm["snapshot_ready_at_unix"], 1784699335)
+
+        status, ts = self._json("GET", "/v1/timestamps?batch_id=api1")
+        self.assertEqual(status, 200)
+        self.assertEqual(ts["total"], 1)
+        row = ts["items"][0]
+        self.assertEqual(row["base_dv_bound_at"], 1784699321)
+        self.assertEqual(row["snapshot_created_at"], 1784699330)
+        self.assertEqual(row["snapshot_ready_at"], 1784699335)
 
 
 if __name__ == "__main__":

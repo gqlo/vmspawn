@@ -537,6 +537,11 @@ async function renderRun(app, batchId) {
       <div class="grid-2" style="margin-top:1rem">
         <dl class="kv">
           <dt>Started</dt><dd class="mono">${escapeHtml(fmtTs(b.started_at))}</dd>
+          <dt>Base DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_created_at))}</dd>
+          <dt>Base DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_ready_at))}</dd>
+          <dt>Base DV bound</dt><dd class="mono">${escapeHtml(fmtTs(b.base_dv_bound_at))}</dd>
+          <dt>Snapshot created</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_created_at))}</dd>
+          <dt>Snapshot ready</dt><dd class="mono">${escapeHtml(fmtTs(b.snapshot_ready_at))}</dd>
           <dt>DV created</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_created_at))}</dd>
           <dt>DV ready</dt><dd class="mono">${escapeHtml(fmtTs(b.dv_ready_at))}</dd>
           <dt>PVC created</dt><dd class="mono">${escapeHtml(fmtTs(b.pvc_created_at))}</dd>

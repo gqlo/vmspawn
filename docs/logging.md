@@ -75,11 +75,13 @@ After each successful run, a manifest file is written:
 
 ```
 logs/batch-{BATCH_ID}.manifest
+logs/batch-{BATCH_ID}.manifest.json   # full JSON body POSTed to RESULT_SERVER_URL (when set)
+logs/batch-{BATCH_ID}.dv-created.json # DV/PVC timestamp collect sidecar (when non-empty)
 ```
 
 For example: `logs/batch-a3f7b2.manifest`
 
-The manifest is a YAML-like summary of what was created:
+The text manifest is a YAML-like summary of what was created:
 
 ```yaml
 batch-id: a3f7b2
@@ -91,16 +93,19 @@ namespaces: vm-a3f7b2-ns-1, vm-a3f7b2-ns-2
 vms: vm-a3f7b2-ns-1/rhel9-a3f7b2-1, vm-a3f7b2-ns-1/rhel9-a3f7b2-2, ...
 ```
 
-When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the workload-result collector as JSON (`record_type: "manifest"`). See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
+When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the workload-result collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
 
 ### Listing batches
 
 ```bash
 # List all batch manifests
-ls logs/*.manifest
+ls logs/*.manifest*
 
-# View a specific batch manifest
+# View a specific batch manifest (text summary)
 cat logs/batch-a3f7b2.manifest
+
+# View the exact JSON uploaded to the result server
+cat logs/batch-a3f7b2.manifest.json
 ```
 
 ### Cleanup

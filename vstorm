@@ -1054,6 +1054,97 @@ wait_for_all_datavolumes() {
     log_message "${C_OK}All DataVolumes are completed successfully!${C_RST}"
 }
 
+# Wait for per-VM / data-disk DataVolumes before timestamp collect.
+# Base DVs are already waited during create_datavolumes; blank data DVs and
+# snapshot-clone DVs appear only after VM apply. Without --wait, create used to
+# collect immediately and leave data_dv_ready / data_pvc_bound empty in CSV.
+wait_for_batch_datavolumes_for_timestamps() {
+    if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
+	return 0
+    fi
+    # Containerdisk with no blank data disk: no extra DVs to wait on.
+    if [[ -n "$CONTAINERDISK_IMAGE" && -z "$DATA_DISK_SIZE" ]]; then
+	return 0
+    fi
+
+    local ns_json='[]'
+    if ((NUM_NAMESPACES > 0)); then
+	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"vm-{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
+    fi
+
+    log_message "${C_BOLD}Waiting for batch DataVolumes to Succeed (timestamp collect)...${C_RST}"
+    local -i deadline=$((SECONDS + 1800))
+    local pending_msg="" pending_n=0
+    while (( SECONDS < deadline )); do
+	pending_msg=$(
+	    BID="$BATCH_ID" NS_JSON="$ns_json" python3 - <<'PY'
+import json, os, subprocess
+
+batch_id = (os.environ.get("BID") or "").strip()
+try:
+    ns_set = set(json.loads(os.environ.get("NS_JSON") or "[]"))
+except json.JSONDecodeError:
+    ns_set = set()
+
+try:
+    raw = subprocess.check_output(
+        ["oc", "get", "datavolume", "-A", "-o", "json"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    doc = json.loads(raw) if raw.strip() else {}
+except Exception:
+    print("oc-error")
+    raise SystemExit(0)
+
+pending = []
+for it in doc.get("items") or []:
+    md = it.get("metadata") or {}
+    name = md.get("name") or ""
+    ns = md.get("namespace") or ""
+    labels = md.get("labels") or {}
+    if not name:
+        continue
+    in_batch = (batch_id and str(labels.get("batch-id") or "") == batch_id) or (ns in ns_set)
+    if not in_batch:
+        continue
+    phase = str(((it.get("status") or {}).get("phase") or "") or "Pending")
+    ready = False
+    bound = False
+    for c in ((it.get("status") or {}).get("conditions") or []):
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "Ready" and c.get("status") == "True":
+            ready = True
+        if c.get("type") == "Bound" and c.get("status") == "True":
+            bound = True
+    if phase == "Failed":
+        pending.append(f"{ns}/{name}:Failed")
+    elif phase != "Succeeded" and not (ready and bound):
+        pending.append(f"{ns}/{name}:{phase or 'Pending'}")
+
+if not pending:
+    print("0")
+else:
+    print(f"{len(pending)}:{','.join(pending[:5])}")
+PY
+	)
+	if [[ "$pending_msg" == "0" ]]; then
+	    log_message "${C_OK}Batch DataVolumes Succeeded (Ready/Bound) — collecting timestamps${C_RST}"
+	    return 0
+	fi
+	if [[ "$pending_msg" == "oc-error" ]]; then
+	    log_message "${C_WARN}Could not list DataVolumes; collecting timestamps without wait${C_RST}"
+	    return 0
+	fi
+	pending_n=${pending_msg%%:*}
+	log_message "Waiting for ${C_VAL}${pending_n}${C_RST} DataVolume(s): ${C_WARN}${pending_msg#*:}${C_RST}"
+	sleep 5
+    done
+    log_message "${C_WARN}Timed out waiting for DataVolumes; collecting timestamps anyway${C_RST}"
+    return 0
+}
+
 create_datavolumes() {
     # In no-snapshot mode with a DataSource, each VM's DataVolumeTemplate
     # clones directly from the DataSource -- no intermediate base DV needed.
@@ -1162,354 +1253,26 @@ collect_batch_dv_created_json() {
     #    "Argument list too long" and a silent {} fallback (empty CSV columns).
     # 2) Avoid bash "${var:-{}}" which parses as default "{" plus a literal "}"
     #    and corrupts JSON with a trailing brace.
-    local dv_file pvc_file py_rc=0 out_json=""
+    local dv_file pvc_file vs_file py_rc=0 out_json=""
     dv_file=$(mktemp)
     pvc_file=$(mktemp)
+    vs_file=$(mktemp)
     if ! oc get datavolume -A -o json > "$dv_file" 2>/dev/null; then
 	printf '%s\n' '{}' > "$dv_file"
     fi
     if ! oc get pvc -A -o json > "$pvc_file" 2>/dev/null; then
 	printf '%s\n' '{}' > "$pvc_file"
     fi
+    if ! oc get volumesnapshot -A -o json > "$vs_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$vs_file"
+    fi
+    local collector
+    collector="$(cd "$(dirname "$0")" && pwd)/monitoring/workload-result/collect_batch_dv_created.py"
     out_json=$(
 	BASENAME="$VM_BASENAME" BATCH_ID="$BATCH_ID" VM_JSON="$vm_json" NS_JSON="$ns_json" \
-	DV_JSON_FILE="$dv_file" PVC_JSON_FILE="$pvc_file" python3 -c '
-import json, os
-from datetime import datetime, timezone
-
-def to_iso_z(ts):
-    if not ts:
-        return None
-    s = str(ts).strip()
-    if s.endswith("Z"):
-        return s
-    try:
-        if s.endswith("+00:00"):
-            return s[:-6] + "Z"
-        dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    except ValueError:
-        return s
-
-def load_env_json(key, default=None):
-    raw = os.environ.get(key) or ""
-    if not raw.strip():
-        return {} if default is None else default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {} if default is None else default
-
-def load_json_file(path_key, default=None):
-    path = (os.environ.get(path_key) or "").strip()
-    if not path:
-        return {} if default is None else default
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            raw = f.read()
-    except OSError:
-        return {} if default is None else default
-    if not raw.strip():
-        return {} if default is None else default
-    try:
-        return json.loads(raw)
-    except json.JSONDecodeError:
-        return {} if default is None else default
-
-basename = (os.environ.get("BASENAME") or "").strip()
-batch_id = (os.environ.get("BATCH_ID") or "").strip()
-vms = load_env_json("VM_JSON", [])
-ns_list = load_env_json("NS_JSON", [])
-ns_set = {str(n) for n in ns_list if n}
-for entry in vms:
-    entry_s = str(entry)
-    ns, _, name = entry_s.partition("/")
-    if ns:
-        ns_set.add(ns)
-ns_prefix = f"vm-{batch_id}-ns-" if batch_id else None
-
-vm_names = set()
-for entry in vms:
-    entry_s = str(entry)
-    ns, _, name = entry_s.partition("/")
-    if not name:
-        name = entry_s
-    if name:
-        vm_names.add(name)
-
-def in_batch_ns(ns, labels=None):
-    labels = labels or {}
-    if batch_id and str(labels.get("batch-id") or "") == batch_id:
-        return True
-    if ns_set:
-        return ns in ns_set
-    if ns_prefix:
-        return ns.startswith(ns_prefix)
-    return False
-
-def classify(name):
-    if not name:
-        return "other"
-    if name.endswith("-data"):
-        return "data"
-    if basename and name == f"{basename}-base":
-        return "base"
-    if name in vm_names:
-        return "root"
-    return "other"
-
-def dv_condition_times(item):
-    """Return (ready_at, bound_at) from DV status.conditions."""
-    status = item.get("status") or {}
-    ready_ts = None
-    completed_ts = None
-    bound_ts = None
-    for c in status.get("conditions") or []:
-        if not isinstance(c, dict):
-            continue
-        t = to_iso_z(c.get("lastTransitionTime") or "")
-        if not t:
-            continue
-        ctype = str(c.get("type") or "")
-        cstatus = str(c.get("status") or "")
-        reason = str(c.get("reason") or "")
-        if ctype == "Ready" and cstatus == "True":
-            ready_ts = t
-        elif ctype == "Running" and reason == "Completed":
-            completed_ts = t
-        elif ctype == "Bound" and cstatus == "True":
-            bound_ts = t
-    return (ready_ts or completed_ts), bound_ts
-
-def collect_pvc_items(doc):
-    out = []
-    for it in (doc.get("items") or []):
-        md = it.get("metadata") or {}
-        name = md.get("name") or ""
-        ns = md.get("namespace") or ""
-        created = to_iso_z(md.get("creationTimestamp") or "")
-        if not name or not created:
-            continue
-        if not in_batch_ns(ns, md.get("labels") or {}):
-            continue
-        role = classify(name)
-        if role == "other" and name.endswith("-data"):
-            role = "data"
-        out.append({"namespace": ns, "name": name, "created_at": created, "role": role})
-    out.sort(key=lambda d: (d["created_at"], d["namespace"], d["name"]))
-    return out
-
-def collect_dv_items(doc):
-    out = []
-    for it in (doc.get("items") or []):
-        md = it.get("metadata") or {}
-        name = md.get("name") or ""
-        ns = md.get("namespace") or ""
-        created = to_iso_z(md.get("creationTimestamp") or "")
-        if not name or not created:
-            continue
-        if not in_batch_ns(ns, md.get("labels") or {}):
-            continue
-        role = classify(name)
-        if role == "other" and name.endswith("-data"):
-            role = "data"
-        entry = {
-            "namespace": ns,
-            "name": name,
-            "created_at": created,
-            "role": role,
-        }
-        ready, bound = dv_condition_times(it)
-        if ready:
-            entry["ready_at"] = ready
-        if bound:
-            entry["bound_at"] = bound
-        phase = ((it.get("status") or {}).get("phase") or "")
-        if phase:
-            entry["phase"] = str(phase)
-        # Prefer claimName from DV status when present (usually same as DV name).
-        claim = ((it.get("status") or {}).get("claimName") or "").strip()
-        if claim:
-            entry["claim_name"] = claim
-        out.append(entry)
-    out.sort(key=lambda d: (d["created_at"], d["namespace"], d["name"]))
-    return out
-
-dv_doc = load_json_file("DV_JSON_FILE")
-pvc_doc = load_json_file("PVC_JSON_FILE")
-dv_created = collect_dv_items(dv_doc)
-pvc_created = collect_pvc_items(pvc_doc)
-
-# Annotate PVCs with bound_at from owning DV (same ns + claim/name match).
-dv_bound_by_claim = {}
-for d in dv_created:
-    if not d.get("bound_at"):
-        continue
-    claim = d.get("claim_name") or d["name"]
-    dv_bound_by_claim[(d["namespace"], claim)] = d["bound_at"]
-    # Also key by DV name in case claim differs but PVC shares DV name.
-    dv_bound_by_claim[(d["namespace"], d["name"])] = d["bound_at"]
-
-for p in pvc_created:
-    b = dv_bound_by_claim.get((p["namespace"], p["name"]))
-    if b:
-        p["bound_at"] = b
-
-out = {}
-if dv_created:
-    out["dv_created"] = dv_created
-    out["dv_created_at"] = min(d["created_at"] for d in dv_created)
-    ready_vals = [d["ready_at"] for d in dv_created if d.get("ready_at")]
-    if ready_vals:
-        out["dv_ready_at"] = min(ready_vals)
-    bound_vals = [d["bound_at"] for d in dv_created if d.get("bound_at")]
-    if bound_vals:
-        out["dv_bound_at"] = min(bound_vals)
-
-by_ns_name = {(d["namespace"], d["name"]): d for d in dv_created}
-base_by_ns = {}
-base_ready_by_ns = {}
-base_bound_by_ns = {}
-for d in dv_created:
-    if d.get("role") == "base" or (basename and d["name"] == f"{basename}-base"):
-        base_by_ns[d["namespace"]] = d["created_at"]
-        if d.get("ready_at"):
-            base_ready_by_ns[d["namespace"]] = d["ready_at"]
-        if d.get("bound_at"):
-            base_bound_by_ns[d["namespace"]] = d["bound_at"]
-
-vm_dv = {}
-vm_data_dv = {}
-vm_dv_ready = {}
-vm_data_dv_ready = {}
-vm_dv_bound = {}
-vm_data_dv_bound = {}
-for entry in vms:
-    entry_s = str(entry)
-    ns, _, name = entry_s.partition("/")
-    if not name:
-        name = entry_s
-        ns = ""
-
-    def pick_dv(dv_name):
-        if ns and dv_name and (ns, dv_name) in by_ns_name:
-            return by_ns_name[(ns, dv_name)]
-        for d in dv_created:
-            if d["name"] == dv_name and (not ns or d["namespace"] == ns):
-                return d
-        return None
-
-    root = None
-    if name:
-        root = pick_dv(name)
-    if root is None and ns and ns in base_by_ns:
-        vm_dv[name] = base_by_ns[ns]
-        if ns in base_ready_by_ns:
-            vm_dv_ready[name] = base_ready_by_ns[ns]
-        if ns in base_bound_by_ns:
-            vm_dv_bound[name] = base_bound_by_ns[ns]
-    elif root is not None:
-        vm_dv[name] = root["created_at"]
-        if root.get("ready_at"):
-            vm_dv_ready[name] = root["ready_at"]
-        if root.get("bound_at"):
-            vm_dv_bound[name] = root["bound_at"]
-
-    data_name = f"{name}-data" if name else ""
-    data = pick_dv(data_name) if data_name else None
-    if data is not None:
-        vm_data_dv[name] = data["created_at"]
-        if data.get("ready_at"):
-            vm_data_dv_ready[name] = data["ready_at"]
-        if data.get("bound_at"):
-            vm_data_dv_bound[name] = data["bound_at"]
-
-if vm_dv:
-    out["vm_dv_created"] = vm_dv
-if vm_data_dv:
-    out["vm_data_dv_created"] = vm_data_dv
-if vm_dv_ready:
-    out["vm_dv_ready"] = vm_dv_ready
-if vm_data_dv_ready:
-    out["vm_data_dv_ready"] = vm_data_dv_ready
-if vm_dv_bound:
-    out["vm_dv_bound"] = vm_dv_bound
-if vm_data_dv_bound:
-    out["vm_data_dv_bound"] = vm_data_dv_bound
-
-if pvc_created:
-    out["pvc_created"] = pvc_created
-    out["pvc_created_at"] = min(d["created_at"] for d in pvc_created)
-    pvc_bound_vals = [d["bound_at"] for d in pvc_created if d.get("bound_at")]
-    if pvc_bound_vals:
-        out["pvc_bound_at"] = min(pvc_bound_vals)
-
-pvc_by_ns_name = {(d["namespace"], d["name"]): d for d in pvc_created}
-vm_pvc = {}
-vm_data_pvc = {}
-vm_pvc_bound = {}
-vm_data_pvc_bound = {}
-for entry in vms:
-    entry_s = str(entry)
-    ns, _, name = entry_s.partition("/")
-    if not name:
-        name = entry_s
-        ns = ""
-    root_pvc = None
-    if ns and name and (ns, name) in pvc_by_ns_name:
-        root_pvc = pvc_by_ns_name[(ns, name)]
-    elif name:
-        for d in pvc_created:
-            if d["name"] == name and d.get("role") in ("root", "other"):
-                if not ns or d["namespace"] == ns:
-                    root_pvc = d
-                    break
-    if root_pvc is None and ns and basename:
-        base_name = f"{basename}-base"
-        if (ns, base_name) in pvc_by_ns_name:
-            root_pvc = pvc_by_ns_name[(ns, base_name)]
-    if root_pvc is not None:
-        vm_pvc[name] = root_pvc["created_at"]
-        if root_pvc.get("bound_at"):
-            vm_pvc_bound[name] = root_pvc["bound_at"]
-        elif name in vm_dv_bound:
-            # Fallback: owning DV Bound even if PVC row lacked annotation.
-            vm_pvc_bound[name] = vm_dv_bound[name]
-    elif name in vm_dv_bound:
-        vm_pvc_bound[name] = vm_dv_bound[name]
-
-    data_name = f"{name}-data" if name else ""
-    data_pvc = None
-    if ns and data_name and (ns, data_name) in pvc_by_ns_name:
-        data_pvc = pvc_by_ns_name[(ns, data_name)]
-    elif data_name:
-        for d in pvc_created:
-            if d["name"] == data_name and (not ns or d["namespace"] == ns):
-                data_pvc = d
-                break
-    if data_pvc is not None:
-        vm_data_pvc[name] = data_pvc["created_at"]
-        if data_pvc.get("bound_at"):
-            vm_data_pvc_bound[name] = data_pvc["bound_at"]
-        elif name in vm_data_dv_bound:
-            vm_data_pvc_bound[name] = vm_data_dv_bound[name]
-    elif name in vm_data_dv_bound:
-        vm_data_pvc_bound[name] = vm_data_dv_bound[name]
-
-if vm_pvc:
-    out["vm_pvc_created"] = vm_pvc
-if vm_data_pvc:
-    out["vm_data_pvc_created"] = vm_data_pvc
-if vm_pvc_bound:
-    out["vm_pvc_bound"] = vm_pvc_bound
-if vm_data_pvc_bound:
-    out["vm_data_pvc_bound"] = vm_data_pvc_bound
-
-print(json.dumps(out))
-' 2>/dev/null) || py_rc=$?
-    rm -f "$dv_file" "$pvc_file"
+	DV_JSON_FILE="$dv_file" PVC_JSON_FILE="$pvc_file" VS_JSON_FILE="$vs_file" \
+	python3 "$collector" 2>/dev/null) || py_rc=$?
+    rm -f "$dv_file" "$pvc_file" "$vs_file"
     if [[ "$py_rc" -ne 0 || -z "$out_json" ]]; then
 	echo '{}'
 	return 0
@@ -1683,6 +1446,13 @@ if isinstance(dv_info, dict):
         "dv_created_at",
         "dv_ready_at",
         "dv_bound_at",
+        "base_dv",
+        "base_dv_created_at",
+        "base_dv_ready_at",
+        "base_dv_bound_at",
+        "snapshots",
+        "snapshot_created_at",
+        "snapshot_ready_at",
         "vm_dv_created",
         "vm_data_dv_created",
         "vm_dv_ready",
@@ -1710,19 +1480,88 @@ PY
     }
 
     local payload_file
-    payload_file=$(mktemp)
-    printf '%s\n' "$payload" > "$payload_file"
+    # Keep the exact JSON body posted to the result server for inspection.
+    if [[ -n "${LOG_DIR:-}" ]]; then
+	mkdir -p "$LOG_DIR"
+	payload_file="${LOG_DIR}/batch-${BATCH_ID}.manifest.json"
+    else
+	payload_file=$(mktemp)
+    fi
+    # Pretty-print for readability (same object curl uploads).
+    if ! printf '%s\n' "$payload" | python3 -c '
+import json, sys
+path = sys.argv[1]
+obj = json.load(sys.stdin)
+with open(path, "w", encoding="utf-8") as f:
+    json.dump(obj, f, indent=2, sort_keys=True)
+    f.write("\n")
+' "$payload_file" 2>/dev/null; then
+	printf '%s\n' "$payload" > "$payload_file"
+    fi
+    log_message "Manifest JSON written to: ${C_VAL}${payload_file}${C_RST}"
+
+    # Summarize DV/PVC timestamps included in this host-side POST (best-effort).
+    local ts_summary=""
+    ts_summary=$(
+	python3 -c '
+import json, sys
+try:
+    p = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("(timestamps unavailable)")
+    raise SystemExit(0)
+parts = []
+for k in (
+    "base_dv_created_at",
+    "base_dv_ready_at",
+    "base_dv_bound_at",
+    "snapshot_created_at",
+    "snapshot_ready_at",
+    "dv_created_at",
+    "dv_ready_at",
+    "pvc_created_at",
+    "pvc_bound_at",
+):
+    v = p.get(k)
+    if v:
+        parts.append(f"{k}={v}")
+counts = []
+for k, label in (
+    ("vm_dv_created", "vm_dv"),
+    ("vm_dv_ready", "vm_dv_ready"),
+    ("vm_pvc_created", "vm_pvc"),
+    ("vm_pvc_bound", "vm_pvc_bound"),
+    ("vm_data_dv_created", "data_dv"),
+    ("vm_data_dv_ready", "data_dv_ready"),
+    ("vm_data_pvc_created", "data_pvc"),
+    ("vm_data_pvc_bound", "data_pvc_bound"),
+    ("snapshots", "snapshots"),
+    ("base_dv", "base_dv"),
+):
+    m = p.get(k)
+    if isinstance(m, dict) and m:
+        counts.append(f"{label}={len(m)}")
+    elif isinstance(m, list) and m:
+        counts.append(f"{label}={len(m)}")
+if not parts and not counts:
+    print("no DV/PVC timestamps in payload")
+else:
+    print(", ".join(parts + counts))
+' "$payload_file" 2>/dev/null || echo "(timestamps unavailable)"
+    )
+    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} manifest (DV/PVC timestamps) to ${C_VAL}${url}${C_RST}"
+    log_message "  timestamps: ${C_VAL}${ts_summary}${C_RST}"
+
     local curl_args=(-sS -f -X POST -H "Content-Type: application/json" --data-binary @"$payload_file"
 	--connect-timeout 15 --max-time 60)
     if [[ -n "$token" ]]; then
 	curl_args+=(-H "Authorization: Bearer ${token}")
     fi
     if curl "${curl_args[@]}" "$url"; then
-	log_message "Posted manifest to ${C_VAL}$url${C_RST}"
+	log_message "Posted manifest for batch ${C_VAL}${BATCH_ID}${C_RST} to ${C_VAL}${url}${C_RST} (kept ${C_VAL}${payload_file}${C_RST})"
     else
-	log_message "${C_WARN}Failed to POST manifest to $url (create still succeeded)${C_RST}"
+	log_message "${C_WARN}Failed to POST manifest for batch ${BATCH_ID} to $url (create still succeeded; JSON kept at ${payload_file})${C_RST}"
     fi
-    rm -f "$payload_file"
 }
 
 ################################################################
@@ -2122,12 +1961,18 @@ delete_batch() {
     oc delete ns -l batch-id="$batch"
     log_message "${C_OK}All resources for batch ${C_VAL}'$batch'${C_RST} deleted${C_RST}"
 
-    # Clean up manifest file
-    local manifest="${LOG_DIR}/batch-${batch}.manifest"
-    if [[ -f "$manifest" ]] ; then
-        rm -f "$manifest"
-        log_message "Removed manifest: ${C_VAL}$manifest${C_RST}"
-    fi
+    # Clean up local batch artifacts
+    local f
+    for f in \
+	"${LOG_DIR}/batch-${batch}.manifest" \
+	"${LOG_DIR}/batch-${batch}.manifest.json" \
+	"${LOG_DIR}/batch-${batch}.dv-created.json"
+    do
+	if [[ -f "$f" ]] ; then
+	    rm -f "$f"
+	    log_message "Removed: ${C_VAL}$f${C_RST}"
+	fi
+    done
 }
 
 ################################################################
@@ -2418,8 +2263,21 @@ main() {
 	local ns_list=""
 	local vm_list=""
 	local dv_created_json="{}"
+	# Per-VM / blank data DVs are created with the VMs; wait for Succeeded
+	# so ready/bound timestamps are present even without --wait.
+	wait_for_batch_datavolumes_for_timestamps
 	dv_created_json=$(collect_batch_dv_created_json)
 	BATCH_DV_CREATED_JSON="$dv_created_json"
+	local base_dv_created_at_line=""
+	base_dv_created_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("base_dv_created_at") or "")' 2>/dev/null || true)
+	local base_dv_ready_at_line=""
+	base_dv_ready_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("base_dv_ready_at") or "")' 2>/dev/null || true)
+	local base_dv_bound_at_line=""
+	base_dv_bound_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("base_dv_bound_at") or "")' 2>/dev/null || true)
+	local snapshot_created_at_line=""
+	snapshot_created_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("snapshot_created_at") or "")' 2>/dev/null || true)
+	local snapshot_ready_at_line=""
+	snapshot_ready_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("snapshot_ready_at") or "")' 2>/dev/null || true)
 	local dv_created_at_line=""
 	dv_created_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("dv_created_at") or "")' 2>/dev/null || true)
 	local pvc_created_at_line=""
@@ -2443,6 +2301,11 @@ main() {
 	total-namespaces: $NUM_NAMESPACES
 	namespaces: $ns_list
 	vms: $vm_list
+	base-dv-created-at: ${base_dv_created_at_line:-}
+	base-dv-ready-at: ${base_dv_ready_at_line:-}
+	base-dv-bound-at: ${base_dv_bound_at_line:-}
+	snapshot-created-at: ${snapshot_created_at_line:-}
+	snapshot-ready-at: ${snapshot_ready_at_line:-}
 	dv-created-at: ${dv_created_at_line:-}
 	dv-ready-at: ${dv_ready_at_line:-}
 	pvc-created-at: ${pvc_created_at_line:-}

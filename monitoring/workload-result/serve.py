@@ -975,6 +975,11 @@ class Store:
             batch_started = detail.get("started_at")
             for v in detail.get("vms") or []:
                 boot = v.get("boot_timestamp_unix")
+                base_dv = v.get("base_dv_created_at_unix")
+                base_dv_ready = v.get("base_dv_ready_at_unix")
+                base_dv_bound = v.get("base_dv_bound_at_unix")
+                snap = v.get("snapshot_created_at_unix")
+                snap_ready = v.get("snapshot_ready_at_unix")
                 dv = v.get("dv_created_at_unix")
                 dv_ready = v.get("dv_ready_at_unix")
                 pvc = v.get("pvc_created_at_unix")
@@ -991,6 +996,11 @@ class Store:
                         "namespace": v.get("namespace"),
                         "vm_name": v.get("vm_name"),
                         "batch_started_at": batch_started,
+                        "base_dv_created_at": base_dv,
+                        "base_dv_ready_at": base_dv_ready,
+                        "base_dv_bound_at": base_dv_bound,
+                        "snapshot_created_at": snap,
+                        "snapshot_ready_at": snap_ready,
                         "dv_created_at": dv,
                         "dv_ready_at": dv_ready,
                         "pvc_created_at": pvc,
@@ -1095,6 +1105,11 @@ class Store:
             dv_ready_at = None
             pvc_created_at = None
             pvc_bound_at = None
+            base_dv_created_at = None
+            base_dv_ready_at = None
+            base_dv_bound_at = None
+            snapshot_created_at = None
+            snapshot_ready_at = None
             if batch_payload:
                 dv_created_at = _payload_unix(batch_payload, "dv_created_at")
                 dv_ready_at = _payload_unix(batch_payload, "dv_ready_at")
@@ -1102,6 +1117,11 @@ class Store:
                 pvc_bound_at = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
                     batch_payload, "dv_bound_at"
                 )
+                base_dv_created_at = _payload_unix(batch_payload, "base_dv_created_at")
+                base_dv_ready_at = _payload_unix(batch_payload, "base_dv_ready_at")
+                base_dv_bound_at = _payload_unix(batch_payload, "base_dv_bound_at")
+                snapshot_created_at = _payload_unix(batch_payload, "snapshot_created_at")
+                snapshot_ready_at = _payload_unix(batch_payload, "snapshot_ready_at")
             return {
                 **meta,
                 **stats,
@@ -1110,6 +1130,11 @@ class Store:
                 "dv_ready_at": dv_ready_at,
                 "pvc_created_at": pvc_created_at,
                 "pvc_bound_at": pvc_bound_at,
+                "base_dv_created_at": base_dv_created_at,
+                "base_dv_ready_at": base_dv_ready_at,
+                "base_dv_bound_at": base_dv_bound_at,
+                "snapshot_created_at": snapshot_created_at,
+                "snapshot_ready_at": snapshot_ready_at,
                 "vms": vms,
                 "vm_summary": summary,
                 "series": [dict(r) for r in series],
@@ -1251,10 +1276,20 @@ class Store:
             _payload_unix(batch_payload, "pvc_created_at") if batch_payload else None
         )
         batch_pvc_bound_unix = None
+        batch_base_dv_unix = None
+        batch_base_dv_ready_unix = None
+        batch_base_dv_bound_unix = None
+        batch_snapshot_unix = None
+        batch_snapshot_ready_unix = None
         if batch_payload:
             batch_pvc_bound_unix = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
                 batch_payload, "dv_bound_at"
             )
+            batch_base_dv_unix = _payload_unix(batch_payload, "base_dv_created_at")
+            batch_base_dv_ready_unix = _payload_unix(batch_payload, "base_dv_ready_at")
+            batch_base_dv_bound_unix = _payload_unix(batch_payload, "base_dv_bound_at")
+            batch_snapshot_unix = _payload_unix(batch_payload, "snapshot_created_at")
+            batch_snapshot_ready_unix = _payload_unix(batch_payload, "snapshot_ready_at")
 
         def _unix_map(key: str) -> dict[str, int]:
             out: dict[str, int] = {}
@@ -1280,6 +1315,11 @@ class Store:
             vm_data_pvc_bound_map = _unix_map("vm_data_dv_bound")
 
         for name, cur in named.items():
+            cur["base_dv_created_at_unix"] = batch_base_dv_unix
+            cur["base_dv_ready_at_unix"] = batch_base_dv_ready_unix
+            cur["base_dv_bound_at_unix"] = batch_base_dv_bound_unix
+            cur["snapshot_created_at_unix"] = batch_snapshot_unix
+            cur["snapshot_ready_at_unix"] = batch_snapshot_ready_unix
             cur["dv_created_at_unix"] = vm_dv_map.get(name, batch_dv_unix)
             cur["dv_ready_at_unix"] = vm_dv_ready_map.get(name, batch_dv_ready_unix)
             cur["pvc_created_at_unix"] = vm_pvc_map.get(name, batch_pvc_unix)

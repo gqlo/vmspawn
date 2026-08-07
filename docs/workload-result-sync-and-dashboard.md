@@ -185,15 +185,18 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
 - **Collector:** when `RESULT_SERVER_URL` and `VSTORM_BATCH_ID` are set, the unit POSTs a `record_type: "heartbeat"` / `workload_kind: "boot"` payload with `boot_timestamp`. The dashboard indexes that for create→boot charts/CSV even when no fio (or other) **result** has arrived yet.
 - **Fio:** still embeds `boot_timestamp` on its result POST (reads the same file; does not own the write). Other profiles (stress-ng, dirty-mem, default) rely on the boot heartbeat for collector boot times.
 - **DV created:** vstorm lists DataVolumes in batch namespaces (and any with `batch-id`) and adds `dv_created_at` (earliest), `dv_created` (list with `role`, `ready_at`, `phase`), and `vm_dv_created` / `vm_data_dv_created` (per-VM root / data DV create times) to the host **manifest**.
+- **Base DV (import):** when the create path uses `{basename}-base`, the manifest also includes batch-level `base_dv_created_at` / `base_dv_ready_at` / `base_dv_bound_at` (and a `base_dv` list). These are distinct from per-VM clone `dv_*`.
+- **VolumeSnapshot:** with snapshot cloning, `snapshot_created_at` / `snapshot_ready_at` (and a `snapshots` list) are posted from VolumeSnapshot `creationTimestamp` and Ready condition.
 - **DV ready (clone completed):** from DV `status.conditions` — prefer `Ready=True` `lastTransitionTime`, else `Running` reason `Completed`. Exposed as `dv_ready_at`, per-entry `ready_at`, and `vm_dv_ready` / `vm_data_dv_ready`. Smart snapshot clones often complete in ~1–2s.
 - **PVC created:** vstorm lists PVCs in batch namespaces and adds `pvc_created_at`, `pvc_created`, `vm_pvc_created` (root), and `vm_data_pvc_created` (blank data disk). Blank data DataVolumes are labeled `batch-id` so they appear in the DV list.
 - The dashboard histogram/summary uses **DV create → boot** when those fields exist
   (else vstorm `started_at` → boot). Boot-times / all-timestamps CSVs include absolute
-  UTC columns: `batch_started_at_utc`, `dv_created_at_utc`, `dv_ready_at_utc`,
-  `pvc_created_at_utc`, `pvc_bound_at_utc`, `data_dv_created_at_utc`,
-  `data_dv_ready_at_utc`, `data_pvc_created_at_utc`, `data_pvc_bound_at_utc`,
-  `boot_timestamp_utc` (plus identity fields). PVC bound time comes from the owning DV
-  `Bound=True` condition (`lastTransitionTime`).
+  UTC columns: `batch_started_at_utc`, `base_dv_created_at_utc`, `base_dv_ready_at_utc`,
+  `base_dv_bound_at_utc`, `snapshot_created_at_utc`, `snapshot_ready_at_utc`,
+  `dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`, `pvc_bound_at_utc`,
+  `data_dv_created_at_utc`, `data_dv_ready_at_utc`, `data_pvc_created_at_utc`,
+  `data_pvc_bound_at_utc`, `boot_timestamp_utc` (plus identity fields). PVC bound time
+  comes from the owning DV `Bound=True` condition (`lastTransitionTime`).
 
 Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) (keep embedded `write_files` copies in sync).
 
@@ -211,6 +214,11 @@ One `record_type: "manifest"` / `source: "vstorm"` POST after successful create 
   "reported_at": "2026-07-22T05:50:00Z",
   "started_at": "2026-07-22T05:48:20Z",
   "stopped_at": "2026-07-22T05:50:00Z",
+  "base_dv_created_at": "2026-07-22T05:48:30Z",
+  "base_dv_ready_at": "2026-07-22T05:48:40Z",
+  "base_dv_bound_at": "2026-07-22T05:48:41Z",
+  "snapshot_created_at": "2026-07-22T05:48:42Z",
+  "snapshot_ready_at": "2026-07-22T05:48:44Z",
   "dv_created_at": "2026-07-22T05:48:45Z",
   "dv_ready_at": "2026-07-22T05:48:47Z",
   "vm_dv_created": {
@@ -490,12 +498,16 @@ Example: `10 created · 8 contacted · 8 VMI running · 2 workload running · 4 
 | PVC created | Per-VM root PVC `creationTimestamp` (data PVC in CSV only) |
 | Boot | Boot timestamp when known |
 
+Batch detail also shows base DV create/ready/bound and VolumeSnapshot create/ready when the
+manifest includes them (snapshot create path).
+
 **Charts:** histogram of **DV create → guest boot** duration (per-VM or batch
 `dv_created_at` from the manifest, falling back to batch `started_at`) to per-VM
 `boot_timestamp`, with min / avg / max. CSV download includes absolute UTC timestamps
-(`dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`, `pvc_bound_at_utc`,
-`data_dv_created_at_utc`, `data_dv_ready_at_utc`, `data_pvc_created_at_utc`,
-`data_pvc_bound_at_utc`, `boot_timestamp_utc`, etc.), not derived duration columns.
+(`base_dv_*`, `snapshot_*`, `dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`,
+`pvc_bound_at_utc`, `data_dv_created_at_utc`, `data_dv_ready_at_utc`,
+`data_pvc_created_at_utc`, `data_pvc_bound_at_utc`, `boot_timestamp_utc`, etc.), not
+derived duration columns.
 
 ### 3. VM detail
 

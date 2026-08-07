@@ -156,6 +156,11 @@
       "vm_name",
       "namespace",
       "batch_started_at_utc",
+      "base_dv_created_at_utc",
+      "base_dv_ready_at_utc",
+      "base_dv_bound_at_utc",
+      "snapshot_created_at_utc",
+      "snapshot_ready_at_utc",
       "dv_created_at_utc",
       "dv_ready_at_utc",
       "pvc_created_at_utc",
@@ -170,6 +175,11 @@
     const rows = [header.join(",")];
     for (const v of vms || []) {
       const boot = v.boot_timestamp_unix;
+      const baseDv = v.base_dv_created_at_unix;
+      const baseDvReady = v.base_dv_ready_at_unix;
+      const baseDvBound = v.base_dv_bound_at_unix;
+      const snap = v.snapshot_created_at_unix;
+      const snapReady = v.snapshot_ready_at_unix;
       const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
       const dvReady = v.dv_ready_at_unix;
       const pvc = v.pvc_created_at_unix;
@@ -184,6 +194,11 @@
           csvEscape(v.vm_name),
           csvEscape(v.namespace || ""),
           csvEscape(startedIso === "—" ? "" : startedIso),
+          csvEscape(baseDv != null ? fmtTs(baseDv) : ""),
+          csvEscape(baseDvReady != null ? fmtTs(baseDvReady) : ""),
+          csvEscape(baseDvBound != null ? fmtTs(baseDvBound) : ""),
+          csvEscape(snap != null ? fmtTs(snap) : ""),
+          csvEscape(snapReady != null ? fmtTs(snapReady) : ""),
           csvEscape(dv != null ? fmtTs(dv) : ""),
           csvEscape(dvReady != null ? fmtTs(dvReady) : ""),
           csvEscape(pvc != null ? fmtTs(pvc) : ""),
@@ -239,6 +254,11 @@
       "vm_name",
       "namespace",
       "batch_started_at_utc",
+      "base_dv_created_at_utc",
+      "base_dv_ready_at_utc",
+      "base_dv_bound_at_utc",
+      "snapshot_created_at_utc",
+      "snapshot_ready_at_utc",
       "dv_created_at_utc",
       "dv_ready_at_utc",
       "pvc_created_at_utc",
@@ -259,6 +279,11 @@
           csvEscape(it.vm_name || ""),
           csvEscape(it.namespace || ""),
           csvEscape(it.batch_started_at != null ? fmtTs(it.batch_started_at) : ""),
+          csvEscape(it.base_dv_created_at != null ? fmtTs(it.base_dv_created_at) : ""),
+          csvEscape(it.base_dv_ready_at != null ? fmtTs(it.base_dv_ready_at) : ""),
+          csvEscape(it.base_dv_bound_at != null ? fmtTs(it.base_dv_bound_at) : ""),
+          csvEscape(it.snapshot_created_at != null ? fmtTs(it.snapshot_created_at) : ""),
+          csvEscape(it.snapshot_ready_at != null ? fmtTs(it.snapshot_ready_at) : ""),
           csvEscape(it.dv_created_at != null ? fmtTs(it.dv_created_at) : ""),
           csvEscape(it.dv_ready_at != null ? fmtTs(it.dv_ready_at) : ""),
           csvEscape(it.pvc_created_at != null ? fmtTs(it.pvc_created_at) : ""),

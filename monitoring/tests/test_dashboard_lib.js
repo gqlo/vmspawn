@@ -124,12 +124,48 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
+      "batch_id,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("a1b2c3,vm-a,ns1,"));
     assert.ok(lines[1].includes("vm-a"));
     assert.ok(lines[2].includes("vm-b"));
     assert.ok(lines[3].includes("vm-c"));
+  });
+
+  it("fills base DV and snapshot columns in boot times CSV", () => {
+    const rich = [
+      {
+        vm_name: "vm-a",
+        namespace: "ns1",
+        boot_timestamp_unix: 1100,
+        base_dv_created_at_unix: 1005,
+        base_dv_ready_at_unix: 1010,
+        base_dv_bound_at_unix: 1011,
+        snapshot_created_at_unix: 1015,
+        snapshot_ready_at_unix: 1018,
+        dv_created_at_unix: 1020,
+        dv_ready_at_unix: 1022,
+        pvc_created_at_unix: 1025,
+        pvc_bound_at_unix: 1026,
+        data_dv_created_at_unix: 1028,
+        data_dv_ready_at_unix: 1029,
+        data_pvc_created_at_unix: 1030,
+        data_pvc_bound_at_unix: 1031,
+      },
+    ];
+    const csv = lib.buildBootTimesCsv("a1b2c3", rich, started, dvCreated);
+    const cols = csv.trim().split("\n")[1].split(",");
+    assert.equal(cols[0], "a1b2c3");
+    assert.equal(cols[1], "vm-a");
+    assert.equal(cols[2], "ns1");
+    assert.equal(cols[3], lib.fmtTs(started));
+    assert.equal(cols[4], lib.fmtTs(1005));
+    assert.equal(cols[5], lib.fmtTs(1010));
+    assert.equal(cols[6], lib.fmtTs(1011));
+    assert.equal(cols[7], lib.fmtTs(1015));
+    assert.equal(cols[8], lib.fmtTs(1018));
+    assert.equal(cols[9], lib.fmtTs(1020));
+    assert.equal(cols[17], lib.fmtTs(1100));
   });
 
   it("builds cross-batch timestamps CSV", () => {
@@ -141,6 +177,11 @@ describe("boot durations and CSV", () => {
         vm_name: "vm-a",
         namespace: "ns1",
         batch_started_at: 1000,
+        base_dv_created_at: 1005,
+        base_dv_ready_at: 1010,
+        base_dv_bound_at: 1011,
+        snapshot_created_at: 1015,
+        snapshot_ready_at: 1018,
         dv_created_at: 1020,
         dv_ready_at: 1022,
         pvc_created_at: 1025,
@@ -155,10 +196,32 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
+      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("b1,rhel9,workload/x.yaml,vm-a,ns1,"));
     assert.ok(lines[1].endsWith(lib.fmtTs(1100)));
+    const cols = lines[1].split(",");
+    assert.equal(cols[6], lib.fmtTs(1005));
+    assert.equal(cols[7], lib.fmtTs(1010));
+    assert.equal(cols[8], lib.fmtTs(1011));
+    assert.equal(cols[9], lib.fmtTs(1015));
+    assert.equal(cols[10], lib.fmtTs(1018));
+  });
+
+  it("leaves base/snapshot CSV cells empty when absent", () => {
+    const csv = lib.buildBootTimesCsv(
+      "a1b2c3",
+      [{ vm_name: "vm-a", namespace: "ns1", boot_timestamp_unix: 1045, dv_created_at_unix: 1020 }],
+      started,
+      dvCreated
+    );
+    const cols = csv.trim().split("\n")[1].split(",");
+    assert.equal(cols[4], "");
+    assert.equal(cols[5], "");
+    assert.equal(cols[6], "");
+    assert.equal(cols[7], "");
+    assert.equal(cols[8], "");
+    assert.equal(cols[9], lib.fmtTs(1020));
   });
 
   it("escapes CSV fields", () => {
