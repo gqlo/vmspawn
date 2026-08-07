@@ -239,6 +239,8 @@ class Store:
                     notes TEXT,
                     archived INTEGER NOT NULL DEFAULT 0,
                     batch_result_id TEXT,
+                    api_server TEXT,
+                    namespaces_json TEXT,
                     updated_at INTEGER
                 );
 
@@ -295,6 +297,12 @@ class Store:
             self._conn.execute("ALTER TABLE results ADD COLUMN error_message TEXT")
         if "source" not in cols:
             self._conn.execute("ALTER TABLE results ADD COLUMN source TEXT")
+        batch_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(batches)")}
+        # List-view metadata (avoid loading full manifest JSON on GET /v1/batches).
+        if "api_server" not in batch_cols:
+            self._conn.execute("ALTER TABLE batches ADD COLUMN api_server TEXT")
+        if "namespaces_json" not in batch_cols:
+            self._conn.execute("ALTER TABLE batches ADD COLUMN namespaces_json TEXT")
         pol_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(vm_policies)")}
         if "last_poll_at" not in pol_cols:
             self._conn.execute("ALTER TABLE vm_policies ADD COLUMN last_poll_at INTEGER")
@@ -449,12 +457,15 @@ class Store:
                         """,
                         (old["batch_result_id"],),
                     )
+                namespaces = _payload_namespaces(payload)
+                api_server = _payload_api_server(payload)
                 self._conn.execute(
                     """
                     INSERT INTO batches (
                         batch_id, basename, total_vms, total_namespaces, started_at, stopped_at,
-                        cloudinit, cores, memory, batch_result_id, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        cloudinit, cores, memory, batch_result_id, api_server, namespaces_json,
+                        updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(batch_id) DO UPDATE SET
                         basename=excluded.basename,
                         total_vms=excluded.total_vms,
@@ -465,6 +476,8 @@ class Store:
                         cores=excluded.cores,
                         memory=excluded.memory,
                         batch_result_id=excluded.batch_result_id,
+                        api_server=excluded.api_server,
+                        namespaces_json=excluded.namespaces_json,
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -478,6 +491,8 @@ class Store:
                         payload.get("cores"),
                         payload.get("memory"),
                         result_id,
+                        api_server,
+                        json.dumps(namespaces),
                         now,
                     ),
                 )
@@ -817,7 +832,11 @@ class Store:
         date_from: str | None = None,
         date_to: str | None = None,
     ) -> dict[str, Any]:
-        """Return filtered batch list plus filter facets from the full inventory."""
+        """Return filtered batch list plus filter facets from the full inventory.
+
+        Uses denormalized list metadata (api_server, namespaces_json) and SQL-based
+        vm_summary so listing never loads full manifest payloads.
+        """
         with self._lock:
             rows = self._conn.execute("SELECT * FROM batches").fetchall()
 
@@ -828,11 +847,7 @@ class Store:
 
             enriched: list[dict[str, Any]] = []
             for row in rows:
-                bp = None
-                if row["batch_result_id"]:
-                    bp = self._load_result_payload(row["batch_result_id"])
-                namespaces = _payload_namespaces(bp)
-                api = _payload_api_server(bp)
+                namespaces, api = self._batch_list_meta(row)
                 facet_batch.add(str(row["batch_id"]))
                 if api:
                     facet_api.add(api)
@@ -845,11 +860,13 @@ class Store:
                 item.update(stats)
                 item["namespaces"] = namespaces
                 item["api_server"] = api
-                vms = self._vms_for_batch(row["batch_id"], bp)
-                item["vm_summary"] = self._vm_summary(vms, row["total_vms"])
+                item["vm_summary"] = self._list_vm_summary(
+                    row["batch_id"], row["total_vms"]
+                )
+                # Drop raw JSON column from API response.
+                item.pop("namespaces_json", None)
                 sort_ts = row["started_at"] or stats.get("first_cycle_at") or row["updated_at"] or 0
                 item["_sort"] = sort_ts
-                item["_bp"] = bp
                 enriched.append(item)
 
             # Date window (UTC calendar days). today=1 wins over date=YYYY-MM-DD.
@@ -925,7 +942,6 @@ class Store:
             out.sort(key=lambda x: x.get("_sort") or 0, reverse=True)
             for item in out:
                 item.pop("_sort", None)
-                item.pop("_bp", None)
             return {
                 "items": out,
                 "facets": {
@@ -934,6 +950,113 @@ class Store:
                     "api_servers": sorted(facet_api),
                 },
             }
+
+    def _batch_list_meta(self, row: sqlite3.Row) -> tuple[list[str], str | None]:
+        """Return (namespaces, api_server) for a batches row; backfill once if missing."""
+        keys = row.keys()
+        namespaces: list[str] = []
+        api: str | None = None
+        raw_ns = row["namespaces_json"] if "namespaces_json" in keys else None
+        if isinstance(raw_ns, str) and raw_ns.strip():
+            try:
+                parsed = json.loads(raw_ns)
+                if isinstance(parsed, list):
+                    namespaces = [str(x) for x in parsed if x is not None and str(x).strip()]
+            except json.JSONDecodeError:
+                namespaces = []
+        if "api_server" in keys and row["api_server"]:
+            api = str(row["api_server"]).strip() or None
+
+        # Legacy rows (namespaces_json NULL): extract from manifest once and persist.
+        # namespaces_json set (including "[]") means list meta is already populated.
+        if raw_ns is None:
+            if row["batch_result_id"]:
+                bp = self._load_result_payload(row["batch_result_id"])
+                if bp is not None:
+                    namespaces = _payload_namespaces(bp)
+                    api = _payload_api_server(bp)
+            self._conn.execute(
+                """
+                UPDATE batches
+                SET api_server = ?, namespaces_json = ?
+                WHERE batch_id = ?
+                """,
+                (api, json.dumps(namespaces), row["batch_id"]),
+            )
+            self._conn.commit()
+        return namespaces, api
+
+    def _list_vm_summary(
+        self, batch_id: str, total_vms: int | None
+    ) -> dict[str, Any]:
+        """Workload status counts for the batch list without loading the manifest."""
+        now = int(time.time())
+        stale_after = 120
+        known: dict[str, str] = {}
+        vmi_known = 0
+        vmi_running = 0
+
+        for pol in self._conn.execute(
+            "SELECT * FROM vm_policies WHERE batch_id = ?", (batch_id,)
+        ):
+            name = pol["vm_name"]
+            if not name:
+                continue
+            p = self._policy_row_to_dict(pol, batch_id, name)
+            phase = p.get("vmi_phase")
+            if phase:
+                vmi_known += 1
+                if str(phase).strip().lower() == "running":
+                    vmi_running += 1
+            last = p.get("last_poll_at") or p.get("last_status_at")
+            if p.get("agent_state") == "running":
+                st = "running"
+            elif p.get("agent_state") == "error":
+                st = "error"
+            elif last and (now - int(last)) > stale_after:
+                st = "stale"
+            elif p["mode"] == "forever" or (p["mode"] == "count" and p["remaining"] > 0):
+                st = "queued"
+            else:
+                st = "idle"
+            known[name] = st
+
+        for r in self._conn.execute(
+            """
+            SELECT DISTINCT COALESCE(vm_name, hostname) AS name
+            FROM results
+            WHERE batch_id = ?
+              AND record_type IN ('result', 'cycle', 'heartbeat', 'status')
+              AND COALESCE(vm_name, hostname) IS NOT NULL
+            """,
+            (batch_id,),
+        ):
+            name = r["name"]
+            if name and name not in known:
+                known[name] = "waiting"
+
+        configured = int(total_vms) if total_vms is not None else len(known)
+        counts = {
+            "configured": configured,
+            "checked_in": 0,
+            "idle": 0,
+            "running": 0,
+            "queued": 0,
+            "waiting": 0,
+            "error": 0,
+            "stale": 0,
+            "vmi_running": None,
+        }
+        for st in known.values():
+            if st in counts:
+                counts[st] += 1
+            if st != "waiting":
+                counts["checked_in"] += 1
+        waiting_extra = max(0, configured - len(known))
+        counts["waiting"] += waiting_extra
+        if vmi_known:
+            counts["vmi_running"] = vmi_running
+        return counts
 
     def list_vm_timestamps(
         self,

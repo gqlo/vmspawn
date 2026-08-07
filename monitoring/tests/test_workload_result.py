@@ -767,6 +767,101 @@ class TestStoreQueries(unittest.TestCase):
             by_ns["facets"]["api_servers"],
         )
 
+    def test_list_batches_persists_meta_without_reloading_manifest(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "meta1",
+                "basename": "rhel9",
+                "total_vms": 100,
+                "vms": [f"ns/vm-{i}" for i in range(100)],
+                "namespaces": ["ns-a", "ns-b"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "cluster": {"api_server": "https://api.example.test:6443"},
+            }
+        )
+        row = self.store._conn.execute(
+            "SELECT api_server, namespaces_json FROM batches WHERE batch_id = ?",
+            ("meta1",),
+        ).fetchone()
+        self.assertEqual(row["api_server"], "https://api.example.test:6443")
+        self.assertEqual(json.loads(row["namespaces_json"]), ["ns-a", "ns-b"])
+
+        loads = {"n": 0}
+        orig = self.store._load_result_payload
+
+        def counting_load(result_id: str):
+            loads["n"] += 1
+            return orig(result_id)
+
+        self.store._load_result_payload = counting_load  # type: ignore[method-assign]
+        try:
+            listed = self.store.list_batches(batch_id="meta1")
+        finally:
+            self.store._load_result_payload = orig  # type: ignore[method-assign]
+        self.assertEqual(loads["n"], 0)
+        item = listed["items"][0]
+        self.assertEqual(item["api_server"], "https://api.example.test:6443")
+        self.assertEqual(item["namespaces"], ["ns-a", "ns-b"])
+        self.assertEqual(item["vm_summary"]["configured"], 100)
+        self.assertEqual(item["vm_summary"]["waiting"], 100)
+        self.assertEqual(item["vm_summary"]["checked_in"], 0)
+
+    def test_list_batches_backfills_legacy_meta_once(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "legacy1",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "vms": ["ns/a", "ns/b"],
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "cluster": {"api_server": "https://api.legacy.test:6443"},
+            }
+        )
+        # Simulate pre-migration row: columns exist but list meta never written.
+        self.store._conn.execute(
+            """
+            UPDATE batches
+            SET api_server = NULL, namespaces_json = NULL
+            WHERE batch_id = ?
+            """,
+            ("legacy1",),
+        )
+        self.store._conn.commit()
+
+        loads = {"n": 0}
+        orig = self.store._load_result_payload
+
+        def counting_load(result_id: str):
+            loads["n"] += 1
+            return orig(result_id)
+
+        self.store._load_result_payload = counting_load  # type: ignore[method-assign]
+        try:
+            first = self.store.list_batches(batch_id="legacy1")
+            self.assertEqual(loads["n"], 1)
+            second = self.store.list_batches(batch_id="legacy1")
+            self.assertEqual(loads["n"], 1)
+        finally:
+            self.store._load_result_payload = orig  # type: ignore[method-assign]
+
+        self.assertEqual(first["items"][0]["api_server"], "https://api.legacy.test:6443")
+        self.assertEqual(second["items"][0]["namespaces"], ["ns"])
+        row = self.store._conn.execute(
+            "SELECT api_server, namespaces_json FROM batches WHERE batch_id = ?",
+            ("legacy1",),
+        ).fetchone()
+        self.assertEqual(row["api_server"], "https://api.legacy.test:6443")
+        self.assertEqual(json.loads(row["namespaces_json"]), ["ns"])
+
     def test_list_vm_timestamps_across_batches(self) -> None:
         for bid, vm, boot, started in (
             ("ts1", "vm-a", "2026-07-22T05:50:25Z", "2026-07-22T05:48:00Z"),

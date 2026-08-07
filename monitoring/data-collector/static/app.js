@@ -18,6 +18,9 @@ const state = {
 
 const TOKEN_KEY = "workload-result-token";
 const API_BASE_KEY = "workload-result-api-base";
+/** Used when localStorage has never set an API base (standalone dashboard). */
+const DEFAULT_API_BASE =
+  "http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080";
 
 const {
   escapeHtml,
@@ -60,17 +63,20 @@ function setStoredToken(token) {
 
 function getStoredApiBase() {
   try {
-    return normalizeApiBase(localStorage.getItem(API_BASE_KEY) || "");
+    const raw = localStorage.getItem(API_BASE_KEY);
+    // null = never configured → lab default; "" = explicit same-origin.
+    if (raw === null) return normalizeApiBase(DEFAULT_API_BASE);
+    return normalizeApiBase(raw);
   } catch {
-    return "";
+    return normalizeApiBase(DEFAULT_API_BASE);
   }
 }
 
 function setStoredApiBase(base) {
   try {
-    const n = normalizeApiBase(base);
-    if (n) localStorage.setItem(API_BASE_KEY, n);
-    else localStorage.removeItem(API_BASE_KEY);
+    // Always persist (including "") so clearing the field opts into same-origin
+    // instead of falling back to DEFAULT_API_BASE on the next load.
+    localStorage.setItem(API_BASE_KEY, normalizeApiBase(base));
   } catch {
     /* ignore */
   }
@@ -292,12 +298,16 @@ function renderPagerControls(el, meta, onPage) {
  */
 function bindPaginatedTable({ tbody, pagers = [], rowHtmls, pageSize = DEFAULT_PAGE_SIZE, page = 1, onRendered }) {
   let current = page;
-  const paint = (nextPage) => {
+  const paint = (nextPage, { scroll } = {}) => {
+    const prev = current;
     const { meta, items } = slicePage(rowHtmls, nextPage, pageSize);
     current = meta.page;
     tbody.innerHTML = items.join("");
     for (const pager of pagers) {
-      renderPagerControls(pager, meta, paint);
+      renderPagerControls(pager, meta, (p) => paint(p, { scroll: true }));
+    }
+    if (scroll && meta.page !== prev && pagers[0]) {
+      pagers[0].scrollIntoView({ block: "nearest", behavior: "smooth" });
     }
     if (onRendered) onRendered(meta);
   };

@@ -23,9 +23,11 @@
       </p>
     </div>
     <div class="top-actions">
-      <label class="api-base" title="Collector API origin. Empty = same origin as this page.">
+      <label class="api-base" title="Collector API origin. Empty = same origin as this page. Default is the PerfScale lab collector.">
         <span>API</span>
-        <input type="text" id="api-base" placeholder="same origin" spellcheck="false"
+        <input type="text" id="api-base"
+               placeholder="http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080"
+               spellcheck="false"
                autocomplete="off" />
       </label>
       <button type="button" id="btn-api-apply" class="btn">Apply</button>

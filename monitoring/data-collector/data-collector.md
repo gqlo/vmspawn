@@ -56,9 +56,12 @@ python3 monitoring/data-collector/serve.py \
 # → http://127.0.0.1:5500/
 ```
 
-In the header **API** field, set `http://<collector-host>:8080` and click **Apply**
-(or open `http://127.0.0.1:5500/?api=http://<collector-host>:8080`).  
-Leave API empty when the UI is served by the same `serve.py` process (same origin).
+In the header **API** field (defaults to
+`http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080`), change the
+collector URL and click **Apply**, or open
+`http://127.0.0.1:5500/?api=http://127.0.0.1:8080` for a local collector.
+Clear the field and Apply for same-origin (only useful when the UI is served by
+`serve.py` itself).
 
 Optional auth:
 
