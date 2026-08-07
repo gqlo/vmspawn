@@ -139,8 +139,8 @@ setup_file() {
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"name: vm-qs0003-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0003-ns-2"* ]]
+  [[ "$output" == *"name: qs0003-ns-1"* ]]
+  [[ "$output" == *"name: qs0003-ns-2"* ]]
 
   # --- 10 VMs ---
   local vm_count

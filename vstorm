@@ -40,8 +40,8 @@ VM_SERVICE_INFO=()
 SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
-BASE_PVC_NAME="vm-base"
-VM_BASENAME="vm"
+BASE_PVC_NAME="base"
+VM_BASENAME=""
 BASENAME_SET=0
 PVC_BASE_NAME_SET=0
 VM_CPU_CORES="1"
@@ -269,11 +269,15 @@ derive_defaults() {
     # Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
     # explicitly set --pvc-base-name.  Previously this derivation only ran
     # inside the DATASOURCE block, so --dv-url + --basename left
-    # BASE_PVC_NAME at the default "vm-base" while the DV template created
+    # BASE_PVC_NAME at the default while the DV template created
     # a PVC named "{VM_BASENAME}-base", causing VolumeSnapshot to reference
-    # a non-existent PVC.
+    # a non-existent PVC.  Empty basename → "base" (no leading dash).
     if (( ! PVC_BASE_NAME_SET )) ; then
-	BASE_PVC_NAME="${VM_BASENAME}-base"
+	if [[ -n "$VM_BASENAME" ]]; then
+	    BASE_PVC_NAME="${VM_BASENAME}-base"
+	else
+	    BASE_PVC_NAME="base"
+	fi
     fi
 
     # Auto-disable snapshots when a custom storage class is used without
@@ -306,10 +310,11 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | (default: $VOLUME_MODE)
         --snapshot-class=class  Snapshot class ($SNAPSHOT_CLASS); turns snapshot mode on
         --no-snapshot           Clone VMs directly from PVC (no snapshot)
-        --pvc-base-name=name    base PVC name ($BASE_PVC_NAME)
+        --pvc-base-name=name    base PVC name (default: {basename}-base or base)
         --batch-id=ID           Batch ID for this run ($BATCH_ID)
                                 (auto-generated if not specified)
-        --basename=name         VM basename ($VM_BASENAME)
+        --basename=name         VM name prefix (default: none; auto from
+                                | | | --datasource / --containerdisk)
         --cores=N               VM CPU cores ($VM_CPU_CORES)
         --memory=N              VM memory size ($VM_MEMORY)
         --firmware=MODE         Guest boot firmware: bios or efi (default: $VM_FIRMWARE)
@@ -522,7 +527,7 @@ log_message() {
 
 setup_logging() {
     STARTED_AT=$(date -u +%s)
-    LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date -u +%Y-%m-%dT%H:%M:%SZ).log"
+    LOG_FILE="${LOG_DIR}/$(join_name "$BATCH_ID" "$VM_BASENAME")-$(date -u +%Y-%m-%dT%H:%M:%SZ).log"
     if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
 	    mkdir -p "$LOG_DIR"
@@ -868,7 +873,7 @@ Creating resources for:
   Access Mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$ACCESS_MODE"; fi)
   Volume Mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$VOLUME_MODE"; fi)
   Snapshot mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; elif ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; elif [[ -n "$DATASOURCE" ]]; then echo "disabled (direct DataSource clone)"; else echo "disabled (direct PVC clone)"; fi)
-  VM Basename: $VM_BASENAME
+  VM Basename: ${VM_BASENAME:-"(none)"}
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
@@ -897,13 +902,26 @@ oc_apply() {
     fi
 }
 
+# Join non-empty name parts with '-'.
+join_name() {
+    local out= part
+    for part in "$@"; do
+	[[ -z "$part" ]] && continue
+	if [[ -n "$out" ]]; then
+	    out+="-$part"
+	else
+	    out="$part"
+	fi
+    done
+    printf '%s' "$out"
+}
+
 # Replace templated variables in YAML files with their values.
 process_template() {
     local file=$1
     local -a sed_args=(
         -e "s/{vm-ns}/$namespace/g"
         -e "s/{vm-id}/${VM_ID:-}/g"
-        -e "s/{VM_BASENAME}/$VM_BASENAME/g"
         -e "s/{BATCH_ID}/$BATCH_ID/g"
         -e "s|{DV_URL}|$DV_URL|g"
         -e "s/{DATASOURCE}/${DATASOURCE:-}/g"
@@ -925,6 +943,14 @@ process_template() {
         -e "s/{SVC_TARGET_PORT}/${VM_SERVICE_TARGET_PORT}/g"
         -e "s/{SSH_NODEPORT_LINE}/${SSH_NODEPORT_LINE:-}/g"
     )
+    # Empty default basename: strip "{VM_BASENAME}-" so resource names
+    # become {BATCH_ID}-{id}, base, cloudinit, etc. Bare "{VM_BASENAME}"
+    # (labels/selectors) falls back to BATCH_ID so domain matching still works.
+    if [[ -n "$VM_BASENAME" ]]; then
+	sed_args+=(-e "s/{VM_BASENAME}/$VM_BASENAME/g")
+    else
+	sed_args+=(-e "s/{VM_BASENAME}-//g" -e "s/{VM_BASENAME}/$BATCH_ID/g")
+    fi
 
     sed "${sed_args[@]}" "$file"
 }
@@ -1043,7 +1069,7 @@ create_vm_service() {
 	    next_service_nodeport
 	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
 	    node_port_info=$SSH_NODEPORT
-	    svc_name="svc-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	    svc_name="svc-nodeport-$(join_name "$VM_BASENAME" "$BATCH_ID")"
 	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
 		log_message "Creating NodePort Service ${C_VAL}$svc_name${C_RST} on nodePort ${C_VAL}$SSH_NODEPORT${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	    else
@@ -1054,7 +1080,7 @@ create_vm_service() {
 	    SVC_NAME_SUFFIX=clusterip
 	    SSH_NODEPORT_LINE=
 	    node_port_info=
-	    svc_name="svc-clusterip-${VM_BASENAME}-${BATCH_ID}"
+	    svc_name="svc-clusterip-$(join_name "$VM_BASENAME" "$BATCH_ID")"
 	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
 		log_message "Creating ClusterIP Service ${C_VAL}$svc_name${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	    else
@@ -1069,7 +1095,8 @@ create_vm_service() {
 # DataVolumes
 check_datavolume_status() {
     local namespace=$1
-    local datavolume_name="${VM_BASENAME}-base"
+    local datavolume_name
+    datavolume_name="$(join_name "$VM_BASENAME" "base")"
 
     log_message "Checking DataVolume status in namespace: ${C_VAL}$namespace${C_RST}"
 
@@ -1235,7 +1262,8 @@ create_datavolumes() {
 # VolumeSnapshots
 check_volumesnapshot_status() {
     local namespace=$1
-    local snapshot_name="${VM_BASENAME}-${namespace}"
+    local snapshot_name
+    snapshot_name="$(join_name "$VM_BASENAME" "$namespace")"
 
     log_message "Checking VolumeSnapshot status in namespace: ${C_VAL}$namespace${C_RST}"
 
@@ -1783,7 +1811,7 @@ firmware:
 	if ((UDN_L2)); then
 	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
-      name: ${VM_BASENAME}-cloudinit
+      name: $(join_name "$VM_BASENAME" "cloudinit")
     networkData: |
       version: 2
       ethernets:
@@ -1795,7 +1823,7 @@ firmware:
 	else
 	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
-      name: ${VM_BASENAME}-cloudinit
+      name: $(join_name "$VM_BASENAME" "cloudinit")
   name: cloudinit"
 	fi
     fi
@@ -1858,10 +1886,11 @@ ${data_dv_template}"
 
         # Create VMs for this namespace
         for ((vm=1; vm<=vms_in_this_namespace; vm++)); do
-	    local vm_name="${namespace}/${VM_BASENAME}-${BATCH_ID}-${VM_ID}"
+	    local vm_name="${namespace}/$(join_name "$VM_BASENAME" "$BATCH_ID" "$VM_ID")"
 	    if [[ -z "${existing_vms[$vm_name]:-}" ]] ; then
 		log_message "Creating VirtualMachine ${C_VAL}$VM_ID${C_RST} for namespace: ${C_VAL}$namespace${C_RST}"
-		local data_dv_name="${VM_BASENAME}-${BATCH_ID}-${VM_ID}-data"
+		local data_dv_name
+		data_dv_name="$(join_name "$VM_BASENAME" "$BATCH_ID" "$VM_ID" "data")"
 		local data_dv_templates_vm="" data_dv_template_vm="" data_volume_vm=""
 		if [[ -n "$DATA_DISK_SIZE" ]] ; then
 		    data_dv_template_vm=${data_dv_template//__DATA_DV_NAME__/$data_dv_name}
@@ -2606,7 +2635,7 @@ main() {
 	    for entry in "${VM_SERVICE_INFO[@]}"; do
 		IFS=: read -r ns_name svc_type node_port svc_port target_port <<< "$entry"
 		if [[ "$svc_type" == clusterip ]]; then
-		    svc_host="svc-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
+		    svc_host="svc-clusterip-$(join_name "$VM_BASENAME" "$BATCH_ID").${ns_name}.svc.cluster.local"
 		    if (( svc_port == 22 )); then
 			echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
 		    else

@@ -283,7 +283,7 @@ setup_file() {
   [[ "$output" == *"targetPort: 22"* ]]
   [[ "$output" == *"nodePort: 32222"* ]]
   [[ "$output" == *"nodePort: 32223"* ]]
-  [[ "$output" == *"kubevirt.io/domain: vm"* ]]
+  [[ "$output" == *"kubevirt.io/domain: udn010"* ]]
   [[ "$output" == *"Creating NodePort Service"* ]]
   [[ "$output" == *"Service: enabled (NodePort, port 22"* ]]
 }
@@ -297,7 +297,7 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"type: ClusterIP"* ]]
-  [[ "$output" == *"name: svc-clusterip-vm-udn011"* ]]
+  [[ "$output" == *"name: svc-clusterip-udn011"* ]]
   [[ "$output" == *"port: 22"* ]]
   [[ "$output" == *"Creating ClusterIP Service"* ]]
   [[ "$output" == *"Service: enabled (ClusterIP, port 22)"* ]]
@@ -312,8 +312,8 @@ setup_file() {
     --vms=2 --namespaces=2
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32222 (port 22)"* ]]
-  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32223 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-udn012 on nodePort 32222 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-udn012 on nodePort 32223 (port 22)"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -324,9 +324,9 @@ setup_file() {
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"name: svc-clusterip-vm-udn013"* ]]
+  [[ "$output" == *"name: svc-clusterip-udn013"* ]]
   [[ "$output" == *"namespace: udn013-ns-1"* ]]
-  [[ "$output" == *"Creating ClusterIP Service svc-clusterip-vm-udn013"* ]]
+  [[ "$output" == *"Creating ClusterIP Service svc-clusterip-udn013"* ]]
 }
 
 # ---------------------------------------------------------------

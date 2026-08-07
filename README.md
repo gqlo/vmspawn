@@ -96,7 +96,7 @@ vstorm --udn-l2 --service --containerdisk --vms=6 --namespaces=3
 # 12. UDN + ClusterIP (defaults: port 22, targetPort 22; access via pod network from a debug pod in the namespace)
 vstorm --udn-l2 --service=clusterip --vms=20 --namespaces=4
 # oc -n <batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
-# ssh -o PubkeyAuthentication=no root@svc-clusterip-vm-<batch-id>.<batch-id>-ns-1.svc.cluster.local  (password: password)
+# ssh -o PubkeyAuthentication=no root@svc-clusterip-<batch-id>.<batch-id>-ns-1.svc.cluster.local  (password: password)
 
 # 13. UDN + NodePort: service port 8080, VM targetPort 8080 (nodeport:SERVICE_PORT)
 vstorm --udn-l2 --service=nodeport:8080 --vms=10 --namespaces=2

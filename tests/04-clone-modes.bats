@@ -126,7 +126,7 @@ setup_file() {
   # --- Base DV IS created (URL import path) ---
   [[ "$output" == *"Creating DataVolumes"* ]]
   [[ "$output" == *"kind: DataVolume"* ]]
-  [[ "$output" == *"name: vm-base"* ]]
+  [[ "$output" == *"name: base"* ]]
   [[ "$output" != *"Skipping base DataVolume creation"* ]]
 
   # --- Snapshot mode shows PVC clone (not DataSource clone) ---
@@ -134,7 +134,7 @@ setup_file() {
 
   # --- VMs clone from base PVC ---
   [[ "$output" == *"pvc:"* ]]
-  [[ "$output" == *"name: vm-base"* ]]
+  [[ "$output" == *"name: base"* ]]
 }
 
 # ---------------------------------------------------------------
