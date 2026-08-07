@@ -462,7 +462,14 @@ The home page is a **list of batches created by vstorm** — one row per `batch_
 
 Everything for one vstorm batch on one page.
 
-**Summary (top):** batch id, basename, fingerprint/cloud-init, workload running/idle, **boot time avg / min / max** (create → guest boot) with **Download detailed object creation timestamps**, **VMs / Namespaces / DVs / PVCs** counts (from manifest `total_vms` / `total_namespaces` and `dv_created` / `pvc_created` lists). Once-per-batch timing (snapshot create path): **Batch started**, **Base DV** created/ready/bound, **Snapshot** created/ready. Per-VM clone DV/PVC times stay on the VMs table / CSV, not this summary. On the **Batches** list: **Download all timestamps CSV** aggregates VM timing rows across all batches matching the current filters (`GET /v1/timestamps`).
+**Summary (top):** batch id, basename, fingerprint/cloud-init, workload running/idle,
+**boot time avg / min / max** (create → guest boot) with
+**Download detailed object creation timestamps**, and **VMs / Namespaces / DVs / PVCs**
+counts (from manifest `total_vms` / `total_namespaces` and `dv_created` / `pvc_created`
+lists). Once-per-batch timing (snapshot create path): **Batch started**, **Base DV**
+created/ready/bound, **Snapshot** created/ready. Per-VM clone DV/PVC times stay on the
+VMs table / CSV, not this summary. On the **Batches** list: **Download all timestamps CSV**
+aggregates VM timing rows across batches matching the current filters (`GET /v1/timestamps`).
 
 **VM rollup meanings** (same definitions as the VM table `ui_status`):
 
