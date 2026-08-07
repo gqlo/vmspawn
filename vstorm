@@ -72,6 +72,11 @@ NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
 RUN_STRATEGY=Always
 WAIT=0
+# After VMs are Running, probe guest SSH (port-forward + nc). 30s hard fail.
+WAIT_SSH=0
+SSH_READY_TIMEOUT=30
+# JSON blob for manifest: vm_ssh_ready / vm_ssh_failed / ssh_ready_*
+BATCH_SSH_JSON=
 CONTAINERDISK_IMAGE=
 RECREATE_EXISTING_VMS=0
 DELETE_BATCH=
@@ -321,6 +326,10 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | Use with --batch-id to update an existing
                                 | | | batch (e.g. to resize CPU or memory)
         --wait[=true|false]     Wait for VMs to reach Running (default: false)
+        --wait-ssh[=true|false] After Running, probe guest SSH port via virtctl
+                                | | | port-forward + nc (implies --wait).
+                                | | | Fails the run if any VM is not up within
+                                | | | ${SSH_READY_TIMEOUT}s (default: false)
         --containerdisk[=IMAGE] Use a container disk image instead of PVC-backed
                                 | | | storage -- no storage class required.
                                 | | | Default image:
@@ -400,6 +409,14 @@ process_option() {
 		           *) WAIT=1 ;;
 		           esac ;;
 		       *) fatal "Invalid --wait value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
+		   esac ;;
+	waitssh)   case "${value,,}" in
+		       '') WAIT_SSH=1; WAIT=1 ;;
+		       0|1|true|false|yes|no|on|off) case "${value,,}" in
+		           0|false|no|off) WAIT_SSH=0 ;;
+		           *) WAIT_SSH=1; WAIT=1 ;;
+		           esac ;;
+		       *) fatal "Invalid --wait-ssh value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
 		   esac ;;
 	cloudinit) CLOUDINIT_FILE=$value ;;
 	env)       GUEST_ENV_ARR+=("$value") ;;
@@ -816,6 +833,8 @@ Creating resources for:
   Cloud-init: ${CLOUDINIT_FILE:-none}
   UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
   Service: $(if ((VM_SERVICE)); then local _svc_ports="port $VM_SERVICE_PORT"; if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then _svc_ports="port $VM_SERVICE_PORT -> targetPort $VM_SERVICE_TARGET_PORT"; fi; if [[ "$VM_SERVICE_TYPE" == clusterip ]]; then echo "enabled (ClusterIP, $_svc_ports)"; else echo "enabled (NodePort, $_svc_ports, node ports from $VM_SERVICE_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
+  Wait for Running: $(if ((WAIT)); then echo "yes"; else echo "no"; fi)
+  Wait for SSH: $(if ((WAIT_SSH)); then echo "yes (${SSH_READY_TIMEOUT}s hard fail)"; else echo "no"; fi)
 
 EOF
 }
@@ -1395,6 +1414,7 @@ print(json.dumps(env))
 	WORKER_NODES="$worker_nodes" \
 	MASTER_NODES="$master_nodes" \
 	DV_CREATED_JSON="$dv_created_json" \
+	SSH_JSON="${BATCH_SSH_JSON:-}" \
 	python3 - <<'PY'
 import json, os
 from datetime import datetime, timezone
@@ -1469,6 +1489,21 @@ if isinstance(dv_info, dict):
     ):
         if dv_info.get(key):
             payload[key] = dv_info[key]
+try:
+    ssh_info = json.loads(os.environ.get("SSH_JSON") or "{}")
+except json.JSONDecodeError:
+    ssh_info = {}
+if isinstance(ssh_info, dict):
+    for key in (
+        "vm_ssh_ready",
+        "vm_ssh_failed",
+        "ssh_ready_at",
+        "ssh_ready_status",
+        "ssh_ready_port",
+        "ssh_ready_timeout_s",
+    ):
+        if key in ssh_info and ssh_info[key] is not None and ssh_info[key] != "" and ssh_info[key] != [] and ssh_info[key] != {}:
+            payload[key] = ssh_info[key]
 log_text = os.environ.get("LOG_TEXT") or ""
 if log_text:
     payload["log_text"] = log_text
@@ -1535,6 +1570,7 @@ for k, label in (
     ("vm_data_dv_ready", "data_dv_ready"),
     ("vm_data_pvc_created", "data_pvc"),
     ("vm_data_pvc_bound", "data_pvc_bound"),
+    ("vm_ssh_ready", "vm_ssh_ready"),
     ("snapshots", "snapshots"),
     ("base_dv", "base_dv"),
 ):
@@ -1543,13 +1579,19 @@ for k, label in (
         counts.append(f"{label}={len(m)}")
     elif isinstance(m, list) and m:
         counts.append(f"{label}={len(m)}")
+failed = p.get("vm_ssh_failed")
+if isinstance(failed, list) and failed:
+    counts.append(f"vm_ssh_failed={len(failed)}")
+status = p.get("ssh_ready_status")
+if status:
+    counts.append(f"ssh_ready_status={status}")
 if not parts and not counts:
     print("no DV/PVC timestamps in payload")
 else:
     print(", ".join(parts + counts))
 ' "$payload_file" 2>/dev/null || echo "(timestamps unavailable)"
     )
-    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} manifest (DV/PVC timestamps) to ${C_VAL}${url}${C_RST}"
+    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} manifest (DV/PVC/SSH timestamps) to ${C_VAL}${url}${C_RST}"
     log_message "  timestamps: ${C_VAL}${ts_summary}${C_RST}"
 
     local curl_args=(-sS -f -X POST -H "Content-Type: application/json" --data-binary @"$payload_file"
@@ -1903,6 +1945,149 @@ verify_cloudinit() {
 }
 
 ################################################################
+# Workload-agnostic SSH reachability check.
+# Uses virtctl port-forward + nc (no password/key). Each VM has
+# SSH_READY_TIMEOUT seconds; any still down => failure.
+# Sets BATCH_SSH_JSON for the host manifest POST.
+# Returns 0 if all probed VMs are up, 1 otherwise.
+verify_ssh_port() {
+    BATCH_SSH_JSON=
+    local -a vm_keys=("${BATCH_VMS_ORDERED[@]+"${BATCH_VMS_ORDERED[@]}"}")
+    local -i total=${#vm_keys[@]}
+    if ((total == 0)); then
+	log_message "${C_WARN}SSH check: no VMs in batch; skipping${C_RST}"
+	return 0
+    fi
+
+    if [[ -z "$(type -t virtctl)" ]]; then
+	fatal "Error: --wait-ssh requires virtctl (see helpers/install-virtctl)"
+    fi
+    if [[ -z "$(type -t nc)" ]]; then
+	fatal "Error: --wait-ssh requires nc (nmap-ncat / netcat)"
+    fi
+
+    local guest_port="${VM_SERVICE_TARGET_PORT:-22}"
+    local timeout="${SSH_READY_TIMEOUT:-30}"
+    log_message "${C_BOLD}Checking SSH port ${C_VAL}${guest_port}${C_RST}${C_BOLD} on ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) (timeout ${C_VAL}${timeout}s${C_RST}${C_BOLD} each)...${C_RST}"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmpdir'" RETURN
+
+    local -a pids=()
+    local -a probe_vms=()
+    local i=0
+    local vm_key ns vm_name local_port out_file
+
+    for vm_key in "${vm_keys[@]}"; do
+	ns="${vm_key%%/*}"
+	vm_name="${vm_key##*/}"
+	local_port=$((23000 + i))
+	out_file="${tmpdir}/${vm_name}.ready"
+	probe_vms+=("$vm_name")
+	(
+	    local pf_pid="" deadline now
+	    deadline=$(($(date +%s) + timeout))
+	    cleanup_pf() {
+		if [[ -n "${pf_pid:-}" ]]; then
+		    kill "$pf_pid" 2>/dev/null || true
+		    wait "$pf_pid" 2>/dev/null || true
+		fi
+	    }
+	    trap cleanup_pf EXIT
+	    virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+	    pf_pid=$!
+	    while true; do
+		now=$(date +%s)
+		if ((now >= deadline)); then
+		    exit 1
+		fi
+		if ! kill -0 "$pf_pid" 2>/dev/null; then
+		    wait "$pf_pid" 2>/dev/null || true
+		    virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+		    pf_pid=$!
+		    sleep 1
+		    continue
+		fi
+		if nc -z -w 1 127.0.0.1 "$local_port" 2>/dev/null; then
+		    date -u +%Y-%m-%dT%H:%M:%SZ > "$out_file"
+		    exit 0
+		fi
+		sleep 1
+	    done
+	) &
+	pids+=($!)
+	i=$((i + 1))
+    done
+
+    local -i ok_count=0 fail_count=0
+    local -A ready_at=()
+    local -a failed=()
+    local idx pid rc
+    for idx in "${!pids[@]}"; do
+	pid=${pids[$idx]}
+	vm_name=${probe_vms[$idx]}
+	rc=0
+	wait "$pid" || rc=$?
+	if ((rc == 0)) && [[ -f "${tmpdir}/${vm_name}.ready" ]]; then
+	    ready_at["$vm_name"]=$(cat "${tmpdir}/${vm_name}.ready")
+	    log_message "  ${C_VAL}${vm_name}${C_RST}: SSH port ${C_OK}UP${C_RST} at ${C_VAL}${ready_at[$vm_name]}${C_RST}"
+	    ok_count=$((ok_count + 1))
+	else
+	    failed+=("$vm_name")
+	    log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}${vm_name}${C_RST}: SSH port ${C_ERR}DOWN${C_RST} after ${C_VAL}${timeout}s${C_RST}"
+	    fail_count=$((fail_count + 1))
+	fi
+    done
+
+    local ready_json failed_json
+    ready_json=$(
+	for k in "${!ready_at[@]}"; do
+	    printf '%s\t%s\n' "$k" "${ready_at[$k]}"
+	done | python3 -c '
+import json, sys
+d = {}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line or "\t" not in line:
+        continue
+    k, _, v = line.partition("\t")
+    d[k] = v
+print(json.dumps(d))
+' 2>/dev/null || echo '{}'
+    )
+    failed_json=$(printf '%s\n' "${failed[@]+"${failed[@]}"}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]')
+
+    BATCH_SSH_JSON=$(
+	READY_JSON="$ready_json" FAILED_JSON="$failed_json" \
+	SSH_PORT="$guest_port" SSH_TIMEOUT="$timeout" \
+	python3 - <<'PY'
+import json, os
+ready = json.loads(os.environ.get("READY_JSON") or "{}")
+failed = json.loads(os.environ.get("FAILED_JSON") or "[]")
+out = {
+    "vm_ssh_ready": ready,
+    "vm_ssh_failed": failed,
+    "ssh_ready_status": "ok" if not failed else "failed",
+    "ssh_ready_port": int(os.environ.get("SSH_PORT") or 22),
+    "ssh_ready_timeout_s": int(os.environ.get("SSH_TIMEOUT") or 30),
+}
+if ready and not failed:
+    out["ssh_ready_at"] = min(ready.values())
+print(json.dumps(out))
+PY
+    )
+
+    if ((fail_count > 0)); then
+	log_message "SSH check: ${C_VAL}${ok_count}${C_RST} UP, ${C_ERR}${fail_count}${C_RST} FAILED (timeout ${C_VAL}${timeout}s${C_RST})"
+	return 1
+    fi
+    log_message "${C_OK}SSH check: ${ok_count}/${total} VM(s) — all ports UP${C_RST}"
+    return 0
+}
+
+################################################################
 # Delete all resources for a batch
 # Args: $1 = batch ID, $2 = "skip-confirm" (optional, used by delete_all_batches)
 delete_batch() {
@@ -2226,6 +2411,11 @@ main() {
     log_message "VM firmware:   ${C_VAL}$VM_FIRMWARE${C_RST}"
     log_message "Cloud-init:    ${C_VAL}${CLOUDINIT_FILE:-none}${C_RST}"
     log_message "Run strategy:  ${C_VAL}$RUN_STRATEGY${C_RST}"
+    if ((WAIT_SSH)); then
+	log_message "Wait SSH:      ${C_VAL}yes (${SSH_READY_TIMEOUT}s)${C_RST}"
+    elif ((WAIT)); then
+	log_message "Wait VMs:      ${C_VAL}yes${C_RST}"
+    fi
 
     create_namespaces
     if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
@@ -2246,8 +2436,19 @@ main() {
     #     verify_cloudinit
     # fi
 
+    local ssh_verify_failed=0
+    if ((wet_run && WAIT_SSH)); then
+	if ! verify_ssh_port; then
+	    ssh_verify_failed=1
+	fi
+    fi
+
     if ((wet_run)) ; then
-	log_message "${C_OK}Resource creation completed successfully!${C_RST}"
+	if ((ssh_verify_failed)); then
+	    log_message "${C_WARN}Resource creation finished but SSH port check failed${C_RST}"
+	else
+	    log_message "${C_OK}Resource creation completed successfully!${C_RST}"
+	fi
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
 	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (container disk)"
 	elif ((USE_SNAPSHOT)) ; then
@@ -2286,6 +2487,10 @@ main() {
 	dv_ready_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("dv_ready_at") or "")' 2>/dev/null || true)
 	local pvc_bound_at_line=""
 	pvc_bound_at_line=$(DV_JSON="$dv_created_json" python3 -c 'import json,os; d=json.loads(os.environ.get("DV_JSON") or "{}"); print(d.get("pvc_bound_at") or d.get("dv_bound_at") or "")' 2>/dev/null || true)
+	local ssh_ready_at_line="" ssh_ready_status_line="" ssh_failed_line=""
+	ssh_ready_at_line=$(SSH_JSON="${BATCH_SSH_JSON:-}" python3 -c 'import json,os; d=json.loads(os.environ.get("SSH_JSON") or "{}"); print(d.get("ssh_ready_at") or "")' 2>/dev/null || true)
+	ssh_ready_status_line=$(SSH_JSON="${BATCH_SSH_JSON:-}" python3 -c 'import json,os; d=json.loads(os.environ.get("SSH_JSON") or "{}"); print(d.get("ssh_ready_status") or "")' 2>/dev/null || true)
+	ssh_failed_line=$(SSH_JSON="${BATCH_SSH_JSON:-}" python3 -c 'import json,os; d=json.loads(os.environ.get("SSH_JSON") or "{}"); print(",".join(d.get("vm_ssh_failed") or []))' 2>/dev/null || true)
 	for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
 	    local ns_name="vm-${BATCH_ID}-ns-${ns}"
 	    ns_list="${ns_list:+${ns_list}, }${ns_name}"
@@ -2310,13 +2515,23 @@ main() {
 	dv-ready-at: ${dv_ready_at_line:-}
 	pvc-created-at: ${pvc_created_at_line:-}
 	pvc-bound-at: ${pvc_bound_at_line:-}
+	ssh-ready-at: ${ssh_ready_at_line:-}
+	ssh-ready-status: ${ssh_ready_status_line:-}
+	ssh-failed: ${ssh_failed_line:-}
 	MANIFEST
 	if [[ "$dv_created_json" != "{}" && -n "$dv_created_json" ]]; then
 	    printf '%s\n' "$dv_created_json" > "${LOG_DIR}/batch-${BATCH_ID}.dv-created.json"
 	fi
+	if [[ -n "${BATCH_SSH_JSON:-}" && "$BATCH_SSH_JSON" != "{}" ]]; then
+	    printf '%s\n' "$BATCH_SSH_JSON" > "${LOG_DIR}/batch-${BATCH_ID}.ssh-ready.json"
+	fi
 	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
 
 	post_batch_result_metadata
+
+	if ((ssh_verify_failed)); then
+	    fatal "SSH port check failed for one or more VMs (timeout ${SSH_READY_TIMEOUT}s). See log and ${LOG_DIR}/batch-${BATCH_ID}.ssh-ready.json"
+	fi
 
 	cat <<-EOF
 

@@ -188,6 +188,7 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
 - **Base DV (import):** when the create path uses `{basename}-base`, the manifest also includes batch-level `base_dv_created_at` / `base_dv_ready_at` / `base_dv_bound_at` (and a `base_dv` list). These are distinct from per-VM clone `dv_*`.
 - **VolumeSnapshot:** with snapshot cloning, `snapshot_created_at` / `snapshot_ready_at` (and a `snapshots` list) are posted from VolumeSnapshot `creationTimestamp` and Ready condition.
 - **DV ready (clone completed):** from DV `status.conditions` — prefer `Ready=True` `lastTransitionTime`, else `Running` reason `Completed`. Exposed as `dv_ready_at`, per-entry `ready_at`, and `vm_dv_ready` / `vm_data_dv_ready`. Smart snapshot clones often complete in ~1–2s.
+- **SSH port ready (host probe):** with `--wait-ssh`, vstorm probes guest port 22 (or `--service` targetPort) via `virtctl port-forward` + `nc` — no password/key. Each VM has a 30s timeout; any still down fails the run after the manifest POST. Fields: `vm_ssh_ready`, `vm_ssh_failed`, `ssh_ready_at`, `ssh_ready_status`.
 - **PVC created:** vstorm lists PVCs in batch namespaces and adds `pvc_created_at`, `pvc_created`, `vm_pvc_created` (root), and `vm_data_pvc_created` (blank data disk). Blank data DataVolumes are labeled `batch-id` so they appear in the DV list.
 - The dashboard histogram/summary uses **DV create → boot** when those fields exist
   (else vstorm `started_at` → boot). Boot-times / all-timestamps CSVs include absolute
@@ -195,7 +196,7 @@ Shared across **all** workload cloud-inits via `vstorm-boot-timestamp.service` (
   `base_dv_bound_at_utc`, `snapshot_created_at_utc`, `snapshot_ready_at_utc`,
   `dv_created_at_utc`, `dv_ready_at_utc`, `pvc_created_at_utc`, `pvc_bound_at_utc`,
   `data_dv_created_at_utc`, `data_dv_ready_at_utc`, `data_pvc_created_at_utc`,
-  `data_pvc_bound_at_utc`, `boot_timestamp_utc` (plus identity fields). PVC bound time
+  `data_pvc_bound_at_utc`, `ssh_ready_at_utc`, `boot_timestamp_utc` (plus identity fields). PVC bound time
   comes from the owning DV `Bound=True` condition (`lastTransitionTime`).
 
 Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../workload/vstorm-boot-timestamp.sh) (keep embedded `write_files` copies in sync).
@@ -229,6 +230,12 @@ One `record_type: "manifest"` / `source: "vstorm"` POST after successful create 
     "rhel9-8a494b-1": "2026-07-22T05:48:47Z",
     "rhel9-8a494b-2": "2026-07-22T05:48:48Z"
   },
+  "vm_ssh_ready": {
+    "rhel9-8a494b-1": "2026-07-22T05:49:10Z",
+    "rhel9-8a494b-2": "2026-07-22T05:49:11Z"
+  },
+  "ssh_ready_at": "2026-07-22T05:49:10Z",
+  "ssh_ready_status": "ok",
   "dv_created": [
     {"namespace": "vm-8a494b-ns-1", "name": "rhel9-8a494b-1", "created_at": "2026-07-22T05:48:45Z", "ready_at": "2026-07-22T05:48:47Z", "role": "root", "phase": "Succeeded"}
   ],

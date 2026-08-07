@@ -33,7 +33,8 @@ Each log entry is prefixed with a UTC `YYYY-MM-DDTHH:MM:SSZ` timestamp. The log 
 5. **VolumeSnapshot creation** *(snapshot mode only)* -- one per namespace, with readiness polling
 6. **VM creation** -- each VM logged individually with namespace and ID
 7. **VM readiness** *(with --wait)* -- periodic progress updates (`5/10 ready`)
-8. **Completion summary** -- total resources created
+8. **SSH port check** *(with --wait-ssh)* -- probes guest SSH via virtctl port-forward + nc (30s hard fail); writes `logs/batch-{id}.ssh-ready.json`
+9. **Completion summary** -- total resources created
 
 ### Log output
 

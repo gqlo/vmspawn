@@ -169,6 +169,7 @@
       "data_dv_ready_at_utc",
       "data_pvc_created_at_utc",
       "data_pvc_bound_at_utc",
+      "ssh_ready_at_utc",
       "boot_timestamp_utc",
     ];
     const startedIso = fmtTs(batchStartedAt);
@@ -188,6 +189,7 @@
       const dataDvReady = v.data_dv_ready_at_unix;
       const dataPvc = v.data_pvc_created_at_unix;
       const dataPvcBound = v.data_pvc_bound_at_unix;
+      const sshReady = v.ssh_ready_at_unix;
       rows.push(
         [
           csvEscape(batchId),
@@ -207,6 +209,7 @@
           csvEscape(dataDvReady != null ? fmtTs(dataDvReady) : ""),
           csvEscape(dataPvc != null ? fmtTs(dataPvc) : ""),
           csvEscape(dataPvcBound != null ? fmtTs(dataPvcBound) : ""),
+          csvEscape(sshReady != null ? fmtTs(sshReady) : ""),
           csvEscape(boot != null ? fmtTs(boot) : ""),
         ].join(",")
       );
@@ -267,6 +270,7 @@
       "data_dv_ready_at_utc",
       "data_pvc_created_at_utc",
       "data_pvc_bound_at_utc",
+      "ssh_ready_at_utc",
       "boot_timestamp_utc",
     ];
     const rows = [header.join(",")];
@@ -292,6 +296,7 @@
           csvEscape(it.data_dv_ready_at != null ? fmtTs(it.data_dv_ready_at) : ""),
           csvEscape(it.data_pvc_created_at != null ? fmtTs(it.data_pvc_created_at) : ""),
           csvEscape(it.data_pvc_bound_at != null ? fmtTs(it.data_pvc_bound_at) : ""),
+          csvEscape(it.ssh_ready_at != null ? fmtTs(it.ssh_ready_at) : ""),
           csvEscape(it.boot_timestamp != null ? fmtTs(it.boot_timestamp) : ""),
         ].join(",")
       );

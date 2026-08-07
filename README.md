@@ -114,7 +114,7 @@ vstorm --memory=8Gi --cores=2 \
   --env STRESS_TOGETHER=0 \
   --env CPU_ACTIVE_PROBABILITY=30 \
   --env MEM_ACTIVE_PROBABILITY=80 \
-  --wait --basename=desched-t1 --vms=11 --namespaces=2
+  --wait --wait-ssh --basename=desched-t1 --vms=11 --namespaces=2
 ```
 
 ## Cloud-init

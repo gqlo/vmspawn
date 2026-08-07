@@ -124,7 +124,7 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
+      "batch_id,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("a1b2c3,vm-a,ns1,"));
     assert.ok(lines[1].includes("vm-a"));
@@ -151,6 +151,7 @@ describe("boot durations and CSV", () => {
         data_dv_ready_at_unix: 1029,
         data_pvc_created_at_unix: 1030,
         data_pvc_bound_at_unix: 1031,
+        ssh_ready_at_unix: 1050,
       },
     ];
     const csv = lib.buildBootTimesCsv("a1b2c3", rich, started, dvCreated);
@@ -165,7 +166,8 @@ describe("boot durations and CSV", () => {
     assert.equal(cols[7], lib.fmtTs(1015));
     assert.equal(cols[8], lib.fmtTs(1018));
     assert.equal(cols[9], lib.fmtTs(1020));
-    assert.equal(cols[17], lib.fmtTs(1100));
+    assert.equal(cols[17], lib.fmtTs(1050));
+    assert.equal(cols[18], lib.fmtTs(1100));
   });
 
   it("builds cross-batch timestamps CSV", () => {
@@ -190,13 +192,14 @@ describe("boot durations and CSV", () => {
         data_dv_ready_at: 1029,
         data_pvc_created_at: 1030,
         data_pvc_bound_at: 1031,
+        ssh_ready_at: 1050,
         boot_timestamp: 1100,
       },
     ]);
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,boot_timestamp_utc"
+      "batch_id,basename,cloudinit,vm_name,namespace,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("b1,rhel9,workload/x.yaml,vm-a,ns1,"));
     assert.ok(lines[1].endsWith(lib.fmtTs(1100)));
@@ -206,6 +209,7 @@ describe("boot durations and CSV", () => {
     assert.equal(cols[8], lib.fmtTs(1011));
     assert.equal(cols[9], lib.fmtTs(1015));
     assert.equal(cols[10], lib.fmtTs(1018));
+    assert.equal(cols[19], lib.fmtTs(1050));
   });
 
   it("leaves base/snapshot CSV cells empty when absent", () => {

@@ -988,6 +988,7 @@ class Store:
                 data_dv_ready = v.get("data_dv_ready_at_unix")
                 data_pvc = v.get("data_pvc_created_at_unix")
                 data_pvc_bound = v.get("data_pvc_bound_at_unix")
+                ssh_ready = v.get("ssh_ready_at_unix")
                 items.append(
                     {
                         "batch_id": bid,
@@ -1009,6 +1010,7 @@ class Store:
                         "data_dv_ready_at": data_dv_ready,
                         "data_pvc_created_at": data_pvc,
                         "data_pvc_bound_at": data_pvc_bound,
+                        "ssh_ready_at": ssh_ready,
                         "boot_timestamp": boot,
                     }
                 )
@@ -1325,6 +1327,10 @@ class Store:
         vm_data_pvc_bound_map = _unix_map("vm_data_pvc_bound")
         if not vm_data_pvc_bound_map:
             vm_data_pvc_bound_map = _unix_map("vm_data_dv_bound")
+        vm_ssh_ready_map = _unix_map("vm_ssh_ready")
+        batch_ssh_ready_unix = (
+            _payload_unix(batch_payload, "ssh_ready_at") if batch_payload else None
+        )
 
         for name, cur in named.items():
             cur["base_dv_created_at_unix"] = batch_base_dv_unix
@@ -1340,6 +1346,7 @@ class Store:
             cur["data_dv_ready_at_unix"] = vm_data_dv_ready_map.get(name)
             cur["data_pvc_created_at_unix"] = vm_data_pvc_map.get(name)
             cur["data_pvc_bound_at_unix"] = vm_data_pvc_bound_map.get(name)
+            cur["ssh_ready_at_unix"] = vm_ssh_ready_map.get(name, batch_ssh_ready_unix)
 
         # Attach policy / agent status for each VM
         now = int(time.time())
