@@ -85,6 +85,51 @@ def _payload_api_server(bp: dict[str, Any] | None) -> str | None:
     return s or None
 
 
+# Large per-VM maps / inventory lists — kept on disk in manifest.json, not in list/summary APIs.
+_HEAVY_MANIFEST_KEYS = frozenset(
+    {
+        "vms",
+        "dv_created",
+        "pvc_created",
+        "snapshots",
+        "vm_dv_created",
+        "vm_dv_ready",
+        "vm_pvc_created",
+        "vm_pvc_bound",
+        "vm_dv_bound",
+        "vm_data_dv_created",
+        "vm_data_dv_ready",
+        "vm_data_pvc_created",
+        "vm_data_pvc_bound",
+        "vm_data_dv_bound",
+        "vm_ssh_ready",
+    }
+)
+
+
+def _manifest_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    """Small manifest subset for batch detail header (no per-VM maps)."""
+    summary = {k: v for k, v in payload.items() if k not in _HEAVY_MANIFEST_KEYS}
+    if "dv_count" not in summary and isinstance(payload.get("dv_created"), list):
+        summary["dv_count"] = len(payload["dv_created"])
+    if "pvc_count" not in summary and isinstance(payload.get("pvc_created"), list):
+        summary["pvc_count"] = len(payload["pvc_created"])
+    if "snapshot_count" not in summary and isinstance(payload.get("snapshots"), list):
+        summary["snapshot_count"] = len(payload["snapshots"])
+    return summary
+
+
+def _unix_map_from_payload(payload: dict[str, Any] | None, key: str) -> dict[str, int]:
+    out: dict[str, int] = {}
+    if not payload or not isinstance(payload.get(key), dict):
+        return out
+    for map_key, val in payload[key].items():
+        parsed = _coerce_unix(val)
+        if parsed is not None:
+            out[str(map_key)] = parsed
+    return out
+
+
 def percentile(sorted_vals: list[float], p: float) -> float | None:
     if not sorted_vals:
         return None
@@ -241,6 +286,7 @@ class Store:
                     batch_result_id TEXT,
                     api_server TEXT,
                     namespaces_json TEXT,
+                    summary_json TEXT,
                     updated_at INTEGER
                 );
 
@@ -284,6 +330,23 @@ class Store:
                     updated_at INTEGER,
                     PRIMARY KEY (batch_id, vm_name)
                 );
+
+                CREATE TABLE IF NOT EXISTS batch_vms (
+                    batch_id TEXT NOT NULL,
+                    vm_name TEXT NOT NULL,
+                    namespace TEXT,
+                    dv_created_at INTEGER,
+                    dv_ready_at INTEGER,
+                    pvc_created_at INTEGER,
+                    pvc_bound_at INTEGER,
+                    data_dv_created_at INTEGER,
+                    data_dv_ready_at INTEGER,
+                    data_pvc_created_at INTEGER,
+                    data_pvc_bound_at INTEGER,
+                    ssh_ready_at INTEGER,
+                    PRIMARY KEY (batch_id, vm_name)
+                );
+                CREATE INDEX IF NOT EXISTS idx_batch_vms_batch ON batch_vms(batch_id, vm_name);
                 """
             )
             self._conn.commit()
@@ -303,6 +366,8 @@ class Store:
             self._conn.execute("ALTER TABLE batches ADD COLUMN api_server TEXT")
         if "namespaces_json" not in batch_cols:
             self._conn.execute("ALTER TABLE batches ADD COLUMN namespaces_json TEXT")
+        if "summary_json" not in batch_cols:
+            self._conn.execute("ALTER TABLE batches ADD COLUMN summary_json TEXT")
         pol_cols = {r[1] for r in self._conn.execute("PRAGMA table_info(vm_policies)")}
         if "last_poll_at" not in pol_cols:
             self._conn.execute("ALTER TABLE vm_policies ADD COLUMN last_poll_at INTEGER")
@@ -459,13 +524,14 @@ class Store:
                     )
                 namespaces = _payload_namespaces(payload)
                 api_server = _payload_api_server(payload)
+                summary = _manifest_summary(payload)
                 self._conn.execute(
                     """
                     INSERT INTO batches (
                         batch_id, basename, total_vms, total_namespaces, started_at, stopped_at,
                         cloudinit, cores, memory, batch_result_id, api_server, namespaces_json,
-                        updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        summary_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(batch_id) DO UPDATE SET
                         basename=excluded.basename,
                         total_vms=excluded.total_vms,
@@ -478,6 +544,7 @@ class Store:
                         batch_result_id=excluded.batch_result_id,
                         api_server=excluded.api_server,
                         namespaces_json=excluded.namespaces_json,
+                        summary_json=excluded.summary_json,
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -493,9 +560,11 @@ class Store:
                         result_id,
                         api_server,
                         json.dumps(namespaces),
+                        json.dumps(summary),
                         now,
                     ),
                 )
+                self._replace_batch_vms(batch_id, payload)
             else:
                 # Ensure batch row exists even if only cycles arrived
                 self._conn.execute(
@@ -1186,7 +1255,16 @@ class Store:
             else None,
         }
 
-    def get_batch(self, batch_id: str) -> dict[str, Any] | None:
+    def get_batch(
+        self, batch_id: str, *, view: str = "full"
+    ) -> dict[str, Any] | None:
+        """Return batch detail.
+
+        view=full: include full manifest payload, all VMs, and result series
+          (timestamps page / payload inspection).
+        view=summary: lightweight header for the batch run page (no heavy maps,
+          no VM list, no series). Pair with GET .../vms?limit=&offset=.
+        """
         with self._lock:
             row = self._conn.execute(
                 "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
@@ -1208,6 +1286,10 @@ class Store:
                 meta = dict(row)
                 meta["archived"] = bool(row["archived"])
 
+            view_s = (view or "full").strip().lower()
+            if view_s == "summary":
+                return self._batch_summary_dict(meta)
+
             batch_payload = None
             if meta.get("batch_result_id"):
                 batch_payload = self._load_result_payload(meta["batch_result_id"])
@@ -1226,56 +1308,470 @@ class Store:
             ).fetchall()
 
             summary = self._vm_summary(vms, meta.get("total_vms"))
-            dv_created_at = None
-            dv_ready_at = None
-            pvc_created_at = None
-            pvc_bound_at = None
-            base_dv_created_at = None
-            base_dv_ready_at = None
-            base_dv_bound_at = None
-            snapshot_created_at = None
-            snapshot_ready_at = None
-            dv_count = None
-            pvc_count = None
-            snapshot_count = None
-            if batch_payload:
-                dv_created_at = _payload_unix(batch_payload, "dv_created_at")
-                dv_ready_at = _payload_unix(batch_payload, "dv_ready_at")
-                pvc_created_at = _payload_unix(batch_payload, "pvc_created_at")
-                pvc_bound_at = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
-                    batch_payload, "dv_bound_at"
-                )
-                base_dv_created_at = _payload_unix(batch_payload, "base_dv_created_at")
-                base_dv_ready_at = _payload_unix(batch_payload, "base_dv_ready_at")
-                base_dv_bound_at = _payload_unix(batch_payload, "base_dv_bound_at")
-                snapshot_created_at = _payload_unix(batch_payload, "snapshot_created_at")
-                snapshot_ready_at = _payload_unix(batch_payload, "snapshot_ready_at")
-                if isinstance(batch_payload.get("dv_created"), list):
-                    dv_count = len(batch_payload["dv_created"])
-                if isinstance(batch_payload.get("pvc_created"), list):
-                    pvc_count = len(batch_payload["pvc_created"])
-                if isinstance(batch_payload.get("snapshots"), list):
-                    snapshot_count = len(batch_payload["snapshots"])
-            return {
+            timing = self._batch_timing_fields(batch_payload)
+            out = {
                 **meta,
                 **stats,
                 "batch_payload": batch_payload,
-                "dv_created_at": dv_created_at,
-                "dv_ready_at": dv_ready_at,
-                "pvc_created_at": pvc_created_at,
-                "pvc_bound_at": pvc_bound_at,
-                "base_dv_created_at": base_dv_created_at,
-                "base_dv_ready_at": base_dv_ready_at,
-                "base_dv_bound_at": base_dv_bound_at,
-                "snapshot_created_at": snapshot_created_at,
-                "snapshot_ready_at": snapshot_ready_at,
-                "dv_count": dv_count,
-                "pvc_count": pvc_count,
-                "snapshot_count": snapshot_count,
+                **timing,
                 "vms": vms,
                 "vm_summary": summary,
                 "series": [dict(r) for r in series],
             }
+            out.pop("namespaces_json", None)
+            out.pop("summary_json", None)
+            return out
+
+    def _load_summary_payload(self, meta: dict[str, Any]) -> dict[str, Any] | None:
+        raw = meta.get("summary_json")
+        if isinstance(raw, str) and raw.strip():
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, dict):
+                    return parsed
+            except json.JSONDecodeError:
+                pass
+        if meta.get("batch_result_id"):
+            bp = self._load_result_payload(meta["batch_result_id"])
+            if bp is not None:
+                summary = _manifest_summary(bp)
+                self._conn.execute(
+                    "UPDATE batches SET summary_json = ? WHERE batch_id = ?",
+                    (json.dumps(summary), meta["batch_id"]),
+                )
+                self._conn.commit()
+                return summary
+        return None
+
+    def _batch_timing_fields(self, batch_payload: dict[str, Any] | None) -> dict[str, Any]:
+        dv_created_at = None
+        dv_ready_at = None
+        pvc_created_at = None
+        pvc_bound_at = None
+        base_dv_created_at = None
+        base_dv_ready_at = None
+        base_dv_bound_at = None
+        snapshot_created_at = None
+        snapshot_ready_at = None
+        dv_count = None
+        pvc_count = None
+        snapshot_count = None
+        if batch_payload:
+            dv_created_at = _payload_unix(batch_payload, "dv_created_at")
+            dv_ready_at = _payload_unix(batch_payload, "dv_ready_at")
+            pvc_created_at = _payload_unix(batch_payload, "pvc_created_at")
+            pvc_bound_at = _payload_unix(batch_payload, "pvc_bound_at") or _payload_unix(
+                batch_payload, "dv_bound_at"
+            )
+            base_dv_created_at = _payload_unix(batch_payload, "base_dv_created_at")
+            base_dv_ready_at = _payload_unix(batch_payload, "base_dv_ready_at")
+            base_dv_bound_at = _payload_unix(batch_payload, "base_dv_bound_at")
+            snapshot_created_at = _payload_unix(batch_payload, "snapshot_created_at")
+            snapshot_ready_at = _payload_unix(batch_payload, "snapshot_ready_at")
+            if isinstance(batch_payload.get("dv_created"), list):
+                dv_count = len(batch_payload["dv_created"])
+            elif isinstance(batch_payload.get("dv_count"), int):
+                dv_count = batch_payload["dv_count"]
+            if isinstance(batch_payload.get("pvc_created"), list):
+                pvc_count = len(batch_payload["pvc_created"])
+            elif isinstance(batch_payload.get("pvc_count"), int):
+                pvc_count = batch_payload["pvc_count"]
+            if isinstance(batch_payload.get("snapshots"), list):
+                snapshot_count = len(batch_payload["snapshots"])
+            elif isinstance(batch_payload.get("snapshot_count"), int):
+                snapshot_count = batch_payload["snapshot_count"]
+        return {
+            "dv_created_at": dv_created_at,
+            "dv_ready_at": dv_ready_at,
+            "pvc_created_at": pvc_created_at,
+            "pvc_bound_at": pvc_bound_at,
+            "base_dv_created_at": base_dv_created_at,
+            "base_dv_ready_at": base_dv_ready_at,
+            "base_dv_bound_at": base_dv_bound_at,
+            "snapshot_created_at": snapshot_created_at,
+            "snapshot_ready_at": snapshot_ready_at,
+            "dv_count": dv_count,
+            "pvc_count": pvc_count,
+            "snapshot_count": snapshot_count,
+        }
+
+    def _batch_summary_dict(self, meta: dict[str, Any]) -> dict[str, Any]:
+        batch_id = str(meta["batch_id"])
+        summary_payload = self._load_summary_payload(meta)
+        # Preserve counts when summary was stripped of heavy lists.
+        if summary_payload is not None:
+            timing_src = dict(summary_payload)
+            row_total = meta.get("total_vms")
+            if timing_src.get("dv_count") is None and row_total is not None:
+                timing_src["dv_count"] = row_total
+            if timing_src.get("pvc_count") is None and row_total is not None:
+                timing_src["pvc_count"] = row_total
+        else:
+            timing_src = None
+        stats = self._cycle_stats(batch_id)
+        timing = self._batch_timing_fields(timing_src)
+        namespaces = _payload_namespaces(summary_payload)
+        if not namespaces:
+            raw_ns = meta.get("namespaces_json")
+            if isinstance(raw_ns, str) and raw_ns.strip():
+                try:
+                    parsed = json.loads(raw_ns)
+                    if isinstance(parsed, list):
+                        namespaces = [
+                            str(x) for x in parsed if x is not None and str(x).strip()
+                        ]
+                except json.JSONDecodeError:
+                    pass
+        api = meta.get("api_server") or _payload_api_server(summary_payload)
+        if isinstance(api, str):
+            api = api.strip() or None
+        boot_vms = self._boot_vm_stubs(batch_id, timing.get("dv_created_at"))
+        out = {
+            **meta,
+            **stats,
+            "batch_payload": summary_payload or {},
+            **timing,
+            "namespaces": namespaces,
+            "api_server": api,
+            "vms": boot_vms,
+            "vm_summary": self._list_vm_summary(batch_id, meta.get("total_vms")),
+            "series": [],
+            "view": "summary",
+        }
+        out.pop("namespaces_json", None)
+        out.pop("summary_json", None)
+        return out
+
+    def _boot_vm_stubs(
+        self, batch_id: str, batch_dv_created_at: int | None
+    ) -> list[dict[str, Any]]:
+        """Minimal VM dicts for boot histogram / summary (no full inventory)."""
+        self._ensure_batch_vm_index(batch_id)
+        boots: dict[str, int] = {}
+        for r in self._conn.execute(
+            """
+            SELECT COALESCE(vm_name, hostname) AS name, boot_timestamp_unix
+            FROM results
+            WHERE batch_id = ?
+              AND boot_timestamp_unix IS NOT NULL
+              AND COALESCE(vm_name, hostname) IS NOT NULL
+            ORDER BY reported_at ASC, created_at ASC
+            """,
+            (batch_id,),
+        ):
+            name = r["name"]
+            if name and name not in boots:
+                boots[name] = int(r["boot_timestamp_unix"])
+
+        stubs: list[dict[str, Any]] = []
+        for row in self._conn.execute(
+            """
+            SELECT vm_name, dv_created_at
+            FROM batch_vms
+            WHERE batch_id = ?
+            ORDER BY vm_name
+            """,
+            (batch_id,),
+        ):
+            name = row["vm_name"]
+            boot = boots.get(name)
+            if boot is None:
+                continue
+            stubs.append(
+                {
+                    "vm_name": name,
+                    "boot_timestamp_unix": boot,
+                    "dv_created_at_unix": row["dv_created_at"]
+                    if row["dv_created_at"] is not None
+                    else batch_dv_created_at,
+                }
+            )
+        # Boots for VMs not in index yet
+        indexed = {s["vm_name"] for s in stubs}
+        for name, boot in boots.items():
+            if name in indexed:
+                continue
+            stubs.append(
+                {
+                    "vm_name": name,
+                    "boot_timestamp_unix": boot,
+                    "dv_created_at_unix": batch_dv_created_at,
+                }
+            )
+        return stubs
+
+    def _replace_batch_vms(self, batch_id: str, payload: dict[str, Any]) -> None:
+        """Replace per-VM index rows from a manifest payload (caller holds lock)."""
+        self._conn.execute("DELETE FROM batch_vms WHERE batch_id = ?", (batch_id,))
+        named: dict[str, str | None] = {}
+        if isinstance(payload.get("vms"), list):
+            for entry in payload["vms"]:
+                entry_s = str(entry)
+                ns, _, name = entry_s.partition("/")
+                if not name:
+                    name = entry_s
+                    ns = ""
+                if name:
+                    named[name] = ns or None
+
+        vm_dv_map = _unix_map_from_payload(payload, "vm_dv_created")
+        vm_dv_ready_map = _unix_map_from_payload(payload, "vm_dv_ready")
+        vm_pvc_map = _unix_map_from_payload(payload, "vm_pvc_created")
+        vm_pvc_bound_map = _unix_map_from_payload(payload, "vm_pvc_bound")
+        if not vm_pvc_bound_map:
+            vm_pvc_bound_map = _unix_map_from_payload(payload, "vm_dv_bound")
+        vm_data_dv_map = _unix_map_from_payload(payload, "vm_data_dv_created")
+        vm_data_dv_ready_map = _unix_map_from_payload(payload, "vm_data_dv_ready")
+        vm_data_pvc_map = _unix_map_from_payload(payload, "vm_data_pvc_created")
+        vm_data_pvc_bound_map = _unix_map_from_payload(payload, "vm_data_pvc_bound")
+        if not vm_data_pvc_bound_map:
+            vm_data_pvc_bound_map = _unix_map_from_payload(payload, "vm_data_dv_bound")
+        vm_ssh_ready_map = _unix_map_from_payload(payload, "vm_ssh_ready")
+
+        batch_dv = _payload_unix(payload, "dv_created_at")
+        batch_dv_ready = _payload_unix(payload, "dv_ready_at")
+        batch_pvc = _payload_unix(payload, "pvc_created_at")
+        batch_pvc_bound = _payload_unix(payload, "pvc_bound_at") or _payload_unix(
+            payload, "dv_bound_at"
+        )
+        batch_ssh = _payload_unix(payload, "ssh_ready_at")
+
+        # Include map-only names (inventory missing) so timings stay queryable.
+        for name in (
+            set(vm_dv_map)
+            | set(vm_pvc_bound_map)
+            | set(vm_data_dv_map)
+            | set(vm_ssh_ready_map)
+        ):
+            named.setdefault(name, None)
+
+        rows = []
+        for name, ns in named.items():
+            rows.append(
+                (
+                    batch_id,
+                    name,
+                    ns,
+                    vm_dv_map.get(name, batch_dv),
+                    vm_dv_ready_map.get(name, batch_dv_ready),
+                    vm_pvc_map.get(name, batch_pvc),
+                    vm_pvc_bound_map.get(name, batch_pvc_bound),
+                    vm_data_dv_map.get(name),
+                    vm_data_dv_ready_map.get(name),
+                    vm_data_pvc_map.get(name),
+                    vm_data_pvc_bound_map.get(name),
+                    vm_ssh_ready_map.get(name, batch_ssh),
+                )
+            )
+        if rows:
+            self._conn.executemany(
+                """
+                INSERT INTO batch_vms (
+                    batch_id, vm_name, namespace,
+                    dv_created_at, dv_ready_at, pvc_created_at, pvc_bound_at,
+                    data_dv_created_at, data_dv_ready_at, data_pvc_created_at, data_pvc_bound_at,
+                    ssh_ready_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                rows,
+            )
+
+    def _ensure_batch_vm_index(self, batch_id: str) -> None:
+        """Backfill batch_vms from manifest once for legacy rows."""
+        count = self._conn.execute(
+            "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", (batch_id,)
+        ).fetchone()["c"]
+        if count:
+            return
+        row = self._conn.execute(
+            "SELECT batch_result_id FROM batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if not row or not row["batch_result_id"]:
+            return
+        bp = self._load_result_payload(row["batch_result_id"])
+        if not bp:
+            return
+        self._replace_batch_vms(batch_id, bp)
+        brows = self._conn.execute(
+            "SELECT summary_json FROM batches WHERE batch_id = ?", (batch_id,)
+        ).fetchone()
+        if brows is not None and brows["summary_json"] is None:
+            self._conn.execute(
+                "UPDATE batches SET summary_json = ? WHERE batch_id = ?",
+                (json.dumps(_manifest_summary(bp)), batch_id),
+            )
+        self._conn.commit()
+
+    def list_batch_vms(
+        self,
+        batch_id: str,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> dict[str, Any] | None:
+        """Paginated VM rows for a batch (from batch_vms index + live policy/status)."""
+        with self._lock:
+            exists = self._conn.execute(
+                "SELECT total_vms FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+            if not exists:
+                any_res = self._conn.execute(
+                    "SELECT 1 FROM results WHERE batch_id = ? LIMIT 1", (batch_id,)
+                ).fetchone()
+                if not any_res:
+                    return None
+
+            self._ensure_batch_vm_index(batch_id)
+            # Merge policy-only / result-only names into the index for complete paging.
+            self._sync_extra_vm_names(batch_id)
+
+            total = self._conn.execute(
+                "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", (batch_id,)
+            ).fetchone()["c"]
+
+            lim = max(1, min(int(limit), 1000))
+            off = max(0, int(offset))
+            rows = self._conn.execute(
+                """
+                SELECT *
+                FROM batch_vms
+                WHERE batch_id = ?
+                ORDER BY vm_name
+                LIMIT ? OFFSET ?
+                """,
+                (batch_id, lim, off),
+            ).fetchall()
+
+            names = [r["vm_name"] for r in rows]
+            boots = self._boot_map_for_names(batch_id, names)
+            items = []
+            now = int(time.time())
+            for r in rows:
+                name = r["vm_name"]
+                item: dict[str, Any] = {
+                    "vm_name": name,
+                    "namespace": r["namespace"],
+                    "from_metadata": True,
+                    "dv_created_at_unix": r["dv_created_at"],
+                    "dv_ready_at_unix": r["dv_ready_at"],
+                    "pvc_created_at_unix": r["pvc_created_at"],
+                    "pvc_bound_at_unix": r["pvc_bound_at"],
+                    "data_dv_created_at_unix": r["data_dv_created_at"],
+                    "data_dv_ready_at_unix": r["data_dv_ready_at"],
+                    "data_pvc_created_at_unix": r["data_pvc_created_at"],
+                    "data_pvc_bound_at_unix": r["data_pvc_bound_at"],
+                    "ssh_ready_at_unix": r["ssh_ready_at"],
+                    "boot_timestamp_unix": boots.get(name),
+                }
+                pol = self._conn.execute(
+                    "SELECT * FROM vm_policies WHERE batch_id = ? AND vm_name = ?",
+                    (batch_id, name),
+                ).fetchone()
+                item.update(self._vm_policy_ui_fields(pol, batch_id, name, now))
+                items.append(item)
+
+            return {
+                "batch_id": batch_id,
+                "total": total,
+                "limit": lim,
+                "offset": off,
+                "items": items,
+            }
+
+    def _sync_extra_vm_names(self, batch_id: str) -> None:
+        """Ensure policy/result VMs appear in batch_vms for pagination."""
+        existing = {
+            r["vm_name"]
+            for r in self._conn.execute(
+                "SELECT vm_name FROM batch_vms WHERE batch_id = ?", (batch_id,)
+            )
+        }
+        extras: set[str] = set()
+        for r in self._conn.execute(
+            "SELECT vm_name FROM vm_policies WHERE batch_id = ?", (batch_id,)
+        ):
+            if r["vm_name"] and r["vm_name"] not in existing:
+                extras.add(r["vm_name"])
+        for r in self._conn.execute(
+            """
+            SELECT DISTINCT COALESCE(vm_name, hostname) AS name
+            FROM results
+            WHERE batch_id = ?
+              AND COALESCE(vm_name, hostname) IS NOT NULL
+            """,
+            (batch_id,),
+        ):
+            if r["name"] and r["name"] not in existing:
+                extras.add(r["name"])
+        if not extras:
+            return
+        self._conn.executemany(
+            """
+            INSERT OR IGNORE INTO batch_vms (batch_id, vm_name)
+            VALUES (?, ?)
+            """,
+            [(batch_id, name) for name in extras],
+        )
+        self._conn.commit()
+
+    def _boot_map_for_names(self, batch_id: str, names: list[str]) -> dict[str, int]:
+        if not names:
+            return {}
+        boots: dict[str, int] = {}
+        placeholders = ", ".join("?" for _ in names)
+        for r in self._conn.execute(
+            f"""
+            SELECT COALESCE(vm_name, hostname) AS name, boot_timestamp_unix
+            FROM results
+            WHERE batch_id = ?
+              AND boot_timestamp_unix IS NOT NULL
+              AND COALESCE(vm_name, hostname) IN ({placeholders})
+            ORDER BY reported_at ASC, created_at ASC
+            """,
+            [batch_id, *names],
+        ):
+            name = r["name"]
+            if name and name not in boots:
+                boots[name] = int(r["boot_timestamp_unix"])
+        return boots
+
+    def _vm_policy_ui_fields(
+        self,
+        pol: sqlite3.Row | None,
+        batch_id: str,
+        name: str,
+        now: int,
+    ) -> dict[str, Any]:
+        stale_after = 120
+        if pol:
+            p = self._policy_row_to_dict(pol, batch_id, name)
+            last = p.get("last_poll_at") or p.get("last_status_at")
+            if p.get("agent_state") == "running":
+                ui_status = "running"
+            elif p.get("agent_state") == "error":
+                ui_status = "error"
+            elif last and (now - int(last)) > stale_after:
+                ui_status = "stale"
+            elif p["mode"] == "forever" or (p["mode"] == "count" and p["remaining"] > 0):
+                ui_status = "queued"
+            else:
+                ui_status = "idle"
+            return {
+                "policy_mode": p["mode"],
+                "policy_remaining": p["remaining"],
+                "agent_state": p.get("agent_state"),
+                "last_poll_at": p.get("last_poll_at"),
+                "vmi_phase": p.get("vmi_phase"),
+                "ui_status": ui_status,
+            }
+        return {
+            "policy_mode": None,
+            "policy_remaining": None,
+            "agent_state": None,
+            "last_poll_at": None,
+            "vmi_phase": None,
+            "ui_status": "waiting",
+        }
 
     def _vms_for_batch(
         self, batch_id: str, batch_payload: dict[str, Any] | None
@@ -1749,6 +2245,7 @@ class Store:
             self._conn.execute("DELETE FROM results WHERE batch_id = ?", (batch_id,))
             self._conn.execute("DELETE FROM batches WHERE batch_id = ?", (batch_id,))
             self._conn.execute("DELETE FROM vm_policies WHERE batch_id = ?", (batch_id,))
+            self._conn.execute("DELETE FROM batch_vms WHERE batch_id = ?", (batch_id,))
             self._conn.commit()
         batch_dir = self.results_dir / _safe_name(batch_id)
         if batch_dir.is_dir():
@@ -2023,7 +2520,27 @@ def make_handler(app: App):
 
             m = re.fullmatch(r"/v1/batches/([^/]+)", path)
             if m:
-                detail = app.store.get_batch(m.group(1))
+                view = (qs.get("view") or ["full"])[0] or "full"
+                detail = app.store.get_batch(m.group(1), view=str(view))
+                if detail is None:
+                    self._json(404, {"error": "batch not found"})
+                    return
+                self._json(200, detail)
+                return
+
+            m = re.fullmatch(r"/v1/batches/([^/]+)/vms", path)
+            if m:
+                try:
+                    limit = int((qs.get("limit") or ["100"])[0])
+                    offset = int((qs.get("offset") or ["0"])[0])
+                except ValueError:
+                    self._json(400, {"error": "invalid limit/offset"})
+                    return
+                detail = app.store.list_batch_vms(
+                    m.group(1),
+                    limit=max(1, min(limit, 1000)),
+                    offset=max(0, offset),
+                )
                 if detail is None:
                     self._json(404, {"error": "batch not found"})
                     return

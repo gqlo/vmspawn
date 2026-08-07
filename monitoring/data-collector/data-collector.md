@@ -6,17 +6,139 @@ the browser dashboard. Design notes:
 
 | Path | Role |
 |------|------|
-| [`serve.py`](serve.py) | HTTP server (ingest API + static UI) |
+| [`serve.py`](serve.py) | HTTP server (ingest API + static UI + CORS) |
 | [`run-dashboard.sh`](run-dashboard.sh) | Serve **UI only** (point API at local or remote collector) |
+| [`run-serve.sh`](run-serve.sh) | Wrapper: env → `serve.py` (used by systemd) |
 | [`restart-service.sh`](restart-service.sh) | After `git pull`: sync unit if needed, `daemon-reload`, restart, healthz |
 | [`vstorm-data-collector.service`](vstorm-data-collector.service) | systemd unit |
 | [`data-collector.env.example`](data-collector.env.example) | Env file template |
-| [`static/`](static/) | Dashboard assets |
+| [`static/`](static/) | Dashboard assets (`index.html`, `app.js`, `dashboard-lib.js`, `style.css`) |
 | [`seed_dummy.py`](seed_dummy.py) | Optional dummy data for UI demos |
 | [`collect_batch_dv_created.py`](collect_batch_dv_created.py) | Used by vstorm for DV/PVC timestamps |
 
 Default listen: `0.0.0.0:8080`. Binding there exposes plain HTTP ingest/control
 APIs — use only on trusted or lab networks, or set a bearer `TOKEN`.
+
+## Architecture
+
+### Big picture
+
+```text
+┌─────────────────┐     POST /v1/results      ┌──────────────────────────────┐
+│  vstorm (host)  │ ─────────────────────────►│  serve.py  (collector API)   │
+│  + guest agents │     GET  /v1/policy        │  ThreadingHTTPServer         │
+└─────────────────┘ ◄─────────────────────────│                              │
+                                              │  ┌─────────┐  ┌───────────┐  │
+┌─────────────────┐     GET /v1/batches…      │  │index.db │  │ results/  │  │
+│  Browser UI     │ ─────────────────────────►│  │ SQLite  │  │ *.json    │  │
+│  static/*.js    │     (+ CORS if cross-origin)│  └─────────┘  └───────────┘  │
+└─────────────────┘                           └──────────────────────────────┘
+        ▲                                              ▲
+        │ same process OR                              │ DATA_DIR
+        │ run-dashboard.sh :5500                       │
+```
+
+Two deployment shapes:
+
+| Mode | Who serves the UI | Who serves `/v1/*` | Typical use |
+|------|-------------------|--------------------|-------------|
+| **Combined** | `serve.py` (`:8080/`) | same process | Lab host; open `http://<lab>:8080/` |
+| **Split** | `run-dashboard.sh` (`:5500`) | remote `serve.py` | Laptop UI → lab API |
+
+### Component catalog
+
+| Layer | Component | Responsibility |
+|-------|-----------|----------------|
+| Ingest clients | `vstorm`, guest workloads | `POST /v1/results` (manifest / result / heartbeat / error); guests poll `GET /v1/policy` |
+| HTTP API | `serve.py` → `Store` | Auth (optional Bearer), CORS, CRUD over batches/VMs/results |
+| Persistence | SQLite `index.db` | Queryable index: batches, results metadata, VM policies, VM list index |
+| Persistence | `results/<batch_id>/*.json` | Source-of-truth payloads (full manifest, per-guest JSON) |
+| Dashboard | `static/app.js` | Hash router (`#/runs`, `#/runs/<id>`, …); `fetch` to API base |
+| Dashboard | `static/dashboard-lib.js` | Pure helpers (formatters, paging math, CSV) |
+| Process mgmt | systemd + `run-serve.sh` | Long-running collector on the lab |
+
+### How the dashboard talks to the backend
+
+The UI **never opens SQLite**. It only calls HTTP JSON APIs.
+
+1. **API base** — header field **API**, stored in `localStorage` key
+   `workload-result-api-base`.
+   - **Never configured** (`null`): defaults to the PerfScale lab collector
+     `http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080`.
+   - **Empty string** (clear + Apply): same-origin relative URLs (combined mode).
+   - **Override**: type a URL and Apply, or open `?api=http://host:8080` once.
+2. **Requests** — `fetch(apiBase + path)` with optional
+   `Authorization: Bearer <token>` from `localStorage` key `workload-result-token`.
+3. **CORS** — when the UI origin differs from the API (split mode), `serve.py`
+   answers `OPTIONS` preflights and sets `Access-Control-Allow-Origin` for the
+   requesting origin.
+4. **Routes → APIs** (representative):
+
+| UI route | Primary API calls |
+|----------|-------------------|
+| `#/runs` | `GET /v1/batches?…` (list metadata only; no full manifests) |
+| `#/runs/<batch>` | `GET /v1/batches/<id>?view=summary` then paginated `GET /v1/batches/<id>/vms?limit=&offset=` |
+| `#/runs/<batch>/vms/<vm>` | `GET /v1/batches/<id>/vms/<vm>` |
+| `#/runs/<batch>/timestamps` | `GET /v1/batches/<id>` (full detail) / related timestamp helpers |
+| `#/timestamps` | `GET /v1/timestamps?…` |
+
+Batch list and the VM table are designed to avoid loading multi-thousand-VM
+manifest JSON on every page view (see [Data model](#data-model-sqlite--json-files)).
+
+### Data model (SQLite + JSON files)
+
+**Database:** SQLite 3 via Python `sqlite3` (stdlib). File:
+
+`$DATA_DIR/index.db`
+
+**On-disk payloads:**
+
+```text
+$DATA_DIR/
+  index.db                 # SQLite index
+  results/
+    <batch_id>/
+      manifest.json        # vstorm run inventory (may be large)
+      result-*.json        # guest fio/etc. results
+      heartbeat-*.json
+      error-*.json
+```
+
+| SQLite table | Purpose |
+|--------------|---------|
+| `batches` | One row per batch: sizes, times, label/notes/archived, `batch_result_id`, **list metadata** (`api_server`, `namespaces_json`, `summary_json`) |
+| `results` | Indexed fields from every stored JSON (type, VM, cycle, IOPS, boot time, `file_path`, …) |
+| `vm_policies` | Per-VM run mode / remaining / agent_state / vmi_phase (dashboard + guest poll) |
+| `batch_vms` | Per-VM inventory + DV/PVC timing columns for **paginated** list views |
+
+Ingest flow:
+
+1. Write JSON under `results/<batch_id>/`.
+2. Insert/update `results` (+ `batches` / `batch_vms` / `summary_json` for manifests).
+3. Dashboard reads via `/v1/*` only.
+
+`summary_json` holds a **small** copy of the manifest (cluster, cmdline, guest env,
+counts) without per-VM maps. Full maps stay in `manifest.json` for payload
+inspection and full `GET /v1/batches/<id>` (timestamps / “View manifest”).
+
+### API surface (catalog)
+
+| Method | Path | Role |
+|--------|------|------|
+| `GET` | `/healthz` | Liveness (no auth) |
+| `POST` | `/v1/results` | Ingest one JSON record |
+| `GET` | `/v1/batches` | Filtered batch list + facets |
+| `GET` | `/v1/batches/<id>?view=summary\|full` | Batch detail (`summary` = light; default `full`) |
+| `GET` | `/v1/batches/<id>/vms?limit=&offset=` | Paginated VM rows |
+| `GET` | `/v1/batches/<id>/vms/<vm>` | One VM + cycles |
+| `GET`/`PUT` | `/v1/batches/<id>/vms/<vm>/policy` | Per-VM policy |
+| `PUT` | `/v1/batches/<id>/policy` | Fan-out policy |
+| `GET` | `/v1/policy?batch_id=&vm_name=` | Guest poll helper |
+| `GET` | `/v1/timestamps` | Cross-batch timing rows |
+| `GET` | `/v1/batches/<id>/results[…]` | Result listing / single payload |
+| `PATCH`/`DELETE` | `/v1/batches/<id>` | Notes/label/archive / delete batch |
+
+Optional auth: `--token` / `TOKEN=` → Bearer required on `/v1/*` (not `/healthz`).
 
 ## Prerequisites
 

@@ -39,6 +39,7 @@ const {
   buildCrossBatchTimestampsCsv,
   histogramBins,
   DEFAULT_PAGE_SIZE,
+  pagerMeta,
   slicePage,
   normalizeApiBase,
   apiUrl,
@@ -881,13 +882,17 @@ async function renderRun(app, batchId) {
     { label: "Batches", href: "#/runs" },
     { label: batchId },
   ]);
-  const b = await api("/v1/batches/" + encodeURIComponent(batchId));
+  // Summary view avoids loading the full manifest / all VMs; table pages fetch separately.
+  const b = await api(
+    "/v1/batches/" + encodeURIComponent(batchId) + "?view=summary"
+  );
   const bp = b.batch_payload || {};
   const batchResultId = b.batch_result_id;
   const vs = b.vm_summary || {};
-  const bootSummary = fmtBootTimeSummary(b.vms || [], b.started_at, b.dv_created_at);
-  const vmList = b.vms || [];
+  const bootVms = b.vms || [];
+  const bootSummary = fmtBootTimeSummary(bootVms, b.started_at, b.dv_created_at);
   const guestEnvLines = formatGuestEnv(bp.guest_env);
+  const totalVms = Number(b.total_vms != null ? b.total_vms : bootVms.length) || 0;
 
   app.innerHTML = `
     <div class="panel">
@@ -943,18 +948,15 @@ async function renderRun(app, batchId) {
 
     <div class="panel">
       <h3 style="margin-top:0">VMs${
-        vmList.length ? ` <span class="muted" style="font-weight:normal">(${escapeHtml(String(vmList.length))})</span>` : ""
+        totalVms ? ` <span class="muted" style="font-weight:normal">(${escapeHtml(String(totalVms))})</span>` : ""
       }</h3>
-      ${
-        vmList.length
-          ? `<div class="pager" id="vms-pager-top" hidden></div>
-        <div class="table-wrap"><table>
+      <div class="pager" id="vms-pager-top" hidden></div>
+      <div class="table-wrap"><table>
         <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>dv_creation_s</th><th>data_dv_creation_s</th><th>vm_ready_s</th><th>Boot</th></tr></thead>
-        <tbody id="vms-tbody"></tbody>
+        <tbody id="vms-tbody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
       </table></div>
-      <div class="pager" id="vms-pager-bottom" hidden></div>`
-          : `<div class="empty">No VMs listed yet.</div>`
-      }
+      <div class="pager" id="vms-pager-bottom" hidden></div>
+      <div class="empty" id="vms-empty" style="display:none">No VMs listed yet.</div>
     </div>
 
     <div class="panel">
@@ -967,7 +969,7 @@ async function renderRun(app, batchId) {
       <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
     </div>`;
 
-  drawBootHistogram(vmList, b.started_at, b.dv_created_at);
+  drawBootHistogram(bootVms, b.started_at, b.dv_created_at);
 
   $("#btn-archive").onclick = async () => {
     try {
@@ -1000,13 +1002,14 @@ async function renderRun(app, batchId) {
     render();
   };
 
-  const vmsTbody = $("#vms-tbody");
-  if (vmsTbody && vmList.length) {
-    const rowHtmls = vmList.map((v) => {
-      const dvCreation = durationSeconds(v.pvc_bound_at_unix, v.dv_created_at_unix);
-      const dataDvCreation = durationSeconds(v.data_pvc_bound_at_unix, v.data_dv_created_at_unix);
-      const vmReady = durationSeconds(v.boot_timestamp_unix, v.dv_created_at_unix);
-      return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
+  await bindServerVmPager(batchId);
+}
+
+function vmRowHtml(batchId, v) {
+  const dvCreation = durationSeconds(v.pvc_bound_at_unix, v.dv_created_at_unix);
+  const dataDvCreation = durationSeconds(v.data_pvc_bound_at_unix, v.data_dv_created_at_unix);
+  const vmReady = durationSeconds(v.boot_timestamp_unix, v.dv_created_at_unix);
+  return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
               <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
@@ -1017,14 +1020,62 @@ async function renderRun(app, batchId) {
               <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
             </tr>`;
-    });
-    bindPaginatedTable({
-      tbody: vmsTbody,
-      pagers: [$("#vms-pager-top"), $("#vms-pager-bottom")].filter(Boolean),
-      rowHtmls,
-      onRendered: () => bindClickableRows(vmsTbody),
-    });
-  }
+}
+
+/** Server-side VM table pages (GET /v1/batches/:id/vms?limit&offset). */
+async function bindServerVmPager(batchId) {
+  const tbody = $("#vms-tbody");
+  const empty = $("#vms-empty");
+  const tableWrap = tbody && tbody.closest(".table-wrap");
+  const pagers = [$("#vms-pager-top"), $("#vms-pager-bottom")].filter(Boolean);
+  if (!tbody) return;
+
+  let current = 1;
+  let inflight = 0;
+
+  const paint = async (nextPage, { scroll } = {}) => {
+    const page = Math.max(1, nextPage || 1);
+    const req = ++inflight;
+    const limit = DEFAULT_PAGE_SIZE;
+    const offset = (page - 1) * limit;
+    tbody.innerHTML = `<tr><td colspan="7" class="muted">Loading…</td></tr>`;
+    try {
+      const data = await api(
+        `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
+      );
+      if (req !== inflight) return;
+      const items = data.items || [];
+      const total = Number(data.total || 0);
+      current = page;
+      if (!total && !items.length) {
+        if (tableWrap) tableWrap.style.display = "none";
+        pagers.forEach((p) => {
+          p.hidden = true;
+        });
+        if (empty) empty.style.display = "";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      if (tableWrap) tableWrap.style.display = "";
+      const meta = pagerMeta(total, page, limit);
+      current = meta.page;
+      tbody.innerHTML = items.map((v) => vmRowHtml(batchId, v)).join("");
+      for (const pager of pagers) {
+        renderPagerControls(pager, meta, (p) => paint(p, { scroll: true }));
+      }
+      bindClickableRows(tbody);
+      if (scroll && pagers[0]) {
+        pagers[0].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    } catch (err) {
+      if (req !== inflight) return;
+      tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load VMs: ${escapeHtml(
+        err && err.message ? err.message : String(err)
+      )}</td></tr>`;
+    }
+  };
+
+  await paint(1);
 }
 
 function downloadTextFile(filename, text, mime) {

@@ -11,6 +11,7 @@ import json
 import sys
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -144,6 +145,38 @@ class TestHelpers(unittest.TestCase):
     def test_safe_name(self) -> None:
         self.assertEqual(wr._safe_name("vm/name:1"), "vm_name_1")
         self.assertEqual(wr._safe_name("..."), "unknown")
+
+    def test_manifest_summary_strips_heavy_keys(self) -> None:
+        summary = wr._manifest_summary(
+            {
+                "batch_id": "b1",
+                "cluster": {"api_server": "https://api.example:6443"},
+                "vms": ["ns/a"],
+                "vm_dv_created": {"a": "2026-07-22T05:49:00Z"},
+                "dv_created": ["x", "y"],
+                "pvc_created": ["p"],
+                "snapshots": ["s"],
+                "cmdline": ["./vstorm"],
+            }
+        )
+        self.assertEqual(summary["batch_id"], "b1")
+        self.assertEqual(summary["cmdline"], ["./vstorm"])
+        self.assertEqual(summary["dv_count"], 2)
+        self.assertEqual(summary["pvc_count"], 1)
+        self.assertEqual(summary["snapshot_count"], 1)
+        self.assertNotIn("vms", summary)
+        self.assertNotIn("vm_dv_created", summary)
+        self.assertNotIn("dv_created", summary)
+
+    def test_unix_map_from_payload(self) -> None:
+        self.assertEqual(wr._unix_map_from_payload(None, "vm_dv_created"), {})
+        self.assertEqual(wr._unix_map_from_payload({"vm_dv_created": "bad"}, "vm_dv_created"), {})
+        got = wr._unix_map_from_payload(
+            {"vm_dv_created": {"vm1": "2026-07-22T05:49:00Z", "vm2": "nope"}},
+            "vm_dv_created",
+        )
+        self.assertEqual(set(got), {"vm1"})
+        self.assertEqual(got["vm1"], 1784699340)
 
 
 class TestStoreIngest(unittest.TestCase):
@@ -862,6 +895,444 @@ class TestStoreQueries(unittest.TestCase):
         self.assertEqual(row["api_server"], "https://api.legacy.test:6443")
         self.assertEqual(json.loads(row["namespaces_json"]), ["ns"])
 
+    def test_list_batch_vms_paginates_without_full_payload(self) -> None:
+        vms = [f"ns/vm-{i:04d}" for i in range(250)]
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "page1",
+                "basename": "rhel9",
+                "total_vms": 250,
+                "vms": vms,
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "dv_created_at": "2026-07-28T11:01:00Z",
+                "vm_dv_created": {f"vm-{i:04d}": "2026-07-28T11:01:00Z" for i in range(250)},
+                "cluster": {"api_server": "https://api.page.test:6443"},
+            }
+        )
+        indexed = self.store._conn.execute(
+            "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", ("page1",)
+        ).fetchone()["c"]
+        self.assertEqual(indexed, 250)
+
+        page = self.store.list_batch_vms("page1", limit=100, offset=100)
+        assert page is not None
+        self.assertEqual(page["total"], 250)
+        self.assertEqual(page["limit"], 100)
+        self.assertEqual(page["offset"], 100)
+        self.assertEqual(len(page["items"]), 100)
+        self.assertEqual(page["items"][0]["vm_name"], "vm-0100")
+        self.assertEqual(page["items"][-1]["vm_name"], "vm-0199")
+
+        summary = self.store.get_batch("page1", view="summary")
+        assert summary is not None
+        self.assertEqual(summary["view"], "summary")
+        self.assertNotIn("vms", summary["batch_payload"] or {})
+        self.assertNotIn("vm_dv_created", summary["batch_payload"] or {})
+        self.assertEqual(summary["batch_payload"].get("cluster", {}).get("api_server"),
+                         "https://api.page.test:6443")
+        # Summary boot stubs only include VMs with boots; none yet.
+        self.assertEqual(summary["vms"], [])
+        self.assertEqual(summary["series"], [])
+
+        loads = {"n": 0}
+        orig = self.store._load_result_payload
+
+        def counting_load(result_id: str):
+            loads["n"] += 1
+            return orig(result_id)
+
+        self.store._load_result_payload = counting_load  # type: ignore[method-assign]
+        try:
+            again = self.store.list_batch_vms("page1", limit=50, offset=0)
+            self.store.get_batch("page1", view="summary")
+        finally:
+            self.store._load_result_payload = orig  # type: ignore[method-assign]
+        self.assertEqual(loads["n"], 0)
+        self.assertEqual(len(again["items"]), 50)
+
+    def test_ensure_batch_vm_index_backfills_legacy_rows(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "bf1",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "vms": ["ns/alpha", "beta"],  # bare name + namespaced
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "dv_created_at": "2026-07-28T11:01:00Z",
+                "dv_created": ["dv-a", "dv-b"],
+                "pvc_created": ["pvc-a", "pvc-b"],
+                "snapshots": ["snap-1"],
+                "vm_dv_created": {"alpha": "2026-07-28T11:01:10Z"},
+                "vm_dv_bound": {"alpha": "2026-07-28T11:01:20Z"},
+                "vm_data_dv_created": {"alpha": "2026-07-28T11:01:30Z"},
+                "vm_data_dv_bound": {"alpha": "2026-07-28T11:01:40Z"},
+                "vm_ssh_ready": {"alpha": "2026-07-28T11:02:00Z"},
+                "cluster": {"api_server": "https://api.bf.test:6443"},
+            }
+        )
+        # Simulate pre-index DB: wipe index + summary.
+        self.store._conn.execute("DELETE FROM batch_vms WHERE batch_id = ?", ("bf1",))
+        self.store._conn.execute(
+            "UPDATE batches SET summary_json = NULL WHERE batch_id = ?", ("bf1",)
+        )
+        self.store._conn.commit()
+        self.assertEqual(
+            self.store._conn.execute(
+                "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", ("bf1",)
+            ).fetchone()["c"],
+            0,
+        )
+
+        page = self.store.list_batch_vms("bf1", limit=10, offset=0)
+        assert page is not None
+        self.assertEqual(page["total"], 2)
+        by_name = {x["vm_name"]: x for x in page["items"]}
+        self.assertIn("alpha", by_name)
+        self.assertIn("beta", by_name)
+        self.assertEqual(by_name["alpha"]["namespace"], "ns")
+        self.assertIsNone(by_name["beta"]["namespace"])
+        self.assertEqual(
+            by_name["alpha"]["pvc_bound_at_unix"],
+            wr._coerce_unix("2026-07-28T11:01:20Z"),
+        )
+        self.assertEqual(
+            by_name["alpha"]["data_dv_created_at_unix"],
+            wr._coerce_unix("2026-07-28T11:01:30Z"),
+        )
+        self.assertEqual(
+            by_name["alpha"]["data_pvc_bound_at_unix"],
+            wr._coerce_unix("2026-07-28T11:01:40Z"),
+        )
+        self.assertEqual(
+            by_name["alpha"]["ssh_ready_at_unix"],
+            wr._coerce_unix("2026-07-28T11:02:00Z"),
+        )
+
+        summary = self.store.get_batch("bf1", view="summary")
+        assert summary is not None
+        self.assertEqual(summary["dv_count"], 2)
+        self.assertEqual(summary["pvc_count"], 2)
+        self.assertEqual(summary["snapshot_count"], 1)
+        self.assertEqual(summary["namespaces"], ["ns"])
+        row = self.store._conn.execute(
+            "SELECT summary_json FROM batches WHERE batch_id = ?", ("bf1",)
+        ).fetchone()
+        self.assertIsNotNone(row["summary_json"])
+
+    def test_summary_includes_boot_stubs_and_policy_ui_statuses(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "ui1",
+                "basename": "rhel9",
+                "total_vms": 3,
+                "vms": ["ns/run-vm", "ns/idle-vm", "ns/wait-vm"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "dv_created_at": "2026-07-28T11:01:00Z",
+                "vm_dv_created": {
+                    "run-vm": "2026-07-28T11:01:00Z",
+                    "idle-vm": "2026-07-28T11:01:00Z",
+                    "wait-vm": "2026-07-28T11:01:00Z",
+                },
+            }
+        )
+        self.store.set_policy("ui1", "run-vm", mode="forever")
+        self.store.set_policy("ui1", "idle-vm", mode="idle")
+        self.store.set_policy("ui1", "err-vm", mode="count", remaining=1)
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "fio",
+                "batch_id": "ui1",
+                "vm_name": "run-vm",
+                "agent_state": "running",
+                "vmi_phase": "Running",
+                "boot_timestamp": "2026-07-28T11:05:00Z",
+                "reported_at": "2026-07-28T11:05:00Z",
+            }
+        )
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "fio",
+                "batch_id": "ui1",
+                "vm_name": "idle-vm",
+                "agent_state": "idle",
+                "boot_timestamp": "2026-07-28T11:06:00Z",
+                "reported_at": "2026-07-28T11:06:00Z",
+            }
+        )
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "heartbeat",
+                "source": "guest",
+                "workload_kind": "fio",
+                "batch_id": "ui1",
+                "vm_name": "err-vm",
+                "agent_state": "error",
+                "reported_at": "2026-07-28T11:07:00Z",
+            }
+        )
+        # Stale: old last_poll_at
+        self.store._conn.execute(
+            """
+            UPDATE vm_policies
+            SET agent_state = 'idle', last_poll_at = 1, mode = 'idle', remaining = 0
+            WHERE batch_id = ? AND vm_name = ?
+            """,
+            ("ui1", "idle-vm"),
+        )
+        self.store._conn.commit()
+
+        page = self.store.list_batch_vms("ui1", limit=50, offset=0)
+        assert page is not None
+        # wait-vm from manifest + err-vm from policy sync
+        self.assertGreaterEqual(page["total"], 4)
+        by_name = {x["vm_name"]: x for x in page["items"]}
+        self.assertEqual(by_name["run-vm"]["ui_status"], "running")
+        self.assertEqual(by_name["err-vm"]["ui_status"], "error")
+        self.assertEqual(by_name["idle-vm"]["ui_status"], "stale")
+        self.assertEqual(by_name["wait-vm"]["ui_status"], "waiting")
+
+        self.store.set_policy("ui1", "idle-vm", mode="count", remaining=3)
+        self.store._conn.execute(
+            """
+            UPDATE vm_policies
+            SET agent_state = NULL, last_poll_at = ?
+            WHERE batch_id = ? AND vm_name = ?
+            """,
+            (int(time.time()), "ui1", "idle-vm"),
+        )
+        self.store._conn.commit()
+        page2 = self.store.list_batch_vms("ui1", limit=50, offset=0)
+        assert page2 is not None
+        by_name2 = {x["vm_name"]: x for x in page2["items"]}
+        self.assertEqual(by_name2["idle-vm"]["ui_status"], "queued")
+
+        summary = self.store.get_batch("ui1", view="summary")
+        assert summary is not None
+        boot_names = {v["vm_name"] for v in summary["vms"]}
+        self.assertIn("run-vm", boot_names)
+        self.assertIn("idle-vm", boot_names)
+        self.assertTrue(all("boot_timestamp_unix" in v for v in summary["vms"]))
+        self.assertEqual(summary["vm_summary"]["vmi_running"], 1)
+
+    def test_list_batch_vms_unknown_and_result_only_batch(self) -> None:
+        self.assertIsNone(self.store.list_batch_vms("missing-batch"))
+        self.store.ingest(_fio_payload(batch_id="res-only", vm="solo"))
+        page = self.store.list_batch_vms("res-only", limit=10, offset=0)
+        assert page is not None
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["vm_name"], "solo")
+        self.assertIsNotNone(page["items"][0]["boot_timestamp_unix"])
+
+    def test_summary_recovers_from_corrupt_summary_json(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "badsum",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns/vm1"],
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "cluster": {"api_server": "https://api.badsum.test:6443"},
+            }
+        )
+        self.store._conn.execute(
+            "UPDATE batches SET summary_json = ? WHERE batch_id = ?",
+            ("{not-json", "badsum"),
+        )
+        self.store._conn.commit()
+        summary = self.store.get_batch("badsum", view="summary")
+        assert summary is not None
+        self.assertEqual(
+            summary["batch_payload"]["cluster"]["api_server"],
+            "https://api.badsum.test:6443",
+        )
+        # Persisted repaired summary
+        row = self.store._conn.execute(
+            "SELECT summary_json FROM batches WHERE batch_id = ?", ("badsum",)
+        ).fetchone()
+        self.assertTrue(row["summary_json"].startswith("{"))
+
+    def test_map_only_vm_names_indexed_and_delete_clears_batch_vms(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "maponly",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": [],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "vm_dv_created": {"ghost": "2026-07-28T11:01:00Z"},
+            }
+        )
+        page = self.store.list_batch_vms("maponly", limit=10, offset=0)
+        assert page is not None
+        self.assertEqual(page["total"], 1)
+        self.assertEqual(page["items"][0]["vm_name"], "ghost")
+        self.assertTrue(self.store.delete_batch("maponly"))
+        self.assertEqual(
+            self.store._conn.execute(
+                "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", ("maponly",)
+            ).fetchone()["c"],
+            0,
+        )
+
+    def test_summary_edge_cases_no_payload_and_corrupt_namespaces(self) -> None:
+        # Results-only batch: no summary_json / batch_result_id.
+        self.store.ingest(_fio_payload(batch_id="edge1", vm="solo"))
+        summary = self.store.get_batch("edge1", view="summary")
+        assert summary is not None
+        self.assertEqual(summary["view"], "summary")
+        self.assertEqual(summary["batch_payload"], {})
+        # Boot stub comes from results even without batch_vms inventory entry initially.
+        self.assertTrue(any(v["vm_name"] == "solo" for v in summary["vms"]))
+
+        self.assertIsNone(
+            self.store._load_summary_payload(
+                {"batch_id": "edge1", "summary_json": None, "batch_result_id": None}
+            )
+        )
+        self.assertEqual(self.store._boot_map_for_names("edge1", []), {})
+
+        # Corrupt namespaces_json with empty summary namespaces falls back gracefully.
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "edge2",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns/vm1"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+            }
+        )
+        self.store._conn.execute(
+            """
+            UPDATE batches
+            SET namespaces_json = ?, summary_json = ?
+            WHERE batch_id = ?
+            """,
+            ("{bad", json.dumps({"batch_id": "edge2", "record_type": "manifest"}), "edge2"),
+        )
+        self.store._conn.commit()
+        summary2 = self.store.get_batch("edge2", view="summary")
+        assert summary2 is not None
+        self.assertEqual(summary2["namespaces"], [])
+
+        # ensure_batch_vm_index no-ops when there is no manifest result id.
+        self.store._conn.execute("DELETE FROM batch_vms WHERE batch_id = ?", ("edge1",))
+        self.store._conn.execute(
+            "UPDATE batches SET batch_result_id = NULL WHERE batch_id = ?", ("edge1",)
+        )
+        self.store._conn.commit()
+        self.store._ensure_batch_vm_index("edge1")
+        self.assertEqual(
+            self.store._conn.execute(
+                "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", ("edge1",)
+            ).fetchone()["c"],
+            0,
+        )
+
+    def test_policy_idle_status_on_paginated_vms(self) -> None:
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "idle1",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns/vm1"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+            }
+        )
+        self.store.set_policy("idle1", "vm1", mode="idle")
+        self.store._conn.execute(
+            """
+            UPDATE vm_policies
+            SET agent_state = 'idle', last_poll_at = ?
+            WHERE batch_id = ? AND vm_name = ?
+            """,
+            (int(time.time()), "idle1", "vm1"),
+        )
+        self.store._conn.commit()
+        page = self.store.list_batch_vms("idle1", limit=10, offset=0)
+        assert page is not None
+        self.assertEqual(page["items"][0]["ui_status"], "idle")
+
+    def test_get_batch_and_ensure_index_missing_payload_file(self) -> None:
+        self.store.ingest(_fio_payload(batch_id="orphan", vm="solo"))
+        # Drop the batches row but keep results → get_batch still works.
+        self.store._conn.execute("DELETE FROM batches WHERE batch_id = ?", ("orphan",))
+        self.store._conn.commit()
+        full = self.store.get_batch("orphan")
+        assert full is not None
+        self.assertEqual(full["batch_id"], "orphan")
+        summary = self.store.get_batch("orphan", view="summary")
+        assert summary is not None
+        self.assertEqual(summary["view"], "summary")
+
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "nofile",
+                "basename": "rhel9",
+                "total_vms": 1,
+                "vms": ["ns/vm1"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+            }
+        )
+        row = self.store._conn.execute(
+            "SELECT batch_result_id, file_path FROM batches b "
+            "JOIN results r ON r.result_id = b.batch_result_id "
+            "WHERE b.batch_id = ?",
+            ("nofile",),
+        ).fetchone()
+        # Remove manifest file and wipe index so ensure tries to reload.
+        (Path(self._td.name) / row["file_path"]).unlink()
+        self.store._conn.execute("DELETE FROM batch_vms WHERE batch_id = ?", ("nofile",))
+        self.store._conn.commit()
+        self.store._ensure_batch_vm_index("nofile")
+        self.assertEqual(
+            self.store._conn.execute(
+                "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", ("nofile",)
+            ).fetchone()["c"],
+            0,
+        )
+
     def test_list_vm_timestamps_across_batches(self) -> None:
         for bid, vm, boot, started in (
             ("ts1", "vm-a", "2026-07-22T05:50:25Z", "2026-07-22T05:48:00Z"),
@@ -1093,6 +1564,69 @@ class TestHTTPApi(unittest.TestCase):
         self.assertEqual(row["base_dv_bound_at"], 1784699321)
         self.assertEqual(row["snapshot_created_at"], 1784699330)
         self.assertEqual(row["snapshot_ready_at"], 1784699335)
+
+    def test_batch_summary_and_paginated_vms_http(self) -> None:
+        vms = [f"ns/vm-{i:03d}" for i in range(120)]
+        status, _ = self._json(
+            "POST",
+            "/v1/results",
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "http-page",
+                "basename": "rhel9",
+                "total_vms": 120,
+                "vms": vms,
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "dv_created_at": "2026-07-28T11:01:00Z",
+                "vm_dv_created": {
+                    f"vm-{i:03d}": "2026-07-28T11:01:00Z" for i in range(120)
+                },
+                "cluster": {"api_server": "https://api.http-page.test:6443"},
+                "cmdline": ["./vstorm", "--vms=120"],
+            },
+        )
+        self.assertEqual(status, 201)
+
+        status, summary = self._json("GET", "/v1/batches/http-page?view=summary")
+        self.assertEqual(status, 200)
+        self.assertEqual(summary["view"], "summary")
+        self.assertEqual(summary["total_vms"], 120)
+        self.assertNotIn("vms", summary.get("batch_payload") or {})
+        self.assertNotIn("vm_dv_created", summary.get("batch_payload") or {})
+        self.assertEqual(
+            summary["batch_payload"]["cluster"]["api_server"],
+            "https://api.http-page.test:6443",
+        )
+        self.assertEqual(summary["series"], [])
+
+        status, page = self._json(
+            "GET", "/v1/batches/http-page/vms?limit=50&offset=50"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(page["total"], 120)
+        self.assertEqual(page["limit"], 50)
+        self.assertEqual(page["offset"], 50)
+        self.assertEqual(len(page["items"]), 50)
+        self.assertEqual(page["items"][0]["vm_name"], "vm-050")
+        self.assertEqual(page["items"][-1]["vm_name"], "vm-099")
+
+        status, bad = self._json(
+            "GET", "/v1/batches/http-page/vms?limit=nope&offset=0"
+        )
+        self.assertEqual(status, 400)
+        self.assertIn("limit", bad.get("error", "").lower())
+
+        status, missing = self._json("GET", "/v1/batches/no-such/vms")
+        self.assertEqual(status, 404)
+
+        status, missing_batch = self._json(
+            "GET", "/v1/batches/no-such?view=summary"
+        )
+        self.assertEqual(status, 404)
 
     def test_cors_preflight_and_get(self) -> None:
         origin = "http://127.0.0.1:5500"
