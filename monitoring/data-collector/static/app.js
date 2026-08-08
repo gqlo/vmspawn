@@ -33,7 +33,6 @@ const {
   parseRoute,
   statusBadge,
   bootDurationsSeconds,
-  fmtBootTimeSummary,
   durationSeconds,
   buildBootTimesCsv,
   buildCrossBatchTimestampsCsv,
@@ -878,9 +877,10 @@ async function renderRuns(app) {
 }
 
 async function renderRun(app, batchId) {
+  const summaryTitle = `${batchId}-Summary`;
   setCrumbs([
     { label: "Batches", href: "#/runs" },
-    { label: batchId },
+    { label: summaryTitle },
   ]);
   // Summary view avoids loading the full manifest / all VMs; table pages fetch separately.
   const b = await api(
@@ -889,20 +889,25 @@ async function renderRun(app, batchId) {
   const bp = b.batch_payload || {};
   const batchResultId = b.batch_result_id;
   const vs = b.vm_summary || {};
-  const bootVms = b.vms || [];
-  const bootSummary = fmtBootTimeSummary(bootVms, b.started_at, b.dv_created_at);
+  const bootStats = b.boot_stats || {};
+  const bootSummary =
+    bootStats.count > 0
+      ? `${bootStats.label || "Boot time"} avg ${Math.round(bootStats.avg_s)}s · min ${Math.round(
+          bootStats.min_s
+        )}s · max ${Math.round(bootStats.max_s)}s`
+      : "Boot time …";
   const guestEnvLines = formatGuestEnv(bp.guest_env);
-  const totalVms = Number(b.total_vms != null ? b.total_vms : bootVms.length) || 0;
+  const totalVms = Number(b.total_vms != null ? b.total_vms : vs.configured) || 0;
 
   app.innerHTML = `
     <div class="panel">
       <div class="row" style="justify-content:space-between">
         <div>
-          <h2 style="margin:0">${escapeHtml(batchId)} ${b.archived ? '<span class="badge archived">archived</span>' : ""}</h2>
+          <h2 style="margin:0">${escapeHtml(summaryTitle)} ${b.archived ? '<span class="badge archived">archived</span>' : ""}</h2>
           <div class="muted">${escapeHtml(b.basename || "")} · ${escapeHtml(b.fingerprint || b.cloudinit || "")}</div>
           <div class="muted" style="margin-top:0.35rem">${escapeHtml(fmtWorkloadColumn(vs))}</div>
           <div class="muted mono" style="margin-top:0.35rem">
-            ${escapeHtml(bootSummary)}
+            <span id="boot-summary">${escapeHtml(bootSummary)}</span>
             · <a href="#/runs/${encodeURIComponent(batchId)}/timestamps">View object creation timestamps</a>
           </div>
         </div>
@@ -969,7 +974,8 @@ async function renderRun(app, batchId) {
       <div id="boot-chart-stats" class="muted mono" style="margin-top:0.5rem"></div>
     </div>`;
 
-  drawBootHistogram(bootVms, b.started_at, b.dv_created_at);
+  drawBootHistogram([]); // placeholder until async chart loads
+  loadBootChart(batchId);
 
   $("#btn-archive").onclick = async () => {
     try {
@@ -1094,13 +1100,45 @@ function downloadTextFile(filename, text, mime) {
   a.remove();
 }
 
+/** Fetch boot-duration samples after the page shell is up (avoids O(n) summary payload). */
+async function loadBootChart(batchId) {
+  const statsEl = $("#boot-chart-stats");
+  const summaryEl = $("#boot-summary");
+  try {
+    const data = await api(
+      `/v1/batches/${encodeURIComponent(batchId)}/boot-chart`
+    );
+    if (summaryEl) {
+      if (data.count > 0) {
+        const label = data.label || "Boot time";
+        summaryEl.textContent =
+          `${label} avg ${Math.round(data.avg_s)}s · min ${Math.round(data.min_s)}s · max ${Math.round(
+            data.max_s
+          )}s`;
+      } else {
+        summaryEl.textContent = "Boot time —";
+      }
+    }
+    drawBootHistogramFromSamples(data.samples || [], data);
+  } catch (err) {
+    if (summaryEl) summaryEl.textContent = "Boot time —";
+    if (statsEl) {
+      statsEl.textContent =
+        "Boot chart unavailable: " + (err && err.message ? err.message : err);
+    }
+  }
+}
+
 function drawBootHistogram(vms, startedAt, dvCreatedAt) {
+  drawBootHistogramFromSamples(bootDurationsSeconds(vms, startedAt, dvCreatedAt));
+}
+
+function drawBootHistogramFromSamples(samples, stats) {
   const canvas = $("#boot-chart");
   const emptyEl = $("#boot-chart-empty");
   const statsEl = $("#boot-chart-stats");
   if (!canvas || typeof Chart === "undefined") return;
 
-  const samples = bootDurationsSeconds(vms, startedAt, dvCreatedAt);
   if (!samples.length) {
     canvas.style.display = "none";
     if (emptyEl) emptyEl.style.display = "";
@@ -1113,11 +1151,26 @@ function drawBootHistogram(vms, startedAt, dvCreatedAt) {
   const seconds = samples.map((s) => s.seconds);
   const { labels, counts, edges } = histogramBins(seconds);
   const sorted = [...seconds].sort((a, b) => a - b);
-  const avg = seconds.reduce((a, b) => a + b, 0) / seconds.length;
+  const avg =
+    stats && stats.avg_s != null
+      ? Number(stats.avg_s)
+      : seconds.reduce((a, b) => a + b, 0) / seconds.length;
+  const minS = stats && stats.min_s != null ? Number(stats.min_s) : sorted[0];
+  const maxS =
+    stats && stats.max_s != null ? Number(stats.max_s) : sorted[sorted.length - 1];
   if (statsEl) {
     statsEl.textContent =
-      `${samples.length} VMs · min ${Math.round(sorted[0])}s · ` +
-      `avg ${Math.round(avg)}s · max ${Math.round(sorted[sorted.length - 1])}s`;
+      `${samples.length} VMs · min ${Math.round(minS)}s · ` +
+      `avg ${Math.round(avg)}s · max ${Math.round(maxS)}s`;
+  }
+
+  if (state.chart) {
+    try {
+      state.chart.destroy();
+    } catch {
+      /* ignore */
+    }
+    state.chart = null;
   }
 
   state.chart = new Chart(canvas, {

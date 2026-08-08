@@ -132,7 +132,9 @@ def collect_batch_timestamps(
             return "other"
         if name.endswith("-data"):
             return "data"
-        if basename and name == f"{basename}-base":
+        # Empty basename → DV name is "base" (join_name skips empty parts).
+        expected_base = f"{basename}-base" if basename else "base"
+        if name == expected_base:
             return "base"
         if name in vm_names:
             return "root"
@@ -245,11 +247,12 @@ def collect_batch_timestamps(
             out["dv_bound_at"] = min(bound_vals)
 
     by_ns_name = {(d["namespace"], d["name"]): d for d in dv_created}
+    expected_base = f"{basename}-base" if basename else "base"
     base_by_ns: dict[str, str] = {}
     base_ready_by_ns: dict[str, str] = {}
     base_bound_by_ns: dict[str, str] = {}
     for d in dv_created:
-        if d.get("role") == "base" or (basename and d["name"] == f"{basename}-base"):
+        if d.get("role") == "base" or d["name"] == expected_base:
             base_by_ns[d["namespace"]] = d["created_at"]
             if d.get("ready_at"):
                 base_ready_by_ns[d["namespace"]] = d["ready_at"]
@@ -259,7 +262,7 @@ def collect_batch_timestamps(
     base_dvs = [
         d
         for d in dv_created
-        if d.get("role") == "base" or (basename and d["name"] == f"{basename}-base")
+        if d.get("role") == "base" or d["name"] == expected_base
     ]
     if base_dvs:
         out["base_dv"] = base_dvs
@@ -362,8 +365,8 @@ def collect_batch_timestamps(
                     if not ns or d["namespace"] == ns:
                         root_pvc = d
                         break
-        if root_pvc is None and ns and basename:
-            base_name = f"{basename}-base"
+        if root_pvc is None and ns:
+            base_name = f"{basename}-base" if basename else "base"
             if (ns, base_name) in pvc_by_ns_name:
                 root_pvc = pvc_by_ns_name[(ns, base_name)]
         if root_pvc is not None:

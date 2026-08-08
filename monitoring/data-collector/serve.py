@@ -1425,7 +1425,7 @@ class Store:
         api = meta.get("api_server") or _payload_api_server(summary_payload)
         if isinstance(api, str):
             api = api.strip() or None
-        boot_vms = self._boot_vm_stubs(batch_id, timing.get("dv_created_at"))
+        # Keep summary tiny: no per-VM boot stubs. Chart + stats load via /boot-chart.
         out = {
             **meta,
             **stats,
@@ -1433,7 +1433,8 @@ class Store:
             **timing,
             "namespaces": namespaces,
             "api_server": api,
-            "vms": boot_vms,
+            "vms": [],
+            "boot_stats": None,
             "vm_summary": self._list_vm_summary(batch_id, meta.get("total_vms")),
             "series": [],
             "view": "summary",
@@ -1441,6 +1442,87 @@ class Store:
         out.pop("namespaces_json", None)
         out.pop("summary_json", None)
         return out
+
+    def boot_chart(
+        self, batch_id: str, *, include_samples: bool = True
+    ) -> dict[str, Any] | None:
+        """Boot-duration samples/stats for the batch detail chart."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM batches WHERE batch_id = ?", (batch_id,)
+            ).fetchone()
+            if not row:
+                any_res = self._conn.execute(
+                    "SELECT 1 FROM results WHERE batch_id = ? LIMIT 1", (batch_id,)
+                ).fetchone()
+                if not any_res:
+                    return None
+                meta: dict[str, Any] = {
+                    "batch_id": batch_id,
+                    "started_at": None,
+                    "summary_json": None,
+                    "batch_result_id": None,
+                }
+            else:
+                meta = dict(row)
+            summary_payload = self._load_summary_payload(meta)
+            timing = self._batch_timing_fields(summary_payload)
+            return self._boot_chart_data(
+                batch_id,
+                timing.get("dv_created_at"),
+                meta.get("started_at"),
+                include_samples=include_samples,
+            )
+
+    def _boot_chart_data(
+        self,
+        batch_id: str,
+        batch_dv_created_at: int | None,
+        batch_started_at: int | None,
+        *,
+        include_samples: bool,
+    ) -> dict[str, Any]:
+        stubs = self._boot_vm_stubs(batch_id, batch_dv_created_at)
+        samples: list[dict[str, Any]] = []
+        for v in stubs:
+            boot = v.get("boot_timestamp_unix")
+            if boot is None:
+                continue
+            anchor = v.get("dv_created_at_unix")
+            if anchor is None:
+                anchor = batch_dv_created_at
+            if anchor is None:
+                anchor = batch_started_at
+            if anchor is None:
+                continue
+            seconds = int(boot) - int(anchor)
+            if seconds < 0:
+                continue
+            samples.append({"vm_name": v["vm_name"], "seconds": seconds})
+        if not samples:
+            return {
+                "count": 0,
+                "min_s": None,
+                "avg_s": None,
+                "max_s": None,
+                "label": "Boot time",
+                "samples": [] if include_samples else None,
+            }
+        secs = [s["seconds"] for s in samples]
+        label = (
+            "DV→boot"
+            if batch_dv_created_at is not None
+            or any(v.get("dv_created_at_unix") is not None for v in stubs)
+            else "Boot time"
+        )
+        return {
+            "count": len(secs),
+            "min_s": min(secs),
+            "avg_s": statistics.mean(secs),
+            "max_s": max(secs),
+            "label": label,
+            "samples": samples if include_samples else None,
+        }
 
     def _boot_vm_stubs(
         self, batch_id: str, batch_dv_created_at: int | None
@@ -2522,6 +2604,15 @@ def make_handler(app: App):
             if m:
                 view = (qs.get("view") or ["full"])[0] or "full"
                 detail = app.store.get_batch(m.group(1), view=str(view))
+                if detail is None:
+                    self._json(404, {"error": "batch not found"})
+                    return
+                self._json(200, detail)
+                return
+
+            m = re.fullmatch(r"/v1/batches/([^/]+)/boot-chart", path)
+            if m:
+                detail = app.store.boot_chart(m.group(1), include_samples=True)
                 if detail is None:
                     self._json(404, {"error": "batch not found"})
                     return

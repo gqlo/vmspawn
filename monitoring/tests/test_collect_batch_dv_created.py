@@ -247,6 +247,55 @@ class TestCollectBatchTimestamps(unittest.TestCase):
         self.assertEqual(len(out["snapshots"]), 1)
         self.assertEqual(out["snapshots"][0]["name"], f"{BASENAME}-snap")
 
+    def test_empty_basename_classifies_dv_named_base(self) -> None:
+        """join_name('', 'base') → 'base'; must still emit base_dv_* fields."""
+        batch = "vstorm-2c6a75"
+        ns = f"{batch}-ns-1"
+        vm = f"{batch}-1"
+        out = col.collect_batch_timestamps(
+            basename="",
+            batch_id=batch,
+            vms=[f"{ns}/{vm}"],
+            ns_list=[ns],
+            dv_doc={
+                "items": [
+                    _dv(
+                        "base",
+                        ns=ns,
+                        created="2026-08-07T21:20:20Z",
+                        ready="2026-08-07T21:22:49Z",
+                        bound="2026-08-07T21:22:49Z",
+                        labels={"batch-id": batch},
+                    ),
+                    _dv(
+                        vm,
+                        ns=ns,
+                        created="2026-08-07T21:23:34Z",
+                        ready="2026-08-07T21:23:34Z",
+                        bound="2026-08-07T21:23:34Z",
+                        labels={"batch-id": batch},
+                    ),
+                ]
+            },
+            pvc_doc={
+                "items": [
+                    _pvc(
+                        "base",
+                        ns=ns,
+                        created="2026-08-07T21:20:20Z",
+                        labels={"batch-id": batch},
+                    ),
+                ]
+            },
+            vs_doc={"items": []},
+        )
+        self.assertEqual(out["base_dv_created_at"], "2026-08-07T21:20:20Z")
+        self.assertEqual(out["base_dv_ready_at"], "2026-08-07T21:22:49Z")
+        self.assertEqual(out["base_dv_bound_at"], "2026-08-07T21:22:49Z")
+        self.assertEqual(len(out["base_dv"]), 1)
+        self.assertEqual(out["base_dv"][0]["role"], "base")
+        self.assertEqual(out["base_dv"][0]["name"], "base")
+
     def test_no_base_or_snapshot_when_absent(self) -> None:
         out = col.collect_batch_timestamps(
             basename=BASENAME,

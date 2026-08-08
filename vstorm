@@ -1502,7 +1502,7 @@ print(json.dumps(env))
 	printf '%s' "$log_text" > "$log_file_tmp"
     fi
 
-    if ! BATCH_ID="$BATCH_ID" \
+    if BATCH_ID="$BATCH_ID" \
 	BASENAME="$VM_BASENAME" \
 	TOTAL_VMS="$NUM_VMS" \
 	TOTAL_NS="$NUM_NAMESPACES" \

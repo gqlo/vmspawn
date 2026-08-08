@@ -77,7 +77,7 @@ The UI **never opens SQLite**. It only calls HTTP JSON APIs.
 | UI route | Primary API calls |
 |----------|-------------------|
 | `#/runs` | `GET /v1/batches?…` (list metadata only; no full manifests) |
-| `#/runs/<batch>` | `GET /v1/batches/<id>?view=summary` then paginated `GET /v1/batches/<id>/vms?limit=&offset=` |
+| `#/runs/<batch>` | `GET /v1/batches/<id>?view=summary` then paginated `GET /v1/batches/<id>/vms?limit=&offset=`; boot chart via `GET /v1/batches/<id>/boot-chart` |
 | `#/runs/<batch>/vms/<vm>` | `GET /v1/batches/<id>/vms/<vm>` |
 | `#/runs/<batch>/timestamps` | `GET /v1/batches/<id>` (full detail) / related timestamp helpers |
 | `#/timestamps` | `GET /v1/timestamps?…` |
@@ -130,6 +130,7 @@ inspection and full `GET /v1/batches/<id>` (timestamps / “View manifest”).
 | `GET` | `/v1/batches` | Filtered batch list + facets |
 | `GET` | `/v1/batches/<id>?view=summary\|full` | Batch detail (`summary` = light; default `full`) |
 | `GET` | `/v1/batches/<id>/vms?limit=&offset=` | Paginated VM rows |
+| `GET` | `/v1/batches/<id>/boot-chart` | Boot-duration samples for the histogram (loaded async) |
 | `GET` | `/v1/batches/<id>/vms/<vm>` | One VM + cycles |
 | `GET`/`PUT` | `/v1/batches/<id>/vms/<vm>/policy` | Per-VM policy |
 | `PUT` | `/v1/batches/<id>/policy` | Fan-out policy |

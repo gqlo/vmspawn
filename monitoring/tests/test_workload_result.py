@@ -938,6 +938,7 @@ class TestStoreQueries(unittest.TestCase):
         # Summary boot stubs only include VMs with boots; none yet.
         self.assertEqual(summary["vms"], [])
         self.assertEqual(summary["series"], [])
+        self.assertIsNone(summary.get("boot_stats"))
 
         loads = {"n": 0}
         orig = self.store._load_result_payload
@@ -1129,10 +1130,15 @@ class TestStoreQueries(unittest.TestCase):
 
         summary = self.store.get_batch("ui1", view="summary")
         assert summary is not None
-        boot_names = {v["vm_name"] for v in summary["vms"]}
+        self.assertEqual(summary["vms"], [])
+        self.assertIsNone(summary.get("boot_stats"))
+        chart = self.store.boot_chart("ui1")
+        assert chart is not None
+        self.assertEqual(chart["count"], 2)
+        self.assertIn(chart["label"], ("DV→boot", "Boot time"))
+        boot_names = {v["vm_name"] for v in chart["samples"]}
         self.assertIn("run-vm", boot_names)
         self.assertIn("idle-vm", boot_names)
-        self.assertTrue(all("boot_timestamp_unix" in v for v in summary["vms"]))
         self.assertEqual(summary["vm_summary"]["vmi_running"], 1)
 
     def test_list_batch_vms_unknown_and_result_only_batch(self) -> None:
@@ -1211,8 +1217,11 @@ class TestStoreQueries(unittest.TestCase):
         assert summary is not None
         self.assertEqual(summary["view"], "summary")
         self.assertEqual(summary["batch_payload"], {})
-        # Boot stub comes from results even without batch_vms inventory entry initially.
-        self.assertTrue(any(v["vm_name"] == "solo" for v in summary["vms"]))
+        self.assertEqual(summary["vms"], [])
+        self.assertIsNone(summary.get("boot_stats"))
+        chart = self.store.boot_chart("edge1")
+        assert chart is not None
+        self.assertEqual(chart.get("count") or 0, 0)
 
         self.assertIsNone(
             self.store._load_summary_payload(
@@ -1602,6 +1611,8 @@ class TestHTTPApi(unittest.TestCase):
             "https://api.http-page.test:6443",
         )
         self.assertEqual(summary["series"], [])
+        self.assertEqual(summary["vms"], [])
+        self.assertIsNone(summary.get("boot_stats"))
 
         status, page = self._json(
             "GET", "/v1/batches/http-page/vms?limit=50&offset=50"
@@ -1613,6 +1624,11 @@ class TestHTTPApi(unittest.TestCase):
         self.assertEqual(len(page["items"]), 50)
         self.assertEqual(page["items"][0]["vm_name"], "vm-050")
         self.assertEqual(page["items"][-1]["vm_name"], "vm-099")
+
+        status, chart = self._json("GET", "/v1/batches/http-page/boot-chart")
+        self.assertEqual(status, 200)
+        self.assertEqual(chart.get("count"), 0)
+        self.assertEqual(chart.get("samples"), [])
 
         status, bad = self._json(
             "GET", "/v1/batches/http-page/vms?limit=nope&offset=0"
