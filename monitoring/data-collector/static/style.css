@@ -27,20 +27,18 @@ a:hover { text-decoration: underline; }
 
 .top {
   display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
+  flex-direction: column;
+  gap: 0.25rem;
   padding: 0.75rem 1.5rem;
   background: var(--panel);
   border-bottom: 1px solid var(--line);
 }
 
-.brand {
+.top-row {
   display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
-  min-width: 0;
-  max-width: min(42rem, 70vw);
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
 }
 
 .brand-title {
@@ -48,6 +46,7 @@ a:hover { text-decoration: underline; }
   color: var(--text);
   text-decoration: none;
   font-size: 1.1rem;
+  flex: 0 0 auto;
 }
 
 .brand-title:hover { text-decoration: underline; }
@@ -57,6 +56,7 @@ a:hover { text-decoration: underline; }
   font-size: 0.85rem;
   color: var(--muted);
   line-height: 1.35;
+  white-space: nowrap;
 }
 
 .brand-desc a {
@@ -64,7 +64,14 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 
-.top-actions { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.top-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  flex: 0 0 auto;
+}
 .auto { font-size: 0.9rem; color: var(--muted); display: flex; gap: 0.35rem; align-items: center; }
 
 .api-base {
@@ -318,6 +325,7 @@ tr.row-error { background: #fff5f5; }
 @media (max-width: 900px) {
   .grid-2 { grid-template-columns: 1fr; }
   .app, .top, .crumbs { padding-left: 1rem; padding-right: 1rem; }
+  .brand-desc { white-space: normal; }
 }
 
 .kv { display: grid; grid-template-columns: 9rem 1fr; gap: 0.35rem 0.75rem; font-size: 0.92rem; }
