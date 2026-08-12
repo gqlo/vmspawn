@@ -34,7 +34,7 @@ const {
   statusBadge,
   bootDurationsSeconds,
   durationSeconds,
-  buildBootTimesCsv,
+  csvEscape,
   buildCrossBatchTimestampsCsv,
   histogramBins,
   DEFAULT_PAGE_SIZE,
@@ -425,15 +425,14 @@ const CROSS_BATCH_TS_HEADERS = [
 ];
 
 const BATCH_TS_HEADERS = [
-  "batch_id",
+  "id",
   "vm_name",
   "namespace",
-  "base_dv_creation_s",
   "snapshot_creation_s",
   "dv_creation_s",
-  "data_dv_creation_s",
-  "vm_ready_s",
   "vm_provision_s",
+  "vm_ready_s",
+  "boot_timestamp_utc",
   "batch_started_at_utc",
   "base_dv_created_at_utc",
   "base_dv_ready_at_utc",
@@ -445,53 +444,168 @@ const BATCH_TS_HEADERS = [
   "pvc_created_at_utc",
   "pvc_bound_at_utc",
   "data_dv_created_at_utc",
+  "data_dv_creation_s",
   "data_dv_ready_at_utc",
   "data_pvc_created_at_utc",
   "data_pvc_bound_at_utc",
   "ssh_ready_at_utc",
-  "boot_timestamp_utc",
+  "base_dv_creation_s",
 ];
 
-function batchTimestampRow(batchId, v, batchStartedAt, batchDvCreatedAt) {
-  const boot = v.boot_timestamp_unix;
-  const baseDv = v.base_dv_created_at_unix;
-  const baseDvBound = v.base_dv_bound_at_unix;
-  const snap = v.snapshot_created_at_unix;
-  const snapReady = v.snapshot_ready_at_unix;
-  const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
-  const pvcBound = v.pvc_bound_at_unix;
-  const dataDv = v.data_dv_created_at_unix;
-  const dataPvcBound = v.data_pvc_bound_at_unix;
-  const durations = [
-    durationSeconds(baseDvBound, baseDv),
+function batchTimingContext(summary) {
+  return {
+    started_at: summary.started_at,
+    dv_created_at: summary.dv_created_at,
+    base_dv_created_at: summary.base_dv_created_at,
+    base_dv_ready_at: summary.base_dv_ready_at,
+    base_dv_bound_at: summary.base_dv_bound_at,
+    snapshot_created_at: summary.snapshot_created_at,
+    snapshot_ready_at: summary.snapshot_ready_at,
+  };
+}
+
+function enrichVmTimestamps(v, batchCtx) {
+  return {
+    ...v,
+    base_dv_created_at_unix: v.base_dv_created_at_unix ?? batchCtx.base_dv_created_at,
+    base_dv_ready_at_unix: v.base_dv_ready_at_unix ?? batchCtx.base_dv_ready_at,
+    base_dv_bound_at_unix: v.base_dv_bound_at_unix ?? batchCtx.base_dv_bound_at,
+    snapshot_created_at_unix: v.snapshot_created_at_unix ?? batchCtx.snapshot_created_at,
+    snapshot_ready_at_unix: v.snapshot_ready_at_unix ?? batchCtx.snapshot_ready_at,
+  };
+}
+
+/** Plain-text cells for batch timestamps table / CSV (matches BATCH_TS_HEADERS). */
+function batchTimestampCells(v, batchCtx, rowId) {
+  const row = enrichVmTimestamps(v, batchCtx);
+  const boot = row.boot_timestamp_unix;
+  const baseDv = row.base_dv_created_at_unix;
+  const baseDvBound = row.base_dv_bound_at_unix;
+  const snap = row.snapshot_created_at_unix;
+  const snapReady = row.snapshot_ready_at_unix;
+  const dv =
+    row.dv_created_at_unix != null ? row.dv_created_at_unix : batchCtx.dv_created_at;
+  const pvcBound = row.pvc_bound_at_unix;
+  const dataDv = row.data_dv_created_at_unix;
+  const dataPvcBound = row.data_pvc_bound_at_unix;
+  const ts = (unix) => (unix == null ? "" : fmtTs(unix));
+  return [
+    rowId != null ? String(rowId) : "",
+    row.vm_name || "",
+    row.namespace || "",
     durationSeconds(snapReady, snap),
     durationSeconds(pvcBound, dv),
-    durationSeconds(dataPvcBound, dataDv),
-    durationSeconds(boot, dv),
     durationSeconds(boot, pvcBound),
-  ].map((d) => (d === "" ? "—" : escapeHtml(d)));
-  return [
-    cellDash(batchId),
-    cellDash(v.vm_name),
-    cellDash(v.namespace || ""),
-    ...durations,
-    fmtTsCell(batchStartedAt),
-    fmtTsCell(baseDv),
-    fmtTsCell(v.base_dv_ready_at_unix),
-    fmtTsCell(baseDvBound),
-    fmtTsCell(snap),
-    fmtTsCell(snapReady),
-    fmtTsCell(dv),
-    fmtTsCell(v.dv_ready_at_unix),
-    fmtTsCell(v.pvc_created_at_unix),
-    fmtTsCell(pvcBound),
-    fmtTsCell(dataDv),
-    fmtTsCell(v.data_dv_ready_at_unix),
-    fmtTsCell(v.data_pvc_created_at_unix),
-    fmtTsCell(dataPvcBound),
-    fmtTsCell(v.ssh_ready_at_unix),
-    fmtTsCell(boot),
+    durationSeconds(boot, dv),
+    ts(boot),
+    ts(batchCtx.started_at),
+    ts(baseDv),
+    ts(row.base_dv_ready_at_unix),
+    ts(baseDvBound),
+    ts(snap),
+    ts(snapReady),
+    ts(dv),
+    ts(row.dv_ready_at_unix),
+    ts(row.pvc_created_at_unix),
+    ts(pvcBound),
+    ts(dataDv),
+    durationSeconds(dataPvcBound, dataDv),
+    ts(row.data_dv_ready_at_unix),
+    ts(row.data_pvc_created_at_unix),
+    ts(dataPvcBound),
+    ts(row.ssh_ready_at_unix),
+    durationSeconds(baseDvBound, baseDv),
   ];
+}
+
+function batchTimestampRow(v, batchCtx, rowId) {
+  return batchTimestampCells(v, batchCtx, rowId).map((c) =>
+    c === "" ? "—" : escapeHtml(c)
+  );
+}
+
+function buildBatchTimestampsCsv(batchCtx, vms) {
+  const lines = [BATCH_TS_HEADERS.join(",")];
+  (vms || []).forEach((v, i) => {
+    lines.push(batchTimestampCells(v, batchCtx, i + 1).map(csvEscape).join(","));
+  });
+  return `${lines.join("\n")}\n`;
+}
+
+async function fetchAllBatchVms(batchId) {
+  const all = [];
+  const limit = 1000;
+  let offset = 0;
+  let total = Infinity;
+  while (offset < total) {
+    const data = await api(
+      `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
+    );
+    total = Number(data.total || 0);
+    const items = data.items || [];
+    all.push(...items);
+    if (!items.length) break;
+    offset += items.length;
+  }
+  return all;
+}
+
+/** Server-paged batch timestamps table (GET /v1/batches/:id/vms). */
+async function bindBatchTimestampsPager(batchId, batchCtx, panel) {
+  const tbody = panel.querySelector("[data-pager-body]");
+  const pagers = [...panel.querySelectorAll("[data-pager-slot]")];
+  const empty = panel.querySelector("[data-pager-empty]");
+  const tableWrap = panel.querySelector(".table-wrap");
+  if (!tbody) return;
+
+  let inflight = 0;
+
+  const paint = async (page, { scroll } = {}) => {
+    const req = ++inflight;
+    const limit = DEFAULT_PAGE_SIZE;
+    const offset = (Math.max(1, page || 1) - 1) * limit;
+    tbody.innerHTML = `<tr><td colspan="${BATCH_TS_HEADERS.length}" class="muted">Loading…</td></tr>`;
+    try {
+      const data = await api(
+        `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
+      );
+      if (req !== inflight) return;
+      const items = data.items || [];
+      const total = Number(data.total || 0);
+      if (!total && !items.length) {
+        if (tableWrap) tableWrap.style.display = "none";
+        pagers.forEach((p) => {
+          p.hidden = true;
+        });
+        if (empty) empty.style.display = "";
+        return;
+      }
+      if (empty) empty.style.display = "none";
+      if (tableWrap) tableWrap.style.display = "";
+      const meta = pagerMeta(total, Math.floor(offset / limit) + 1, limit);
+      tbody.innerHTML = items
+        .map(
+          (v, i) =>
+            `<tr>${batchTimestampRow(v, batchCtx, offset + i + 1)
+              .map((c) => `<td class="mono">${c}</td>`)
+              .join("")}</tr>`
+        )
+        .join("");
+      for (const pager of pagers) {
+        renderPagerControls(pager, meta, (p) => paint(p, { scroll: true }));
+      }
+      if (scroll && pagers[0]) {
+        pagers[0].scrollIntoView({ block: "nearest", behavior: "smooth" });
+      }
+    } catch (err) {
+      if (req !== inflight) return;
+      tbody.innerHTML = `<tr><td colspan="${BATCH_TS_HEADERS.length}" class="muted">Failed to load VMs: ${escapeHtml(
+        err && err.message ? err.message : String(err)
+      )}</td></tr>`;
+    }
+  };
+
+  await paint(1);
 }
 
 async function renderTimestamps(app) {
@@ -542,36 +656,55 @@ async function renderBatchTimestamps(app, batchId) {
     { label: batchId, href: `#/runs/${encodeURIComponent(batchId)}` },
     { label: "Timestamps" },
   ]);
-  const b = await api("/v1/batches/" + encodeURIComponent(batchId));
-  const vmList = b.vms || [];
-  const rows = vmList.map((v) => batchTimestampRow(batchId, v, b.started_at, b.dv_created_at));
+  const b = await api(
+    "/v1/batches/" + encodeURIComponent(batchId) + "?view=summary"
+  );
+  const batchCtx = batchTimingContext(b);
+  const totalVms =
+    Number(b.vm_summary?.configured ?? b.total_vms ?? 0) || 0;
   app.innerHTML = `
     <div class="panel">
       <div class="row" style="justify-content:space-between;align-items:center">
         <div>
           <h2 style="margin:0">Timestamps · ${escapeHtml(batchId)}</h2>
           <div class="muted" style="margin-top:0.35rem">
-            ${escapeHtml(String(vmList.length))} VM row${vmList.length === 1 ? "" : "s"}.
+            ${escapeHtml(String(totalVms))} VM row${totalVms === 1 ? "" : "s"}.
             Duration columns are seconds; absolute times are UTC.
           </div>
         </div>
         <div class="actions">
           <a class="btn" href="#/runs/${encodeURIComponent(batchId)}">Back to batch</a>
           <button type="button" class="btn primary" id="btn-download-batch-timestamps-csv" ${
-            vmList.length ? "" : "disabled"
+            totalVms ? "" : "disabled"
           }>Download CSV</button>
         </div>
       </div>
     </div>
-    <div class="panel" id="batch-timestamps-table-panel"></div>`;
+    <div class="panel" id="batch-timestamps-table-panel">${renderTimestampsTableShell(
+      BATCH_TS_HEADERS
+    )}</div>`;
 
-  mountTimestampsTable($("#batch-timestamps-table-panel"), BATCH_TS_HEADERS, rows);
+  const panel = $("#batch-timestamps-table-panel");
+  if (panel) await bindBatchTimestampsPager(batchId, batchCtx, panel);
 
   const btn = $("#btn-download-batch-timestamps-csv");
-  if (btn && vmList.length) {
-    btn.onclick = () => {
-      const csv = buildBootTimesCsv(batchId, vmList, b.started_at, b.dv_created_at);
-      downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
+  if (btn && totalVms) {
+    btn.onclick = async () => {
+      const label = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Preparing…";
+      try {
+        const vms = await fetchAllBatchVms(batchId);
+        const csv = buildBatchTimestampsCsv(batchCtx, vms);
+        downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
+      } catch (err) {
+        alert(
+          "CSV export failed: " + (err && err.message ? err.message : String(err))
+        );
+      } finally {
+        btn.disabled = false;
+        btn.textContent = label;
+      }
     };
   }
 }
