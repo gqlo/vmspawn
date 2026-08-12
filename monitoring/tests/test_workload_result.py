@@ -1029,6 +1029,16 @@ class TestStoreQueries(unittest.TestCase):
             ["vm-fast", "vm-slow", "vm-missing"],
         )
 
+        by_provision = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="vm_provision_s", order="asc"
+        )
+        assert by_provision is not None
+        self.assertEqual(by_provision["sort"], "vm_provision_s")
+        self.assertEqual(
+            [x["vm_name"] for x in by_provision["items"]],
+            ["vm-fast", "vm-slow", "vm-missing"],
+        )
+
     def test_ensure_batch_vm_index_backfills_legacy_rows(self) -> None:
         self.store.ingest(
             {

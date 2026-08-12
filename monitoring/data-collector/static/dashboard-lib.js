@@ -167,6 +167,7 @@
     "dv_creation_s",
     "data_dv_creation_s",
     "vm_ready_s",
+    "vm_provision_s",
   ];
 
   function timingDurationCells({
@@ -186,6 +187,7 @@
       durationSeconds(pvcBound, dvCreated),
       durationSeconds(dataPvcBound, dataDvCreated),
       durationSeconds(boot, dvCreated),
+      durationSeconds(boot, pvcBound),
     ];
   }
 

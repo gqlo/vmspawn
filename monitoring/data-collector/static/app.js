@@ -366,6 +366,7 @@ function crossBatchTimestampRow(it) {
     durationSeconds(it.pvc_bound_at, it.dv_created_at),
     durationSeconds(it.data_pvc_bound_at, it.data_dv_created_at),
     durationSeconds(it.boot_timestamp, it.dv_created_at),
+    durationSeconds(it.boot_timestamp, it.pvc_bound_at),
   ].map((d) => (d === "" ? "—" : escapeHtml(d)));
   return [
     cellDash(it.batch_id),
@@ -404,6 +405,7 @@ const CROSS_BATCH_TS_HEADERS = [
   "dv_creation_s",
   "data_dv_creation_s",
   "vm_ready_s",
+  "vm_provision_s",
   "batch_started_at_utc",
   "base_dv_created_at_utc",
   "base_dv_ready_at_utc",
@@ -431,6 +433,7 @@ const BATCH_TS_HEADERS = [
   "dv_creation_s",
   "data_dv_creation_s",
   "vm_ready_s",
+  "vm_provision_s",
   "batch_started_at_utc",
   "base_dv_created_at_utc",
   "base_dv_ready_at_utc",
@@ -465,6 +468,7 @@ function batchTimestampRow(batchId, v, batchStartedAt, batchDvCreatedAt) {
     durationSeconds(pvcBound, dv),
     durationSeconds(dataPvcBound, dataDv),
     durationSeconds(boot, dv),
+    durationSeconds(boot, pvcBound),
   ].map((d) => (d === "" ? "—" : escapeHtml(d)));
   return [
     cellDash(batchId),
@@ -957,8 +961,8 @@ async function renderRun(app, batchId) {
       }</h3>
       <div class="pager" id="vms-pager-top" hidden></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th class="sortable" data-sort="dv_creation_s" title="PVC bound − DV created (seconds). Click to sort."><span class="sort-label">dv_creation_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_ready_s" title="Boot − DV created (seconds). Click to sort."><span class="sort-label">vm_ready_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</th><th>Mode</th><th>data_dv_creation_s</th><th>Workload status</th></tr></thead>
-        <tbody id="vms-tbody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
+        <thead><tr><th>VM</th><th class="sortable" data-sort="dv_creation_s" title="PVC bound − DV created (seconds). Click to sort."><span class="sort-label">dv_creation_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_ready_s" title="Boot − DV created (seconds). Click to sort."><span class="sort-label">vm_ready_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_provision_s" title="Boot − PVC bound (seconds). Click to sort."><span class="sort-label">vm_provision_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</th><th>Mode</th><th>data_dv_creation_s</th><th>Workload status</th></tr></thead>
+        <tbody id="vms-tbody"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
       </table></div>
       <div class="pager" id="vms-pager-bottom" hidden></div>
       <div class="empty" id="vms-empty" style="display:none">No VMs listed yet.</div>
@@ -1015,10 +1019,12 @@ function vmRowHtml(batchId, v) {
   const dvCreation = durationSeconds(v.pvc_bound_at_unix, v.dv_created_at_unix);
   const dataDvCreation = durationSeconds(v.data_pvc_bound_at_unix, v.data_dv_created_at_unix);
   const vmReady = durationSeconds(v.boot_timestamp_unix, v.dv_created_at_unix);
+  const vmProvision = durationSeconds(v.boot_timestamp_unix, v.pvc_bound_at_unix);
   return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
               <td class="mono">${dvCreation === "" ? "—" : escapeHtml(dvCreation)}</td>
               <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
+              <td class="mono">${vmProvision === "" ? "—" : escapeHtml(vmProvision)}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
                 v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
@@ -1082,7 +1088,7 @@ async function bindServerVmPager(batchId) {
     const req = ++inflight;
     const limit = DEFAULT_PAGE_SIZE;
     const offset = (page - 1) * limit;
-    tbody.innerHTML = `<tr><td colspan="7" class="muted">Loading…</td></tr>`;
+    tbody.innerHTML = `<tr><td colspan="8" class="muted">Loading…</td></tr>`;
     try {
       const sortQs =
         sortCol === "vm_name"
@@ -1118,7 +1124,7 @@ async function bindServerVmPager(batchId) {
       }
     } catch (err) {
       if (req !== inflight) return;
-      tbody.innerHTML = `<tr><td colspan="7" class="muted">Failed to load VMs: ${escapeHtml(
+      tbody.innerHTML = `<tr><td colspan="8" class="muted">Failed to load VMs: ${escapeHtml(
         err && err.message ? err.message : String(err)
       )}</td></tr>`;
     }

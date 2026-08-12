@@ -132,7 +132,7 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,vm_name,namespace,base_dv_creation_s,snapshot_creation_s,dv_creation_s,data_dv_creation_s,vm_ready_s,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
+      "batch_id,vm_name,namespace,base_dv_creation_s,snapshot_creation_s,dv_creation_s,data_dv_creation_s,vm_ready_s,vm_provision_s,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
     );
     const a = lines[1].split(",");
     const b = lines[2].split(",");
@@ -141,16 +141,19 @@ describe("boot durations and CSV", () => {
     assert.equal(a[1], "vm-a");
     assert.equal(a[2], "ns1");
     assert.equal(a[7], "25"); // vm_ready_s: 1045-1020
-    assert.equal(a[8], lib.fmtTs(started));
-    assert.equal(a[14], lib.fmtTs(1020));
-    assert.equal(a[23], lib.fmtTs(1045));
+    assert.equal(a[8], ""); // no pvc_bound → empty vm_provision_s
+    assert.equal(a[9], lib.fmtTs(started));
+    assert.equal(a[15], lib.fmtTs(1020));
+    assert.equal(a[24], lib.fmtTs(1045));
     assert.equal(b[1], "vm-b");
     assert.equal(b[7], "70"); // 1100-1030
-    assert.equal(b[14], lib.fmtTs(1030));
-    assert.equal(b[23], lib.fmtTs(1100));
+    assert.equal(b[8], "");
+    assert.equal(b[15], lib.fmtTs(1030));
+    assert.equal(b[24], lib.fmtTs(1100));
     assert.equal(c[1], "vm-c");
     assert.equal(c[7], ""); // no boot → empty vm_ready_s
-    assert.equal(c[23], ""); // null boot → empty cell
+    assert.equal(c[8], "");
+    assert.equal(c[24], ""); // null boot → empty cell
   });
 
   it("fills base DV and snapshot columns in boot times CSV", () => {
@@ -186,15 +189,16 @@ describe("boot durations and CSV", () => {
     assert.equal(cols[5], "6"); // 1026-1020
     assert.equal(cols[6], "3"); // 1031-1028
     assert.equal(cols[7], "80"); // 1100-1020
-    assert.equal(cols[8], lib.fmtTs(started));
-    assert.equal(cols[9], lib.fmtTs(1005));
-    assert.equal(cols[10], lib.fmtTs(1010));
-    assert.equal(cols[11], lib.fmtTs(1011));
-    assert.equal(cols[12], lib.fmtTs(1015));
-    assert.equal(cols[13], lib.fmtTs(1018));
-    assert.equal(cols[14], lib.fmtTs(1020));
-    assert.equal(cols[22], lib.fmtTs(1050));
-    assert.equal(cols[23], lib.fmtTs(1100));
+    assert.equal(cols[8], "74"); // 1100-1026 vm_provision_s
+    assert.equal(cols[9], lib.fmtTs(started));
+    assert.equal(cols[10], lib.fmtTs(1005));
+    assert.equal(cols[11], lib.fmtTs(1010));
+    assert.equal(cols[12], lib.fmtTs(1011));
+    assert.equal(cols[13], lib.fmtTs(1015));
+    assert.equal(cols[14], lib.fmtTs(1018));
+    assert.equal(cols[15], lib.fmtTs(1020));
+    assert.equal(cols[23], lib.fmtTs(1050));
+    assert.equal(cols[24], lib.fmtTs(1100));
   });
 
   it("builds cross-batch timestamps CSV", () => {
@@ -226,7 +230,7 @@ describe("boot durations and CSV", () => {
     const lines = csv.trim().split("\n");
     assert.equal(
       lines[0],
-      "batch_id,basename,cloudinit,vm_name,namespace,base_dv_creation_s,snapshot_creation_s,dv_creation_s,data_dv_creation_s,vm_ready_s,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
+      "batch_id,basename,cloudinit,vm_name,namespace,base_dv_creation_s,snapshot_creation_s,dv_creation_s,data_dv_creation_s,vm_ready_s,vm_provision_s,batch_started_at_utc,base_dv_created_at_utc,base_dv_ready_at_utc,base_dv_bound_at_utc,snapshot_created_at_utc,snapshot_ready_at_utc,dv_created_at_utc,dv_ready_at_utc,pvc_created_at_utc,pvc_bound_at_utc,data_dv_created_at_utc,data_dv_ready_at_utc,data_pvc_created_at_utc,data_pvc_bound_at_utc,ssh_ready_at_utc,boot_timestamp_utc"
     );
     assert.ok(lines[1].startsWith("b1,rhel9,workload/x.yaml,vm-a,ns1,"));
     assert.ok(lines[1].endsWith(lib.fmtTs(1100)));
@@ -236,12 +240,13 @@ describe("boot durations and CSV", () => {
     assert.equal(cols[7], "6");
     assert.equal(cols[8], "3");
     assert.equal(cols[9], "80");
-    assert.equal(cols[11], lib.fmtTs(1005));
-    assert.equal(cols[12], lib.fmtTs(1010));
-    assert.equal(cols[13], lib.fmtTs(1011));
-    assert.equal(cols[14], lib.fmtTs(1015));
-    assert.equal(cols[15], lib.fmtTs(1018));
-    assert.equal(cols[24], lib.fmtTs(1050));
+    assert.equal(cols[10], "74"); // boot - pvc_bound
+    assert.equal(cols[12], lib.fmtTs(1005));
+    assert.equal(cols[13], lib.fmtTs(1010));
+    assert.equal(cols[14], lib.fmtTs(1011));
+    assert.equal(cols[15], lib.fmtTs(1015));
+    assert.equal(cols[16], lib.fmtTs(1018));
+    assert.equal(cols[25], lib.fmtTs(1050));
   });
 
   it("leaves base/snapshot CSV cells empty when absent", () => {
@@ -258,13 +263,13 @@ describe("boot durations and CSV", () => {
     assert.equal(cols[5], "");
     assert.equal(cols[6], "");
     assert.equal(cols[7], "25");
+    assert.equal(cols[8], "");
     // absolute base/snapshot empty; dv present
-    assert.equal(cols[9], "");
     assert.equal(cols[10], "");
     assert.equal(cols[11], "");
     assert.equal(cols[12], "");
     assert.equal(cols[13], "");
-    assert.equal(cols[14], lib.fmtTs(1020));
+    assert.equal(cols[15], lib.fmtTs(1020));
   });
 
   it("durationSeconds returns empty when either side is missing", () => {

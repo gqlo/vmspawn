@@ -1684,7 +1684,7 @@ class Store:
             )
         self._conn.commit()
 
-    _VM_LIST_SORTS = frozenset({"vm_name", "dv_creation_s", "vm_ready_s"})
+    _VM_LIST_SORTS = frozenset({"vm_name", "dv_creation_s", "vm_ready_s", "vm_provision_s"})
 
     def list_batch_vms(
         self,
@@ -1719,7 +1719,7 @@ class Store:
             off = max(0, int(offset))
             sort_key = sort if sort in self._VM_LIST_SORTS else "vm_name"
             sort_dir = "DESC" if str(order).lower() == "desc" else "ASC"
-            needs_boot = sort_key == "vm_ready_s"
+            needs_boot = sort_key in ("vm_ready_s", "vm_provision_s")
             boot_join = """
                 LEFT JOIN (
                     SELECT COALESCE(vm_name, hostname) AS vm_name,
@@ -1736,10 +1736,15 @@ class Store:
                     "(b.pvc_bound_at IS NULL OR b.dv_created_at IS NULL), "
                     f"(b.pvc_bound_at - b.dv_created_at) {sort_dir}, b.vm_name ASC"
                 )
-            else:
+            elif sort_key == "vm_ready_s":
                 order_sql = (
                     "(boot.boot_ts IS NULL OR b.dv_created_at IS NULL), "
                     f"(boot.boot_ts - b.dv_created_at) {sort_dir}, b.vm_name ASC"
+                )
+            else:
+                order_sql = (
+                    "(boot.boot_ts IS NULL OR b.pvc_bound_at IS NULL), "
+                    f"(boot.boot_ts - b.pvc_bound_at) {sort_dir}, b.vm_name ASC"
                 )
             query_params: list[Any] = []
             if needs_boot:
