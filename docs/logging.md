@@ -96,6 +96,16 @@ vms: a3f7b2-ns-1/rhel9-a3f7b2-1, a3f7b2-ns-1/rhel9-a3f7b2-2, ...
 
 When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the data-collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
 
+### Progress manifests (large-scale DataVolume waits)
+
+Waiting for every DataVolume in a large batch to reach `Ready`/`Bound` can take a long time (thousands of clones). Rather than staying silent until that wait finishes, vstorm POSTs the manifest **incrementally** whenever `RESULT_SERVER_URL` is configured:
+
+1. **Early POST** right after VMs are created — the batch shows up on the dashboard immediately, before any DV timestamps are complete.
+2. **Progress POSTs** while waiting for DataVolumes — sent whenever the pending-DV count changes, throttled to at most once per `MANIFEST_PROGRESS_INTERVAL` seconds (default `60`; override via the environment, e.g. `MANIFEST_PROGRESS_INTERVAL=30 ./vstorm ...`).
+3. **Final POST** after the wait completes (or times out) — the same manifest as before, with the most complete DV/PVC/SSH timestamps available.
+
+Every POST fully replaces the collector's stored manifest for that `batch_id` (no server-side merging), and carries a `"manifest_phase": "progress" | "final"` field so consumers can tell whether DV timestamps may still be incomplete. `logs/batch-{id}.manifest.json` on disk always reflects the **last** POST (progress or final).
+
 ### Listing batches
 
 ```bash

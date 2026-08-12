@@ -567,7 +567,7 @@ SLOWMOCK
 
 @test "OPT: host manifest POST failure path keeps create-succeeded warning text" {
   grep -q 'create still succeeded; JSON kept' "$VSTORM"
-  grep -q 'Failed to POST manifest for batch' "$VSTORM"
+  grep -q 'Failed to POST ${phase_label} for batch' "$VSTORM"
 }
 
 # ---------------------------------------------------------------

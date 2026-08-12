@@ -83,6 +83,10 @@ SSH_READY_TIMEOUT=30
 SSH_PROBE_PARALLEL=1000
 # JSON blob for manifest: vm_ssh_ready / vm_ssh_failed / ssh_ready_*
 BATCH_SSH_JSON=
+# Set to 1 by wait_for_batch_datavolumes_for_timestamps if its deadline is hit
+# with DVs still pending; surfaced on the manifest as dv_wait_timed_out so a
+# "final" manifest can be distinguished from one truncated by the wait timeout.
+DV_WAIT_TIMED_OUT=0
 CONTAINERDISK_IMAGE=
 RECREATE_EXISTING_VMS=0
 DELETE_BATCH=
@@ -843,6 +847,23 @@ ensure_default_result_server_url() {
     GUEST_ENV_ARR+=("RESULT_SERVER_URL=${DEFAULT_RESULT_SERVER_URL}")
 }
 
+# True (0) if a non-empty RESULT_SERVER_URL is configured (default or --env).
+# Used to skip expensive cluster-wide DV/PVC/VS collects for progress manifest
+# POSTs when no one is listening.
+_result_server_url_configured() {
+    ensure_default_result_server_url
+    local e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL=*)
+		[[ -n "${e#RESULT_SERVER_URL=}" ]] && return 0
+		return 1
+		;;
+	esac
+    done
+    return 1
+}
+
 prepare_creation() {
     # Skip creation-specific checks when deleting
     [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) && return
@@ -1147,7 +1168,14 @@ wait_for_all_datavolumes() {
 # Base DVs are already waited during create_datavolumes; blank data DVs and
 # snapshot-clone DVs appear only after VM apply. Without --wait, create used to
 # collect immediately and leave data_dv_ready / data_pvc_bound empty in CSV.
+#
+# At large scale this wait can take a long time, so — when RESULT_SERVER_URL
+# is configured — vstorm also POSTs incremental "progress" manifests as the
+# pending DV count changes (throttled by MANIFEST_PROGRESS_INTERVAL, default
+# 60s), instead of leaving the collector/dashboard blind until this returns.
+# The caller still does a final collect + POST after this returns.
 wait_for_batch_datavolumes_for_timestamps() {
+    DV_WAIT_TIMED_OUT=0
     if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
 	return 0
     fi
@@ -1160,6 +1188,11 @@ wait_for_batch_datavolumes_for_timestamps() {
     if ((NUM_NAMESPACES > 0)); then
 	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
     fi
+
+    local -i progress_interval="${MANIFEST_PROGRESS_INTERVAL:-60}"
+    local -i progress_enabled=0
+    _result_server_url_configured && progress_enabled=1
+    local -i last_progress_post=-1000000 last_progress_pending=-1
 
     log_message "${C_BOLD}Waiting for batch DataVolumes to Succeed (timestamp collect)...${C_RST}"
     local -i deadline=$((SECONDS + 1800))
@@ -1228,9 +1261,19 @@ PY
 	fi
 	pending_n=${pending_msg%%:*}
 	log_message "Waiting for ${C_VAL}${pending_n}${C_RST} DataVolume(s): ${C_WARN}${pending_msg#*:}${C_RST}"
+	if ((progress_enabled)) && ((pending_n != last_progress_pending)) \
+	    && ((SECONDS - last_progress_post >= progress_interval)); then
+	    local dv_created_json
+	    dv_created_json=$(collect_batch_dv_created_json)
+	    BATCH_DV_CREATED_JSON="$dv_created_json"
+	    post_batch_result_metadata progress
+	    last_progress_post=$SECONDS
+	    last_progress_pending=$pending_n
+	fi
 	sleep 5
     done
     log_message "${C_WARN}Timed out waiting for DataVolumes; collecting timestamps anyway${C_RST}"
+    DV_WAIT_TIMED_OUT=1
     return 0
 }
 
@@ -1379,6 +1422,11 @@ collect_batch_dv_created_json() {
 }
 
 post_batch_result_metadata() {
+    # phase: "final" (default; last POST of the run) or "progress" (interim
+    # POST while still waiting on DataVolumes at scale — see
+    # wait_for_batch_datavolumes_for_timestamps). Both build/POST the full
+    # manifest; the collector replaces the previous manifest either way.
+    local phase="${1:-final}"
     ensure_default_result_server_url
     local url="" token="" e
     for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
@@ -1517,6 +1565,8 @@ print(json.dumps(env))
 	STARTED_AT="$started_at" \
 	STOPPED_AT="$stopped_at" \
 	REPORTED_AT="$reported_at" \
+	MANIFEST_PHASE="$phase" \
+	DV_WAIT_TIMED_OUT="${DV_WAIT_TIMED_OUT:-0}" \
 	API_SERVER="$api_server" \
 	OC_VERSION="$oc_version_text" \
 	WORKER_NODES="$worker_nodes" \
@@ -1562,6 +1612,8 @@ payload = {
     "schema_version": 1,
     "record_type": "manifest",
     "source": "vstorm",
+    "manifest_phase": os.environ.get("MANIFEST_PHASE") or "final",
+    "dv_wait_timed_out": (os.environ.get("DV_WAIT_TIMED_OUT") or "0") == "1",
     "reported_at": fmt_utc(os.environ["REPORTED_AT"]),
     "started_at": fmt_utc(os.environ["STARTED_AT"]),
     "stopped_at": fmt_utc(os.environ["STOPPED_AT"]),
@@ -1706,7 +1758,9 @@ else:
     print(", ".join(parts + counts))
 ' "$payload_file" 2>/dev/null || echo "(timestamps unavailable)"
     )
-    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} manifest (DV/PVC/SSH timestamps) to ${C_VAL}${url}${C_RST}"
+    local phase_label="manifest"
+    [[ "$phase" == "progress" ]] && phase_label="progress manifest"
+    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} ${phase_label} (DV/PVC/SSH timestamps) to ${C_VAL}${url}${C_RST}"
     log_message "  timestamps: ${C_VAL}${ts_summary}${C_RST}"
 
     local curl_args=(-sS -f -X POST -H "Content-Type: application/json" --data-binary @"$payload_file"
@@ -1715,9 +1769,9 @@ else:
 	curl_args+=(-H "Authorization: Bearer ${token}")
     fi
     if curl "${curl_args[@]}" "$url"; then
-	log_message "Posted manifest for batch ${C_VAL}${BATCH_ID}${C_RST} to ${C_VAL}${url}${C_RST} (kept ${C_VAL}${payload_file}${C_RST})"
+	log_message "Posted ${phase_label} for batch ${C_VAL}${BATCH_ID}${C_RST} to ${C_VAL}${url}${C_RST} (kept ${C_VAL}${payload_file}${C_RST})"
     else
-	log_message "${C_WARN}Failed to POST manifest for batch ${BATCH_ID} to $url (create still succeeded; JSON kept at ${payload_file})${C_RST}"
+	log_message "${C_WARN}Failed to POST ${phase_label} for batch ${BATCH_ID} to $url (create still succeeded; JSON kept at ${payload_file})${C_RST}"
     fi
 }
 
@@ -2575,6 +2629,16 @@ main() {
 	local ns_list=""
 	local vm_list=""
 	local dv_created_json="{}"
+	# Early progress manifest: makes the batch visible on the dashboard
+	# right after VMs are created, well before large-scale DV cloning
+	# finishes. wait_for_batch_datavolumes_for_timestamps posts further
+	# progress updates as DVs become Ready/Bound; the final POST below
+	# always has the complete picture regardless.
+	if _result_server_url_configured; then
+	    dv_created_json=$(collect_batch_dv_created_json)
+	    BATCH_DV_CREATED_JSON="$dv_created_json"
+	    post_batch_result_metadata progress
+	fi
 	# Per-VM / blank data DVs are created with the VMs; wait for Succeeded
 	# so ready/bound timestamps are present even without --wait.
 	wait_for_batch_datavolumes_for_timestamps
@@ -2667,7 +2731,7 @@ print("ssh_failed_line=%s" % shlex.quote(",".join(d.get("vm_ssh_failed") or []))
 	fi
 	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
 
-	post_batch_result_metadata
+	post_batch_result_metadata final
 
 	if ((ssh_verify_failed)); then
 	    fatal "SSH port check failed for one or more VMs (timeout ${SSH_READY_TIMEOUT}s). See log and ${LOG_DIR}/batch-${BATCH_ID}.ssh-ready.json"

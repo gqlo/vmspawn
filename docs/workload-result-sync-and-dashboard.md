@@ -65,7 +65,7 @@ Status vs this design (as of the current tree).
 | Area | Status |
 |------|--------|
 | Guest capture | One-shot fio; timestamps; result/error POST + pending spool when `RESULT_SERVER_URL` is set. |
-| Host manifest | **vstorm** POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`. |
+| Host manifest | **vstorm** POSTs `record_type: "manifest"` when `RESULT_SERVER_URL` is in `--env`; auto-injects `VSTORM_BATCH_ID`; incremental `manifest_phase: "progress"` POSTs while waiting on DataVolumes at scale, plus a `"final"` POST when the wait completes/times out. |
 | Collector + browse UI | Ingest, SQLite, batches list, batch/VM/payload views (no run-control buttons). |
 | Transport | Plain HTTP (v1). |
 
@@ -212,7 +212,13 @@ Standalone source of the script: [`workload/vstorm-boot-timestamp.sh`](../worklo
 
 ## Host-side manifest (vstorm)
 
-One `record_type: "manifest"` / `source: "vstorm"` POST after successful create (and after `--wait`), with names, sizing, cmdline, etc. Auto-inject `VSTORM_BATCH_ID`. This is the collector counterpart of the local `logs/batch-{id}.manifest` inventory — same facts, different place. See fields in the example below.
+One or more `record_type: "manifest"` / `source: "vstorm"` POSTs after successful create, with names, sizing, cmdline, etc. Auto-inject `VSTORM_BATCH_ID`. This is the collector counterpart of the local `logs/batch-{id}.manifest` inventory — same facts, different place. See fields in the example below.
+
+**Incremental at scale:** waiting for every DataVolume to reach Ready/Bound can take hours with thousands of VMs. When `RESULT_SERVER_URL` is configured, vstorm POSTs an early manifest right after VM create (batch inventory, DV timestamps still partial).
+It then sends further `manifest_phase: "progress"` POSTs whenever the pending-DV count changes (throttled by `MANIFEST_PROGRESS_INTERVAL`, default 60s), and finally a `manifest_phase: "final"` POST once the wait completes or times out.
+Every POST is a full manifest that replaces the collector's stored copy for that `batch_id` — there is no server-side merge, so a `progress` payload can have empty/partial `vm_dv_ready` / `vm_pvc_bound` maps while a later `progress` or the `final` payload fills them in.
+
+`manifest_phase: "final"` means no further automatic POSTs are coming from this vstorm run — it does **not** guarantee every DV timestamp was captured. If the 30-minute DV wait hit its deadline with DVs still pending, the final manifest is still posted with whatever was collected, and `dv_wait_timed_out: true` is set so consumers can tell "finished cleanly" apart from "final, but truncated by timeout".
 
 ### Manifest payload example
 
@@ -225,6 +231,7 @@ readability (a real POST includes every VM’s per-VM timestamps).
   "schema_version": 1,
   "record_type": "manifest",
   "source": "vstorm",
+  "manifest_phase": "final",
   "reported_at": "2026-07-22T05:50:00Z",
   "started_at": "2026-07-22T05:48:20Z",
   "stopped_at": "2026-07-22T05:50:00Z",
