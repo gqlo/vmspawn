@@ -2658,6 +2658,14 @@ main() {
 	    if ((VM_SERVICE)); then
 		create_vm_service "$seq_ns" "$seq_ns"
 	    fi
+	    # Post an incremental progress manifest as soon as this namespace's
+	    # resources are created, so the dashboard/result server reflects
+	    # progress namespace-by-namespace instead of only once after the
+	    # whole --ns-sequential-creation loop finishes.
+	    if ((wet_run)) && _result_server_url_configured; then
+		BATCH_DV_CREATED_JSON=$(collect_batch_dv_created_json)
+		post_batch_result_metadata progress
+	    fi
 	done
     else
 	create_namespaces
