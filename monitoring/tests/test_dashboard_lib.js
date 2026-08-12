@@ -108,6 +108,16 @@ describe("boot durations and CSV", () => {
     ]);
   });
 
+  it("skips VMs missing per-VM dv when any VM has dv_created", () => {
+    const mixed = [
+      { vm_name: "vm-a", boot_timestamp_unix: 1060, dv_created_at_unix: 1000 },
+      { vm_name: "vm-b", boot_timestamp_unix: 5000, dv_created_at_unix: null },
+    ];
+    assert.deepEqual(lib.bootDurationsSeconds(mixed, 900, 1000), [
+      { vm_name: "vm-a", seconds: 60 },
+    ]);
+  });
+
   it("falls back to batch started_at when no DV times", () => {
     const plain = [
       { vm_name: "vm-a", boot_timestamp_unix: 1045 },

@@ -119,11 +119,20 @@
   }
 
   function bootDurationsSeconds(vms, batchStartedAt, batchDvCreatedAt) {
+    const list = vms || [];
+    const hasPerVmDv = list.some(
+      (v) => v.dv_created_at_unix != null && Number.isFinite(Number(v.dv_created_at_unix))
+    );
     const out = [];
-    for (const v of vms || []) {
+    for (const v of list) {
       const boot = v.boot_timestamp_unix;
       if (boot == null) continue;
-      const anchor = createAnchorUnix(v, batchDvCreatedAt, batchStartedAt);
+      let anchor = null;
+      if (v.dv_created_at_unix != null && Number.isFinite(Number(v.dv_created_at_unix))) {
+        anchor = Number(v.dv_created_at_unix);
+      } else if (!hasPerVmDv) {
+        anchor = createAnchorUnix(v, batchDvCreatedAt, batchStartedAt);
+      }
       if (anchor == null) continue;
       const s = Number(boot) - Number(anchor);
       if (!Number.isFinite(s) || s < 0) continue;
@@ -223,7 +232,7 @@
       const baseDvBound = v.base_dv_bound_at_unix;
       const snap = v.snapshot_created_at_unix;
       const snapReady = v.snapshot_ready_at_unix;
-      const dv = v.dv_created_at_unix != null ? v.dv_created_at_unix : batchDvCreatedAt;
+      const dv = v.dv_created_at_unix;
       const dvReady = v.dv_ready_at_unix;
       const pvc = v.pvc_created_at_unix;
       const pvcBound = v.pvc_bound_at_unix;

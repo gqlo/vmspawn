@@ -1224,6 +1224,47 @@ class TestStoreQueries(unittest.TestCase):
         self.assertIn("idle-vm", boot_names)
         self.assertEqual(summary["vm_summary"]["vmi_running"], 1)
 
+    def test_boot_chart_uses_per_vm_dv_only_when_present(self) -> None:
+        """Sequential batches: do not fall back to batch dv_created for VMs missing per-VM DV."""
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "seq-partial",
+                "basename": "rhel9",
+                "total_vms": 2,
+                "vms": ["ns/vm-a", "ns/vm-b"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": "2026-07-28T11:00:00Z",
+                "dv_created_at": "2026-07-28T11:00:00Z",
+                "vm_dv_created": {
+                    "vm-a": "2026-07-28T11:10:00Z",
+                },
+            }
+        )
+        for vm_name, boot_iso in (
+            ("vm-a", "2026-07-28T11:11:00Z"),
+            ("vm-b", "2026-07-28T11:50:00Z"),
+        ):
+            self.store.ingest(
+                {
+                    "schema_version": 1,
+                    "record_type": "heartbeat",
+                    "source": "guest",
+                    "workload_kind": "boot",
+                    "batch_id": "seq-partial",
+                    "vm_name": vm_name,
+                    "boot_timestamp": boot_iso,
+                    "reported_at": boot_iso,
+                }
+            )
+        chart = self.store.boot_chart("seq-partial")
+        assert chart is not None
+        self.assertEqual(chart["count"], 1)
+        self.assertEqual(chart["max_s"], 60)
+        self.assertEqual(chart["samples"][0]["vm_name"], "vm-a")
+
     def test_list_batch_vms_unknown_and_result_only_batch(self) -> None:
         self.assertIsNone(self.store.list_batch_vms("missing-batch"))
         self.store.ingest(_fio_payload(batch_id="res-only", vm="solo"))

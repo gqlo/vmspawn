@@ -1485,6 +1485,7 @@ class Store:
         include_samples: bool,
     ) -> dict[str, Any]:
         stubs = self._boot_vm_stubs(batch_id, batch_dv_created_at)
+        has_per_vm_dv = any(v.get("dv_created_at_unix") is not None for v in stubs)
         samples: list[dict[str, Any]] = []
         for v in stubs:
             boot = v.get("boot_timestamp_unix")
@@ -1492,6 +1493,8 @@ class Store:
                 continue
             anchor = v.get("dv_created_at_unix")
             if anchor is None:
+                if has_per_vm_dv:
+                    continue
                 anchor = batch_dv_created_at
             if anchor is None:
                 anchor = batch_started_at
@@ -1565,9 +1568,7 @@ class Store:
                 {
                     "vm_name": name,
                     "boot_timestamp_unix": boot,
-                    "dv_created_at_unix": row["dv_created_at"]
-                    if row["dv_created_at"] is not None
-                    else batch_dv_created_at,
+                    "dv_created_at_unix": row["dv_created_at"],
                 }
             )
         # Boots for VMs not in index yet
@@ -1579,7 +1580,7 @@ class Store:
                 {
                     "vm_name": name,
                     "boot_timestamp_unix": boot,
-                    "dv_created_at_unix": batch_dv_created_at,
+                    "dv_created_at_unix": None,
                 }
             )
         return stubs
@@ -1636,7 +1637,7 @@ class Store:
                     batch_id,
                     name,
                     ns,
-                    vm_dv_map.get(name, batch_dv),
+                    vm_dv_map.get(name),
                     vm_dv_ready_map.get(name, batch_dv_ready),
                     vm_pvc_map.get(name, batch_pvc),
                     vm_pvc_bound_map.get(name, batch_pvc_bound),
@@ -2081,7 +2082,7 @@ class Store:
             cur["base_dv_bound_at_unix"] = batch_base_dv_bound_unix
             cur["snapshot_created_at_unix"] = batch_snapshot_unix
             cur["snapshot_ready_at_unix"] = batch_snapshot_ready_unix
-            cur["dv_created_at_unix"] = vm_dv_map.get(name, batch_dv_unix)
+            cur["dv_created_at_unix"] = vm_dv_map.get(name)
             cur["dv_ready_at_unix"] = vm_dv_ready_map.get(name, batch_dv_ready_unix)
             cur["pvc_created_at_unix"] = vm_pvc_map.get(name, batch_pvc_unix)
             cur["pvc_bound_at_unix"] = vm_pvc_bound_map.get(name, batch_pvc_bound_unix)

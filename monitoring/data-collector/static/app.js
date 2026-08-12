@@ -502,7 +502,7 @@ function batchTimestampCells(v, batchCtx, rowId) {
     durationSeconds(snapReady, snap),
     durationSeconds(pvcBound, dv),
     durationSeconds(boot, pvcBound),
-    durationSeconds(boot, dv),
+    durationSeconds(boot, row.dv_created_at_unix),
     ts(boot),
     ts(batchCtx.started_at),
     ts(baseDv),
@@ -1317,7 +1317,7 @@ async function loadBootChart(batchId) {
         summaryEl.textContent =
           `${label} avg ${Math.round(data.avg_s)}s · min ${Math.round(data.min_s)}s · max ${Math.round(
             data.max_s
-          )}s`;
+          )}s · n=${data.count}`;
       } else {
         summaryEl.textContent = "Boot time —";
       }
