@@ -2667,9 +2667,15 @@ def make_handler(app: App):
                 except ValueError:
                     self._json(400, {"error": "invalid limit/offset"})
                     return
+                export_all = (qs.get("export") or ["0"])[0].lower() in (
+                    "1",
+                    "true",
+                    "yes",
+                )
+                max_limit = 100_000 if export_all else 1000
                 detail = app.store.list_batch_vms(
                     m.group(1),
-                    limit=max(1, min(limit, 1000)),
+                    limit=max(1, min(limit, max_limit)),
                     offset=max(0, offset),
                     sort=(qs.get("sort") or ["vm_name"])[0],
                     order=(qs.get("order") or ["asc"])[0],

@@ -118,7 +118,13 @@ async function api(path, opts = {}) {
   const url = apiUrl(path, currentApiBase());
 
   const doFetch = async (hdrs) => {
-    const res = await fetch(url, { ...opts, headers: hdrs });
+    let res;
+    try {
+      res = await fetch(url, { ...opts, headers: hdrs });
+    } catch (err) {
+      const msg = err && err.message ? err.message : String(err);
+      throw new Error(`network error (${url}): ${msg}`);
+    }
     const text = await res.text();
     let data = null;
     try {
@@ -533,19 +539,36 @@ function buildBatchTimestampsCsv(batchCtx, vms) {
 }
 
 async function fetchAllBatchVms(batchId) {
-  const all = [];
-  const limit = 1000;
-  let offset = 0;
-  let total = Infinity;
+  const probe = await api(
+    `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=1&offset=0`
+  );
+  const total = Number(probe.total || 0);
+  if (!total) return [];
+
+  const MAX_EXPORT = 100000;
+  if (total > MAX_EXPORT) {
+    throw new Error(`batch has ${total} VMs; export supports up to ${MAX_EXPORT}`);
+  }
+
+  // One request when possible (export=1 raises server limit cap).
+  const single = await api(
+    `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${total}&offset=0&export=1`
+  );
+  const items = single.items || [];
+  if (items.length >= total) return items;
+
+  // Fallback: page in table-sized chunks (e.g. older collector without export=1).
+  const all = [...items];
+  const pageSize = DEFAULT_PAGE_SIZE;
+  let offset = all.length;
   while (offset < total) {
-    const data = await api(
-      `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
+    const page = await api(
+      `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${pageSize}&offset=${offset}`
     );
-    total = Number(data.total || 0);
-    const items = data.items || [];
-    all.push(...items);
-    if (!items.length) break;
-    offset += items.length;
+    const chunk = page.items || [];
+    if (!chunk.length) break;
+    all.push(...chunk);
+    offset += chunk.length;
   }
   return all;
 }
