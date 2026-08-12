@@ -1839,7 +1839,15 @@ wait_for_all_vms() {
 
 create_virtualmachines() {
     local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}" force_wait="${3:-0}"
-    local -i ns vm
+    # NOTE: ns is deliberately "local -i" (only ever holds a namespace index),
+    # but vm must stay a plain (non-integer) local: wait_for_all_vms(), called
+    # from below, reuses this same variable name via bash's dynamic scoping
+    # (it has no "local vm" of its own) and assigns it "namespace/vm-name"
+    # strings. If vm had the -i attribute, that string assignment would be
+    # evaluated as arithmetic and blow up under `set -u` on the first
+    # non-numeric token (e.g. "vstorm: unbound variable").
+    local -i ns
+    local vm
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
     # One-time template setup (cloud-init, data disk, existing VM lookup, ...).
     # Guarded so repeated calls -- one per --ns-sequential-creation namespace -- reuse it

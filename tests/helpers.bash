@@ -38,6 +38,15 @@ case "$1" in
                 ;;
             datavolume) echo "Succeeded" ;;
             volumesnapshot) echo "true" ;;
+            vm)
+                # `oc get vm -A --no-headers`, used both to list existing VMs
+                # and to poll for Running/Ready status in wait_for_all_vms.
+                # Set MOCK_VM_LINES (newline-separated "NAMESPACE NAME AGE
+                # STATUS READY" rows) to simulate VMs already Running.
+                if [[ -n "${MOCK_VM_LINES:-}" ]]; then
+                    printf '%s\n' "$MOCK_VM_LINES"
+                fi
+                ;;
             *) ;;
         esac
         ;;
