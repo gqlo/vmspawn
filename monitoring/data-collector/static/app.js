@@ -538,7 +538,10 @@ function buildBatchTimestampsCsv(batchCtx, vms) {
   return `${lines.join("\n")}\n`;
 }
 
-async function fetchAllBatchVms(batchId) {
+/** Max VMs per /vms request (server caps here; larger pages can crash the collector). */
+const EXPORT_PAGE_SIZE = 500;
+
+async function fetchAllBatchVms(batchId, onProgress) {
   const probe = await api(
     `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=1&offset=0`
   );
@@ -550,25 +553,18 @@ async function fetchAllBatchVms(batchId) {
     throw new Error(`batch has ${total} VMs; export supports up to ${MAX_EXPORT}`);
   }
 
-  // One request when possible (export=1 raises server limit cap).
-  const single = await api(
-    `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${total}&offset=0&export=1`
-  );
-  const items = single.items || [];
-  if (items.length >= total) return items;
-
-  // Fallback: page in table-sized chunks (e.g. older collector without export=1).
-  const all = [...items];
-  const pageSize = DEFAULT_PAGE_SIZE;
-  let offset = all.length;
+  const all = [];
+  let offset = 0;
   while (offset < total) {
+    const limit = Math.min(EXPORT_PAGE_SIZE, total - offset);
     const page = await api(
-      `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${pageSize}&offset=${offset}`
+      `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
     );
     const chunk = page.items || [];
     if (!chunk.length) break;
     all.push(...chunk);
     offset += chunk.length;
+    if (onProgress) onProgress(all.length, total);
   }
   return all;
 }
@@ -717,7 +713,9 @@ async function renderBatchTimestamps(app, batchId) {
       btn.disabled = true;
       btn.textContent = "Preparing…";
       try {
-        const vms = await fetchAllBatchVms(batchId);
+        const vms = await fetchAllBatchVms(batchId, (done, total) => {
+          btn.textContent = `Preparing… (${done}/${total})`;
+        });
         const csv = buildBatchTimestampsCsv(batchCtx, vms);
         downloadTextFile(`${batchId}-creation-timestamps.csv`, csv, "text/csv;charset=utf-8");
       } catch (err) {

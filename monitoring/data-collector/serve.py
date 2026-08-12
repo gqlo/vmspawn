@@ -28,6 +28,8 @@ from urllib.parse import parse_qs, unquote, urlparse
 SCHEMA_VERSION = 1
 HERE = Path(__file__).resolve().parent
 STATIC_DIR = HERE / "static"
+# Large /vms pages can OOM or reset the collector (empirically stable up to ~500).
+VM_LIST_PAGE_MAX = 500
 
 
 def _is_manifest(record_type: str) -> bool:
@@ -1715,7 +1717,7 @@ class Store:
                 "SELECT COUNT(*) AS c FROM batch_vms WHERE batch_id = ?", (batch_id,)
             ).fetchone()["c"]
 
-            lim = max(1, min(int(limit), 1000))
+            lim = max(1, min(int(limit), VM_LIST_PAGE_MAX))
             off = max(0, int(offset))
             sort_key = sort if sort in self._VM_LIST_SORTS else "vm_name"
             sort_dir = "DESC" if str(order).lower() == "desc" else "ASC"
@@ -2667,15 +2669,9 @@ def make_handler(app: App):
                 except ValueError:
                     self._json(400, {"error": "invalid limit/offset"})
                     return
-                export_all = (qs.get("export") or ["0"])[0].lower() in (
-                    "1",
-                    "true",
-                    "yes",
-                )
-                max_limit = 100_000 if export_all else 1000
                 detail = app.store.list_batch_vms(
                     m.group(1),
-                    limit=max(1, min(limit, max_limit)),
+                    limit=max(1, min(limit, VM_LIST_PAGE_MAX)),
                     offset=max(0, offset),
                     sort=(qs.get("sort") or ["vm_name"])[0],
                     order=(qs.get("order") or ["asc"])[0],

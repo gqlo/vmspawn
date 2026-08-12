@@ -1716,6 +1716,13 @@ class TestHTTPApi(unittest.TestCase):
         self.assertEqual(exported["limit"], 120)
         self.assertEqual(len(exported["items"]), 120)
 
+        status, capped = self._json(
+            "GET", "/v1/batches/http-page/vms?limit=9999&offset=0"
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(capped["limit"], 500)
+        self.assertEqual(len(capped["items"]), 120)
+
         status, chart = self._json("GET", "/v1/batches/http-page/boot-chart")
         self.assertEqual(status, 200)
         self.assertEqual(chart.get("count"), 0)
