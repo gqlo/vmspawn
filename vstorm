@@ -79,6 +79,8 @@ WAIT=0
 # After VMs are Running, probe guest SSH (port-forward + nc). 30s hard fail.
 WAIT_SSH=0
 SSH_READY_TIMEOUT=30
+# Max concurrent virtctl port-forward probes (override: SSH_PROBE_PARALLEL=N).
+SSH_PROBE_PARALLEL=1000
 # JSON blob for manifest: vm_ssh_ready / vm_ssh_failed / ssh_ready_*
 BATCH_SSH_JSON=
 CONTAINERDISK_IMAGE=
@@ -2057,7 +2059,8 @@ verify_cloudinit() {
 # Workload-agnostic SSH reachability check.
 # Uses virtctl port-forward + nc (no password/key). Each VM has
 # SSH_READY_TIMEOUT seconds; any still down => failure.
-# Sets BATCH_SSH_JSON for the host manifest POST.
+# Probes run in batches of SSH_PROBE_PARALLEL to avoid fd/PID exhaustion.
+# Sets BATCH_SSH_JSON for the host manifest POST (via temp files — not env).
 # Returns 0 if all probed VMs are up, 1 otherwise.
 verify_ssh_port() {
     BATCH_SSH_JSON=
@@ -2077,116 +2080,128 @@ verify_ssh_port() {
 
     local guest_port="${VM_SERVICE_TARGET_PORT:-22}"
     local timeout="${SSH_READY_TIMEOUT:-30}"
-    log_message "${C_BOLD}Checking SSH port ${C_VAL}${guest_port}${C_RST}${C_BOLD} on ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) (timeout ${C_VAL}${timeout}s${C_RST}${C_BOLD} each)...${C_RST}"
+    local -i parallel="${SSH_PROBE_PARALLEL:-1000}"
+    ((parallel < 1)) && parallel=1
+    log_message "${C_BOLD}Checking SSH port ${C_VAL}${guest_port}${C_RST}${C_BOLD} on ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) (timeout ${C_VAL}${timeout}s${C_RST}${C_BOLD} each, ${C_VAL}${parallel}${C_RST}${C_BOLD} parallel)...${C_RST}"
 
     local tmpdir
     tmpdir=$(mktemp -d)
     # shellcheck disable=SC2064
     trap "rm -rf '$tmpdir'" RETURN
 
-    local -a pids=()
-    local -a probe_vms=()
-    local i=0
-    local vm_key ns vm_name local_port out_file
-
-    for vm_key in "${vm_keys[@]}"; do
-	ns="${vm_key%%/*}"
-	vm_name="${vm_key##*/}"
-	local_port=$((23000 + i))
-	out_file="${tmpdir}/${vm_name}.ready"
-	probe_vms+=("$vm_name")
-	(
-	    local pf_pid="" deadline now
-	    deadline=$(($(date +%s) + timeout))
-	    cleanup_pf() {
-		if [[ -n "${pf_pid:-}" ]]; then
-		    kill "$pf_pid" 2>/dev/null || true
-		    wait "$pf_pid" 2>/dev/null || true
-		fi
-	    }
-	    trap cleanup_pf EXIT
-	    virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
-	    pf_pid=$!
-	    while true; do
-		now=$(date +%s)
-		if ((now >= deadline)); then
-		    exit 1
-		fi
-		if ! kill -0 "$pf_pid" 2>/dev/null; then
-		    wait "$pf_pid" 2>/dev/null || true
-		    virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
-		    pf_pid=$!
-		    sleep 1
-		    continue
-		fi
-		if nc -z -w 1 127.0.0.1 "$local_port" 2>/dev/null; then
-		    date -u +%Y-%m-%dT%H:%M:%SZ > "$out_file"
-		    exit 0
-		fi
-		sleep 1
-	    done
-	) &
-	pids+=($!)
-	i=$((i + 1))
-    done
+    local ready_tsv="${tmpdir}/ready.tsv"
+    local failed_txt="${tmpdir}/failed.txt"
+    : > "$ready_tsv"
+    : > "$failed_txt"
 
     local -i ok_count=0 fail_count=0
-    local -A ready_at=()
-    local -a failed=()
-    local idx pid rc
-    for idx in "${!pids[@]}"; do
-	pid=${pids[$idx]}
-	vm_name=${probe_vms[$idx]}
-	rc=0
-	wait "$pid" || rc=$?
-	if ((rc == 0)) && [[ -f "${tmpdir}/${vm_name}.ready" ]]; then
-	    ready_at["$vm_name"]=$(cat "${tmpdir}/${vm_name}.ready")
-	    log_message "  ${C_VAL}${vm_name}${C_RST}: SSH port ${C_OK}UP${C_RST} at ${C_VAL}${ready_at[$vm_name]}${C_RST}"
-	    ok_count=$((ok_count + 1))
-	else
-	    failed+=("$vm_name")
-	    log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}${vm_name}${C_RST}: SSH port ${C_ERR}DOWN${C_RST} after ${C_VAL}${timeout}s${C_RST}"
-	    fail_count=$((fail_count + 1))
+    local -i log_each=1
+    ((total > 100)) && log_each=0
+
+    local -i batch_start=0 batch_end batch_idx slot
+    local vm_key ns vm_name local_port out_file
+    local -a pids=() probe_vms=()
+    local idx pid rc ready_ts
+
+    while ((batch_start < total)); do
+	batch_end=$((batch_start + parallel))
+	((batch_end > total)) && batch_end=$total
+	pids=()
+	probe_vms=()
+
+	for ((batch_idx=batch_start; batch_idx<batch_end; batch_idx++)); do
+	    vm_key="${vm_keys[$batch_idx]}"
+	    ns="${vm_key%%/*}"
+	    vm_name="${vm_key##*/}"
+	    slot=$((batch_idx - batch_start))
+	    local_port=$((23000 + slot))
+	    out_file="${tmpdir}/${vm_name}.ready"
+	    probe_vms+=("$vm_name")
+	    (
+		local pf_pid="" deadline now
+		deadline=$(($(date +%s) + timeout))
+		cleanup_pf() {
+		    if [[ -n "${pf_pid:-}" ]]; then
+			kill "$pf_pid" 2>/dev/null || true
+			wait "$pf_pid" 2>/dev/null || true
+		    fi
+		}
+		trap cleanup_pf EXIT
+		virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+		pf_pid=$!
+		while true; do
+		    now=$(date +%s)
+		    if ((now >= deadline)); then
+			exit 1
+		    fi
+		    if ! kill -0 "$pf_pid" 2>/dev/null; then
+			wait "$pf_pid" 2>/dev/null || true
+			virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+			pf_pid=$!
+			sleep 1
+			continue
+		    fi
+		    if nc -z -w 1 127.0.0.1 "$local_port" 2>/dev/null; then
+			date -u +%Y-%m-%dT%H:%M:%SZ > "$out_file"
+			exit 0
+		    fi
+		    sleep 1
+		done
+	    ) &
+	    pids+=($!)
+	done
+
+	for idx in "${!pids[@]}"; do
+	    pid=${pids[$idx]}
+	    vm_name=${probe_vms[$idx]}
+	    rc=0
+	    wait "$pid" || rc=$?
+	    if ((rc == 0)) && [[ -f "${tmpdir}/${vm_name}.ready" ]]; then
+		ready_ts=$(cat "${tmpdir}/${vm_name}.ready")
+		printf '%s\t%s\n' "$vm_name" "$ready_ts" >> "$ready_tsv"
+		if ((log_each)); then
+		    log_message "  ${C_VAL}${vm_name}${C_RST}: SSH port ${C_OK}UP${C_RST} at ${C_VAL}${ready_ts}${C_RST}"
+		fi
+		ok_count=$((ok_count + 1))
+	    else
+		printf '%s\n' "$vm_name" >> "$failed_txt"
+		log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}${vm_name}${C_RST}: SSH port ${C_ERR}DOWN${C_RST} after ${C_VAL}${timeout}s${C_RST}"
+		fail_count=$((fail_count + 1))
+	    fi
+	done
+
+	if ((!log_each)); then
+	    log_message "  SSH check progress: ${C_VAL}$((ok_count + fail_count))${C_RST}/${C_VAL}${total}${C_RST} (${C_VAL}${ok_count}${C_RST} UP, ${C_ERR}${fail_count}${C_RST} failed)"
 	fi
+	batch_start=$batch_end
     done
 
-    local ready_json failed_json
-    ready_json=$(
-	for k in "${!ready_at[@]}"; do
-	    printf '%s\t%s\n' "$k" "${ready_at[$k]}"
-	done | python3 -c '
+    # Large JSON must not go through the environment (Linux MAX_ARG_STRLEN ~128KiB).
+    local ssh_json_file="${tmpdir}/ssh.json"
+    python3 - "$ready_tsv" "$failed_txt" "$guest_port" "$timeout" "$ssh_json_file" <<'PY'
 import json, sys
-d = {}
-for line in sys.stdin:
-    line = line.rstrip("\n")
+from pathlib import Path
+
+ready_path, failed_path, port, timeout, out_path = sys.argv[1:6]
+ready = {}
+for line in Path(ready_path).read_text(encoding="utf-8").splitlines():
     if not line or "\t" not in line:
         continue
     k, _, v = line.partition("\t")
-    d[k] = v
-print(json.dumps(d))
-' 2>/dev/null || echo '{}'
-    )
-    failed_json=$(printf '%s\n' "${failed[@]+"${failed[@]}"}" | python3 -c 'import json,sys; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]')
-
-    BATCH_SSH_JSON=$(
-	READY_JSON="$ready_json" FAILED_JSON="$failed_json" \
-	SSH_PORT="$guest_port" SSH_TIMEOUT="$timeout" \
-	python3 - <<'PY'
-import json, os
-ready = json.loads(os.environ.get("READY_JSON") or "{}")
-failed = json.loads(os.environ.get("FAILED_JSON") or "[]")
+    ready[k] = v
+failed = [l.strip() for l in Path(failed_path).read_text(encoding="utf-8").splitlines() if l.strip()]
 out = {
     "vm_ssh_ready": ready,
     "vm_ssh_failed": failed,
     "ssh_ready_status": "ok" if not failed else "failed",
-    "ssh_ready_port": int(os.environ.get("SSH_PORT") or 22),
-    "ssh_ready_timeout_s": int(os.environ.get("SSH_TIMEOUT") or 30),
+    "ssh_ready_port": int(port or 22),
+    "ssh_ready_timeout_s": int(timeout or 30),
 }
 if ready and not failed:
     out["ssh_ready_at"] = min(ready.values())
-print(json.dumps(out))
+Path(out_path).write_text(json.dumps(out), encoding="utf-8")
 PY
-    )
+    BATCH_SSH_JSON=$(<"$ssh_json_file")
 
     if ((fail_count > 0)); then
 	log_message "SSH check: ${C_VAL}${ok_count}${C_RST} UP, ${C_ERR}${fail_count}${C_RST} FAILED (timeout ${C_VAL}${timeout}s${C_RST})"
@@ -2254,19 +2269,6 @@ delete_batch() {
     log_message "Deleting namespaces for batch ${C_VAL}'$batch'${C_RST}..."
     oc delete ns -l batch-id="$batch"
     log_message "${C_OK}All resources for batch ${C_VAL}'$batch'${C_RST} deleted${C_RST}"
-
-    # Clean up local batch artifacts
-    local f
-    for f in \
-	"${LOG_DIR}/batch-${batch}.manifest" \
-	"${LOG_DIR}/batch-${batch}.manifest.json" \
-	"${LOG_DIR}/batch-${batch}.dv-created.json"
-    do
-	if [[ -f "$f" ]] ; then
-	    rm -f "$f"
-	    log_message "Removed: ${C_VAL}$f${C_RST}"
-	fi
-    done
 }
 
 ################################################################

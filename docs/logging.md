@@ -33,7 +33,7 @@ Each log entry is prefixed with a UTC `YYYY-MM-DDTHH:MM:SSZ` timestamp. The log 
 5. **VolumeSnapshot creation** *(snapshot mode only)* -- one per namespace, with readiness polling
 6. **VM creation** -- each VM logged individually with namespace and ID
 7. **VM readiness** *(with --wait)* -- periodic progress updates (`5/10 ready`)
-8. **SSH port check** *(with --wait-ssh)* -- probes guest SSH via virtctl port-forward + nc (30s hard fail); writes `logs/batch-{id}.ssh-ready.json`
+8. **SSH port check** *(with --wait-ssh)* -- probes guest SSH via virtctl port-forward + nc (30s hard fail, batched via `SSH_PROBE_PARALLEL`, default 1000); writes `logs/batch-{id}.ssh-ready.json`
 9. **Completion summary** -- total resources created
 
 ### Log output
@@ -111,7 +111,7 @@ cat logs/batch-a3f7b2.manifest.json
 
 ### Cleanup
 
-When you delete a batch with `--delete`, the manifest file is automatically removed along with the Kubernetes resources. Log files are kept for historical reference.
+When you delete a batch with `--delete`, only Kubernetes resources are removed. All local files under `logs/` (manifests, manifest JSON, DV/SSH sidecars, and timestamped run logs) are kept for historical reference.
 
 ## Dry-run YAML files
 
