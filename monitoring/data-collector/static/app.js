@@ -1115,7 +1115,7 @@ async function renderRun(app, batchId) {
       }</h3>
       <div class="pager" id="vms-pager-top" hidden></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th class="sortable" data-sort="dv_creation_s" title="PVC bound − DV created (seconds). Click to sort."><span class="sort-label">dv_creation_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_ready_s" title="Boot − DV created (seconds). Click to sort."><span class="sort-label">vm_ready_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_provision_s" title="Boot − PVC bound (seconds). Click to sort."><span class="sort-label">vm_provision_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</th><th>Mode</th><th>data_dv_creation_s</th><th>Workload status</th></tr></thead>
+        <thead><tr><th>VM</th><th class="sortable" data-sort="dv_creation_s" title="PVC bound − DV created (seconds). Click to sort."><span class="sort-label">dv_creation_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_provision_s" title="Boot − PVC bound (seconds). Click to sort."><span class="sort-label">vm_provision_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_ready_s" title="Boot − DV created (seconds). Click to sort."><span class="sort-label">vm_ready_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</th><th>Mode</th><th>data_dv_creation_s</th><th>Workload status</th></tr></thead>
         <tbody id="vms-tbody"><tr><td colspan="8" class="muted">Loading…</td></tr></tbody>
       </table></div>
       <div class="pager" id="vms-pager-bottom" hidden></div>
@@ -1177,8 +1177,8 @@ function vmRowHtml(batchId, v) {
   return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
               <td class="mono">${dvCreation === "" ? "—" : escapeHtml(dvCreation)}</td>
-              <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
               <td class="mono">${vmProvision === "" ? "—" : escapeHtml(vmProvision)}</td>
+              <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
               <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
                 v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
