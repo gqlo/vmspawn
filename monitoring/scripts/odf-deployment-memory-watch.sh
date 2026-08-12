@@ -13,6 +13,7 @@ readonly OCS_DEFAULT_MEMORY_BYTES=1610612736
 readonly -a TARGETS=(
   csi-addons-controller-manager:manager
   ocs-metrics-exporter:ocs-metrics-exporter
+  ocs-client-operator-controller-manager:manager
 )
 
 # Kubernetes quantity → bytes (binary Ki/Mi/Gi/Ti and decimal K/M/G/T).

@@ -74,6 +74,10 @@ BATCH_ID_SET=0
 NUM_VMS=1
 NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
+# 0 (default): create/wait all namespaces together (current behavior).
+# 1: fully create + wait one namespace (DVs, snapshots, VMs -> Running)
+# before starting the next one.
+NS_SEQUENTIAL_CREATION=0
 RUN_STRATEGY=Always
 WAIT=0
 # After VMs are Running, probe guest SSH (port-forward + nc). 30s hard fail.
@@ -96,6 +100,14 @@ PROFILE_TARGET=
 PROFILER_BIN=
 PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vstorm/releases/latest/download/cluster-profiler-linux-amd64"
 declare -A expected_vms=()
+# VMs that already exist on the cluster (populated once by create_virtualmachines
+# on its first call, reused across --ns-sequential-creation groups so we don't re-list
+# every group).
+declare -A existing_vms=()
+# Set to 1 once create_virtualmachines has built its per-run templates
+# (cloud-init, data disk, existing_vms, ...) so repeated calls -- one per
+# --ns-sequential-creation group -- reuse them instead of recomputing/re-listing.
+VM_TEMPLATES_READY=0
 # Validated template paths, keyed by role.  Filled by
 # validate_required_templates; read by creation functions.
 declare -A TEMPLATE_CACHE=()
@@ -329,6 +341,12 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms=N                 Number of VMs ($NUM_VMS)
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
+        --ns-sequential-creation[=true|false]
+                                Namespace creation order (default: false)
+                                | | | false: create/wait all namespaces together
+                                | | | true: fully create + wait one namespace
+                                | | | (DVs, snapshots, VMs -> Running) before
+                                | | | starting the next one
         --udn-l2[=CIDR]         Layer 2 primary UDN (default subnet: $SUBNET)
         --service[=TYPE[:PORT[:TARGET_PORT]]]
                                 Expose VMs in each namespace via Service
@@ -409,6 +427,14 @@ process_option() {
 	vmsper*)   NUM_VMS_PER_NAMESPACE=$value ;;
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
+	nssequentialcreation) case "${value,,}" in
+		       '') NS_SEQUENTIAL_CREATION=1 ;;  # --ns-sequential-creation with no value
+		       0|1|true|false|yes|no|on|off) case "${value,,}" in
+		           0|false|no|off) NS_SEQUENTIAL_CREATION=0 ;;
+		           *) NS_SEQUENTIAL_CREATION=1 ;;
+		           esac ;;
+		       *) fatal "Invalid --ns-sequential-creation value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
+		   esac ;;
 	udnl2)
 	    UDN_L2=1
 	    if [[ -n "$value" ]]; then
@@ -1003,6 +1029,7 @@ indent_token() {
 ################################################################
 # Function to create namespaces
 create_namespaces() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
     local ns_file="${TEMPLATE_CACHE[namespace]}"
@@ -1017,7 +1044,7 @@ create_namespaces() {
 	    if [[ -n "$namespace" ]] ; then existing_namespaces["$namespace"]=1; fi
 	done <<< "$(oc get namespace --no-headers 2>/dev/null | awk '{print $1}')"
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
 
         # Check if namespace already exists
@@ -1077,14 +1104,17 @@ next_service_nodeport() {
 }
 
 create_vm_service() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     local svc_file="${TEMPLATE_CACHE[vm-service]}"
     local -i ns
     local svc_name node_port_info
-    VM_SERVICE_INFO=()
-    if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
-	init_service_nodeport_next
+    if ((ns_start == 1)); then
+	VM_SERVICE_INFO=()
+	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
+	    init_service_nodeport_next
+	fi
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
 	namespace="${BATCH_ID}-ns-${ns}"
 	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
 	    SVC_TYPE=NodePort
@@ -1150,10 +1180,11 @@ check_datavolume_status() {
 
 # Function to wait for all DataVolumes to complete
 wait_for_all_datavolumes() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Waiting for all DataVolumes to complete...${C_RST}"
 
     local -i ns
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_datavolume_status "$namespace"; then
@@ -1278,6 +1309,7 @@ PY
 }
 
 create_datavolumes() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     # In no-snapshot mode with a DataSource, each VM's DataVolumeTemplate
     # clones directly from the DataSource -- no intermediate base DV needed.
     if [[ -n "$DATASOURCE" ]] && ! ((USE_SNAPSHOT)) ; then
@@ -1288,7 +1320,7 @@ create_datavolumes() {
     log_message "${C_BOLD}Creating DataVolumes...${C_RST}"
     local -i ns
     local dv_file="${TEMPLATE_CACHE[dv]}"
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
 
         log_message "Creating DataVolume for namespace: ${C_VAL}$namespace${C_RST}"
@@ -1298,7 +1330,7 @@ create_datavolumes() {
 	if ((WAIT_FOR_FIRST_CONSUMER)) ; then
 	    log_message "Skipping DataVolume wait (${C_VAL}WaitForFirstConsumer${C_RST}); VMs will trigger PVC binding."
 	else
-	    wait_for_all_datavolumes
+	    wait_for_all_datavolumes "$ns_start" "$ns_end"
 	fi
     fi
 }
@@ -1332,10 +1364,11 @@ check_volumesnapshot_status() {
 
 # Function to wait for all VolumeSnapshots to be ready
 wait_for_all_volumesnapshots() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Waiting for all VolumeSnapshots to be ready...${C_RST}"
 
     local -i ns
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_volumesnapshot_status "$namespace"; then
@@ -1347,15 +1380,16 @@ wait_for_all_volumesnapshots() {
 }
 
 create_volumesnapshots() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Creating VolumeSnapshots...${C_RST}"
     local -i ns
     local vs_file="${TEMPLATE_CACHE[volumesnapshot]}"
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$vs_file" | oc_apply
     done
-    if ((wet_run)) ; then wait_for_all_volumesnapshots; fi
+    if ((wet_run)) ; then wait_for_all_volumesnapshots "$ns_start" "$ns_end"; fi
 }
 
 ################################################################
@@ -1804,7 +1838,13 @@ wait_for_all_vms() {
 }
 
 create_virtualmachines() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}" force_wait="${3:-0}"
+    local -i ns vm
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
+    # One-time template setup (cloud-init, data disk, existing VM lookup, ...).
+    # Guarded so repeated calls -- one per --ns-sequential-creation namespace -- reuse it
+    # instead of recomputing/re-listing (e.g. `oc get vm -A`) every time.
+    if ((! VM_TEMPLATES_READY)) ; then
     VM_ID=1
 	if ((UDN_L2)); then
 		vm_file="${TEMPLATE_CACHE[vm-udn]}"
@@ -1813,7 +1853,7 @@ create_virtualmachines() {
 	fi
     # Default profile when --cloudinit omitted (SSH + boot timestamp; no workload).
     apply_default_cloudinit_if_needed
-    local requeststr=
+    requeststr=
     local -A requests=()
     if [[ -n "${VM_CPU_REQUEST:-}" ]] ; then requests[cpu]=$VM_CPU_REQUEST; fi
     if [[ -n "${VM_MEMORY_REQUEST:-}" ]] ; then requests[memory]=$VM_MEMORY_REQUEST; fi
@@ -1827,15 +1867,15 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
     # Build cloud-init YAML fragments if a cloud-init file is specified.
     # Userdata is stored in a Secret per namespace (to avoid the 2048-byte
     # inline limit) and referenced via userDataSecretRef.
-    local cloudinit_disk=""
-    local cloudinit_volume=""
-    local cloudinit_b64=""
-    local cloudinit_secret_file=""
-    local data_dv_templates=""
-    local data_dv_template=""
-    local data_disk=""
-    local data_volume=""
-    local domain_firmware=
+    cloudinit_disk=""
+    cloudinit_volume=""
+    cloudinit_b64=""
+    cloudinit_secret_file=""
+    data_dv_templates=""
+    data_dv_template=""
+    data_disk=""
+    data_volume=""
+    domain_firmware=
     case "${VM_FIRMWARE,,}" in
 	efi)
 	    domain_firmware="features:
@@ -1958,14 +1998,15 @@ ${data_dv_template}"
 	log_message "Data disk enabled: ${C_VAL}${DATA_DISK_SIZE}${C_RST} blank volume as ${C_VAL}vdb${C_RST}"
     fi
 
-    local -A existing_vms=()
     if ((! RECREATE_EXISTING_VMS)) ; then
 	local vm
 	while read -r vm ; do
 	    if [[ -n "$vm" ]] ; then existing_vms["$vm"]=1; fi
 	done <<< "$(oc get vm -A --no-headers | awk '{printf "%s/%s\n", $1, $2}')"
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
+    VM_TEMPLATES_READY=1
+    fi
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
         namespace="${BATCH_ID}-ns-${ns}"
 
 	# Create cloud-init Secret in this namespace if needed
@@ -2014,7 +2055,7 @@ ${data_dv_template}"
         done
     done
     if ((wet_run)) ; then
-	if ((WAIT)) ; then
+	if ((WAIT || force_wait)) ; then
 	    wait_for_all_vms
 	else
 	    log_message "Not waiting for all VMs"
@@ -2581,19 +2622,49 @@ main() {
     elif ((WAIT)); then
 	log_message "Wait VMs:      ${C_VAL}yes${C_RST}"
     fi
-
-    create_namespaces
-    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	create_datavolumes
-	if ((USE_SNAPSHOT)) ; then
-	    create_volumesnapshots
-	else
-	    log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
-	fi
+    if ((NS_SEQUENTIAL_CREATION)); then
+	log_message "NS sequential: ${C_VAL}true${C_RST} (--ns-sequential-creation: one namespace at a time)"
     fi
-    create_virtualmachines
-    if ((VM_SERVICE)); then
-	create_vm_service
+
+    if ((NS_SEQUENTIAL_CREATION)) ; then
+	log_message "${C_BOLD}ns-sequential-creation enabled:${C_RST} creating/waiting one namespace at a time"
+	local -i seq_ns is_last_ns
+	for ((seq_ns=1; seq_ns<=NUM_NAMESPACES; seq_ns++)); do
+	    is_last_ns=$((seq_ns == NUM_NAMESPACES ? 1 : 0))
+	    log_message "${C_BOLD}Namespace ${C_VAL}${seq_ns}${C_RST}${C_BOLD} of ${C_VAL}${NUM_NAMESPACES}${C_RST}"
+	    create_namespaces "$seq_ns" "$seq_ns"
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+		create_datavolumes "$seq_ns" "$seq_ns"
+		if ((USE_SNAPSHOT)) ; then
+		    create_volumesnapshots "$seq_ns" "$seq_ns"
+		elif ((seq_ns == 1)) ; then
+		    log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
+		fi
+	    fi
+	    # Force a wait for this namespace's VMs to reach Running before
+	    # moving on -- otherwise --ns-sequential-creation would just reorder the
+	    # same burst of creates with no throttling effect. The final
+	    # namespace still honors --wait for whether create returns
+	    # only once everything is Running.
+	    create_virtualmachines "$seq_ns" "$seq_ns" $((is_last_ns ? 0 : 1))
+	    if ((VM_SERVICE)); then
+		create_vm_service "$seq_ns" "$seq_ns"
+	    fi
+	done
+    else
+	create_namespaces
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    create_datavolumes
+	    if ((USE_SNAPSHOT)) ; then
+		create_volumesnapshots
+	    else
+		log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
+	    fi
+	fi
+	create_virtualmachines
+	if ((VM_SERVICE)); then
+	    create_vm_service
+	fi
     fi
 
     # TODO: re-enable once verify_cloudinit is improved
