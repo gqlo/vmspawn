@@ -957,7 +957,7 @@ async function renderRun(app, batchId) {
       }</h3>
       <div class="pager" id="vms-pager-top" hidden></div>
       <div class="table-wrap"><table>
-        <thead><tr><th>VM</th><th>Workload status</th><th>Mode</th><th>dv_creation_s</th><th>data_dv_creation_s</th><th>vm_ready_s</th><th>Boot</th></tr></thead>
+        <thead><tr><th>VM</th><th class="sortable" data-sort="dv_creation_s" title="PVC bound − DV created (seconds). Click to sort."><span class="sort-label">dv_creation_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th class="sortable" data-sort="vm_ready_s" title="Boot − DV created (seconds). Click to sort."><span class="sort-label">vm_ready_s</span><span class="sort-indicator" aria-hidden="true">↕</span></th><th title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</th><th>Mode</th><th>data_dv_creation_s</th><th>Workload status</th></tr></thead>
         <tbody id="vms-tbody"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
       </table></div>
       <div class="pager" id="vms-pager-bottom" hidden></div>
@@ -1017,27 +1017,65 @@ function vmRowHtml(batchId, v) {
   const vmReady = durationSeconds(v.boot_timestamp_unix, v.dv_created_at_unix);
   return `<tr class="clickable" data-href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">
               <td class="mono"><a href="#/runs/${encodeURIComponent(batchId)}/vms/${encodeURIComponent(v.vm_name)}">${escapeHtml(v.vm_name)}</a></td>
-              <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
+              <td class="mono">${dvCreation === "" ? "—" : escapeHtml(dvCreation)}</td>
+              <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
+              <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
               <td class="mono">${escapeHtml(v.policy_mode || "—")}${
                 v.policy_remaining != null ? ` · ${escapeHtml(String(v.policy_remaining))}` : ""
               }</td>
-              <td class="mono">${dvCreation === "" ? "—" : escapeHtml(dvCreation)}</td>
               <td class="mono">${dataDvCreation === "" ? "—" : escapeHtml(dataDvCreation)}</td>
-              <td class="mono">${vmReady === "" ? "—" : escapeHtml(vmReady)}</td>
-              <td class="mono">${escapeHtml(fmtTs(v.boot_timestamp_unix))}</td>
+              <td>${escapeHtml(fmtWorkloadStatus(v.ui_status))}</td>
             </tr>`;
 }
 
-/** Server-side VM table pages (GET /v1/batches/:id/vms?limit&offset). */
+/** Server-side VM table pages (GET /v1/batches/:id/vms?limit&offset&sort&order). */
 async function bindServerVmPager(batchId) {
   const tbody = $("#vms-tbody");
   const empty = $("#vms-empty");
   const tableWrap = tbody && tbody.closest(".table-wrap");
+  const table = tbody && tbody.closest("table");
   const pagers = [$("#vms-pager-top"), $("#vms-pager-bottom")].filter(Boolean);
   if (!tbody) return;
 
   let current = 1;
   let inflight = 0;
+  let sortCol = "vm_name";
+  let sortDir = "asc";
+
+  const updateSortHeaders = () => {
+    if (!table) return;
+    for (const th of table.querySelectorAll("th.sortable")) {
+      const col = th.dataset.sort;
+      const indicator = th.querySelector(".sort-indicator");
+      th.classList.remove("sort-asc", "sort-desc");
+      if (col === sortCol) {
+        th.classList.add(sortDir === "asc" ? "sort-asc" : "sort-desc");
+        th.setAttribute("aria-sort", sortDir === "asc" ? "ascending" : "descending");
+        if (indicator) indicator.textContent = sortDir === "asc" ? "↑" : "↓";
+      } else {
+        th.setAttribute("aria-sort", "none");
+        if (indicator) indicator.textContent = "↕";
+      }
+    }
+  };
+
+  if (table && !table.dataset.sortBound) {
+    table.dataset.sortBound = "1";
+    for (const th of table.querySelectorAll("th.sortable")) {
+      th.addEventListener("click", () => {
+        const col = th.dataset.sort;
+        if (!col) return;
+        if (sortCol === col) sortDir = sortDir === "asc" ? "desc" : "asc";
+        else {
+          sortCol = col;
+          sortDir = "asc";
+        }
+        updateSortHeaders();
+        paint(1);
+      });
+    }
+  }
+  updateSortHeaders();
 
   const paint = async (nextPage, { scroll } = {}) => {
     const page = Math.max(1, nextPage || 1);
@@ -1046,8 +1084,12 @@ async function bindServerVmPager(batchId) {
     const offset = (page - 1) * limit;
     tbody.innerHTML = `<tr><td colspan="7" class="muted">Loading…</td></tr>`;
     try {
+      const sortQs =
+        sortCol === "vm_name"
+          ? ""
+          : `&sort=${encodeURIComponent(sortCol)}&order=${encodeURIComponent(sortDir)}`;
       const data = await api(
-        `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}`
+        `/v1/batches/${encodeURIComponent(batchId)}/vms?limit=${limit}&offset=${offset}${sortQs}`
       );
       if (req !== inflight) return;
       const items = data.items || [];
@@ -1070,6 +1112,7 @@ async function bindServerVmPager(batchId) {
         renderPagerControls(pager, meta, (p) => paint(p, { scroll: true }));
       }
       bindClickableRows(tbody);
+      updateSortHeaders();
       if (scroll && pagers[0]) {
         pagers[0].scrollIntoView({ block: "nearest", behavior: "smooth" });
       }
@@ -1243,7 +1286,7 @@ async function renderVm(app, batchId, vm) {
             <dt>CPU / RAM</dt><dd>${escapeHtml(String(id.cpu_count ?? "—"))} / ${escapeHtml(
               id.mem_total_kb != null ? fmtNum(id.mem_total_kb, 0) + " KiB" : "—"
             )}</dd>
-            <dt>Boot</dt><dd class="mono">${escapeHtml(fmtTs(id.boot_timestamp_unix))}</dd>
+            <dt title="UTC when network-online.target is reached (vstorm-boot-timestamp.service)">Boot @ net-online</dt><dd class="mono">${escapeHtml(fmtTs(id.boot_timestamp_unix))}</dd>
             <dt>First report lag</dt><dd>${escapeHtml(
               id.first_report_lag_s != null ? id.first_report_lag_s + "s" : "—"
             )}</dd>

@@ -956,6 +956,79 @@ class TestStoreQueries(unittest.TestCase):
         self.assertEqual(loads["n"], 0)
         self.assertEqual(len(again["items"]), 50)
 
+    def test_list_batch_vms_sorts_by_duration_columns(self) -> None:
+        base = "2026-07-28T11:00:00Z"
+        self.store.ingest(
+            {
+                "schema_version": 1,
+                "record_type": "manifest",
+                "source": "vstorm",
+                "batch_id": "sort1",
+                "basename": "rhel9",
+                "total_vms": 3,
+                "vms": ["vm-fast", "vm-slow", "vm-missing"],
+                "namespaces": ["ns"],
+                "reported_at": "2026-07-28T12:00:00Z",
+                "started_at": base,
+                "dv_created_at": base,
+                "vm_dv_created": {
+                    "vm-fast": "2026-07-28T11:00:00Z",
+                    "vm-slow": "2026-07-28T11:00:00Z",
+                    "vm-missing": "2026-07-28T11:00:00Z",
+                },
+                "vm_dv_bound": {
+                    "vm-fast": "2026-07-28T11:00:30Z",
+                    "vm-slow": "2026-07-28T11:02:00Z",
+                },
+            }
+        )
+        for vm_name, boot_iso in (
+            ("vm-fast", "2026-07-28T11:01:00Z"),
+            ("vm-slow", "2026-07-28T11:05:00Z"),
+        ):
+            self.store.ingest(
+                {
+                    "schema_version": 1,
+                    "record_type": "heartbeat",
+                    "source": "guest",
+                    "workload_kind": "boot",
+                    "batch_id": "sort1",
+                    "vm_name": vm_name,
+                    "boot_timestamp": boot_iso,
+                    "reported_at": boot_iso,
+                }
+            )
+
+        by_dv = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="dv_creation_s", order="asc"
+        )
+        assert by_dv is not None
+        self.assertEqual(by_dv["sort"], "dv_creation_s")
+        self.assertEqual(by_dv["order"], "asc")
+        self.assertEqual(
+            [x["vm_name"] for x in by_dv["items"]],
+            ["vm-fast", "vm-slow", "vm-missing"],
+        )
+
+        by_dv_desc = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="dv_creation_s", order="desc"
+        )
+        assert by_dv_desc is not None
+        self.assertEqual(
+            [x["vm_name"] for x in by_dv_desc["items"]],
+            ["vm-slow", "vm-fast", "vm-missing"],
+        )
+
+        by_ready = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="vm_ready_s", order="asc"
+        )
+        assert by_ready is not None
+        self.assertEqual(by_ready["sort"], "vm_ready_s")
+        self.assertEqual(
+            [x["vm_name"] for x in by_ready["items"]],
+            ["vm-fast", "vm-slow", "vm-missing"],
+        )
+
     def test_ensure_batch_vm_index_backfills_legacy_rows(self) -> None:
         self.store.ingest(
             {

@@ -1684,12 +1684,16 @@ class Store:
             )
         self._conn.commit()
 
+    _VM_LIST_SORTS = frozenset({"vm_name", "dv_creation_s", "vm_ready_s"})
+
     def list_batch_vms(
         self,
         batch_id: str,
         *,
         limit: int = 100,
         offset: int = 0,
+        sort: str = "vm_name",
+        order: str = "asc",
     ) -> dict[str, Any] | None:
         """Paginated VM rows for a batch (from batch_vms index + live policy/status)."""
         with self._lock:
@@ -1713,15 +1717,44 @@ class Store:
 
             lim = max(1, min(int(limit), 1000))
             off = max(0, int(offset))
+            sort_key = sort if sort in self._VM_LIST_SORTS else "vm_name"
+            sort_dir = "DESC" if str(order).lower() == "desc" else "ASC"
+            needs_boot = sort_key == "vm_ready_s"
+            boot_join = """
+                LEFT JOIN (
+                    SELECT COALESCE(vm_name, hostname) AS vm_name,
+                           MIN(boot_timestamp_unix) AS boot_ts
+                    FROM results
+                    WHERE batch_id = ? AND boot_timestamp_unix IS NOT NULL
+                    GROUP BY COALESCE(vm_name, hostname)
+                ) boot ON boot.vm_name = b.vm_name
+            """ if needs_boot else ""
+            if sort_key == "vm_name":
+                order_sql = f"b.vm_name {sort_dir}"
+            elif sort_key == "dv_creation_s":
+                order_sql = (
+                    "(b.pvc_bound_at IS NULL OR b.dv_created_at IS NULL), "
+                    f"(b.pvc_bound_at - b.dv_created_at) {sort_dir}, b.vm_name ASC"
+                )
+            else:
+                order_sql = (
+                    "(boot.boot_ts IS NULL OR b.dv_created_at IS NULL), "
+                    f"(boot.boot_ts - b.dv_created_at) {sort_dir}, b.vm_name ASC"
+                )
+            query_params: list[Any] = []
+            if needs_boot:
+                query_params.append(batch_id)
+            query_params.extend([batch_id, lim, off])
             rows = self._conn.execute(
-                """
-                SELECT *
-                FROM batch_vms
-                WHERE batch_id = ?
-                ORDER BY vm_name
+                f"""
+                SELECT b.*
+                FROM batch_vms b
+                {boot_join}
+                WHERE b.batch_id = ?
+                ORDER BY {order_sql}
                 LIMIT ? OFFSET ?
                 """,
-                (batch_id, lim, off),
+                query_params,
             ).fetchall()
 
             names = [r["vm_name"] for r in rows]
@@ -1757,6 +1790,8 @@ class Store:
                 "total": total,
                 "limit": lim,
                 "offset": off,
+                "sort": sort_key,
+                "order": sort_dir.lower(),
                 "items": items,
             }
 
@@ -2631,6 +2666,8 @@ def make_handler(app: App):
                     m.group(1),
                     limit=max(1, min(limit, 1000)),
                     offset=max(0, offset),
+                    sort=(qs.get("sort") or ["vm_name"])[0],
+                    order=(qs.get("order") or ["asc"])[0],
                 )
                 if detail is None:
                     self._json(404, {"error": "batch not found"})

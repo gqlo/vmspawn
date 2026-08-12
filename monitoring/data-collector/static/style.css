@@ -274,6 +274,30 @@ th, td {
 
 th { color: var(--muted); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.02em; }
 
+th.sortable {
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+
+th.sortable:hover { color: var(--text); }
+
+th.sortable .sort-indicator {
+  display: inline-block;
+  min-width: 0.85em;
+  margin-left: 0.2rem;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+th.sortable.sort-asc .sort-indicator,
+th.sortable.sort-desc .sort-indicator {
+  color: var(--accent);
+}
+
 .timestamps-wrap {
   max-height: min(70vh, 48rem);
   overflow: auto;
