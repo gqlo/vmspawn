@@ -1039,6 +1039,25 @@ class TestStoreQueries(unittest.TestCase):
             ["vm-fast", "vm-slow", "vm-missing"],
         )
 
+        by_boot = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="boot_timestamp", order="asc"
+        )
+        assert by_boot is not None
+        self.assertEqual(by_boot["sort"], "boot_timestamp")
+        self.assertEqual(
+            [x["vm_name"] for x in by_boot["items"]],
+            ["vm-fast", "vm-slow", "vm-missing"],
+        )
+
+        by_boot_desc = self.store.list_batch_vms(
+            "sort1", limit=10, offset=0, sort="boot_timestamp", order="desc"
+        )
+        assert by_boot_desc is not None
+        self.assertEqual(
+            [x["vm_name"] for x in by_boot_desc["items"]],
+            ["vm-slow", "vm-fast", "vm-missing"],
+        )
+
     def test_ensure_batch_vm_index_backfills_legacy_rows(self) -> None:
         self.store.ingest(
             {
