@@ -2,6 +2,9 @@
 # Trigger MCP reboot/drain and poll worker MachineConfigNodes until each completes a cycle.
 # Tracks total time (UPDATED=False→True) and MCN phase timestamps via lastTransitionTime:
 #   UpdatePrepared, Cordoned, Drained, AppliedFilesAndOS, RebootedNode, Uncordoned, Updated
+# Phase timestamps are captured in order (each phase must follow the previous one) and only
+# after node tracking starts, so stale Drained conditions from pool start are ignored.
+# Sub-second phases (apply/reboot/uncordon) often show 0s because MCN reports the same second.
 # Phase rows are tied to the rollout rendered config (status.configVersion.desired).
 # Exits when every mcp/$MCP node has been tracked.
 # Logs all output to a file (LOG_FILE) and writes per-node timing to CSV_FILE.
@@ -58,12 +61,84 @@ iso_to_epoch() {
 }
 
 duration_between_iso() {
-  local start_iso="$1" end_iso="$2" start_epoch end_epoch
+  local start_iso="$1" end_iso="$2" start_epoch end_epoch diff
 
   [[ -z "$start_iso" || -z "$end_iso" ]] && return 0
   start_epoch="$(iso_to_epoch "$start_iso")" || return 0
   end_epoch="$(iso_to_epoch "$end_iso")" || return 0
-  printf '%s' "$((end_epoch - start_epoch))"
+  diff="$((end_epoch - start_epoch))"
+  (( diff < 0 )) && return 0
+  printf '%s' "$diff"
+}
+
+phase_index() {
+  local phase="$1" i
+
+  for i in "${!PHASE_TYPES[@]}"; do
+    if [[ "${PHASE_TYPES[$i]}" == "$phase" ]]; then
+      printf '%s' "$i"
+      return 0
+    fi
+  done
+  return 1
+}
+
+phase_min_epoch() {
+  local node="$1" phase="$2" idx prev_phase prev_iso prev_epoch start_epoch
+
+  start_epoch="${node_start_epoch[$node]:-}"
+  idx="$(phase_index "$phase")" || return 1
+
+  if (( idx > 0 )); then
+    prev_phase="${PHASE_TYPES[$((idx - 1))]}"
+    prev_iso="$(phase_iso "$node" "$prev_phase")"
+    if [[ -n "$prev_iso" ]]; then
+      prev_epoch="$(iso_to_epoch "$prev_iso")" || return 1
+      printf '%s' "$prev_epoch"
+      return 0
+    fi
+    return 1
+  fi
+
+  [[ -n "$start_epoch" ]] || return 1
+  printf '%s' "$start_epoch"
+}
+
+can_capture_phase() {
+  local node="$1" phase="$2" idx
+
+  idx="$(phase_index "$phase")" || return 1
+  (( idx == 0 )) && return 0
+  [[ -n "$(phase_iso "$node" "${PHASE_TYPES[$((idx - 1))]}")" ]]
+}
+
+phase_transition_epoch() {
+  local node="$1" phase="$2" mcn_json="$3" min_epoch ts_epoch
+
+  min_epoch="$(phase_min_epoch "$node" "$phase")" || return 1
+
+  if [[ "$phase" == "Updated" ]]; then
+  jq -r --arg node "$node" --arg cfg "$TARGET_CFG" --argjson min_epoch "$min_epoch" '
+    [.items[] | select(.metadata.name == $node)
+      | select(.status.configVersion.current == $cfg)
+      | .status.conditions[]?
+      | select(.type == "Updated" and .status == "True")
+      | select((.lastTransitionTime | fromdateiso8601) >= $min_epoch)
+      | .lastTransitionTime
+    ] | max // empty
+  ' <<<"$mcn_json"
+  else
+  jq -r --arg node "$node" --arg phase "$phase" --arg cfg "$TARGET_CFG" --argjson min_epoch "$min_epoch" '
+    [.items[] | select(.metadata.name == $node)
+      | .status.conditions[]?
+      | select(.type == $phase and .status == "True")
+      | select(.message | contains($cfg))
+      | select(.reason != "NotYetOccurred")
+      | select((.lastTransitionTime | fromdateiso8601) >= $min_epoch)
+      | .lastTransitionTime
+    ] | max // empty
+  ' <<<"$mcn_json"
+  fi
 }
 
 phase_key() {
@@ -215,37 +290,24 @@ node_updated_for_rollout() {
 }
 
 capture_node_phases() {
-  local node="$1" mcn_json="$2" phase key ts
+  local node="$1" mcn_json="$2" phase key ts existing
 
   [[ -z "$TARGET_CFG" ]] && return 0
+  [[ -n "${node_start_epoch[$node]:-}" ]] || return 0
 
   for phase in "${PHASE_TYPES[@]}"; do
+    can_capture_phase "$node" "$phase" || continue
+
     key="$(phase_key "$node" "$phase")"
-    [[ -n "${node_phase_iso[$key]:-}" ]] && continue
+    ts="$(phase_transition_epoch "$node" "$phase" "$mcn_json")"
+    [[ -z "$ts" || "$ts" == "null" ]] && continue
 
-    if [[ "$phase" == "Updated" ]]; then
-      ts="$(jq -r --arg node "$node" --arg cfg "$TARGET_CFG" '
-        .items[] | select(.metadata.name == $node)
-        | select(.status.configVersion.current == $cfg)
-        | .status.conditions[]?
-        | select(.type == "Updated" and .status == "True")
-        | .lastTransitionTime
-      ' <<<"$mcn_json")"
-    else
-      ts="$(jq -r --arg node "$node" --arg phase "$phase" --arg cfg "$TARGET_CFG" '
-        .items[] | select(.metadata.name == $node)
-        | .status.conditions[]?
-        | select(.type == $phase)
-        | select(.message | contains($cfg))
-        | select(.reason != "NotYetOccurred")
-        | select(.reason != "AsExpected")
-        | .lastTransitionTime
-      ' <<<"$mcn_json")"
-    fi
-
-    if [[ -n "$ts" && "$ts" != "null" ]]; then
+    existing="${node_phase_iso[$key]:-}"
+    if [[ -z "$existing" || "$(iso_to_epoch "$ts")" -gt "$(iso_to_epoch "$existing")" ]]; then
+      if [[ -z "$existing" ]]; then
+        printf '%s machineconfignode/%s %s @ %s\n' "$(date -Iseconds)" "$node" "$phase" "$ts"
+      fi
       node_phase_iso[$key]="$ts"
-      printf '%s machineconfignode/%s %s @ %s\n' "$(date -Iseconds)" "$node" "$phase" "$ts"
     fi
   done
 }
@@ -264,7 +326,7 @@ record_node_start() {
 record_node_completion() {
   local node="$1" duration="$2" start="$3" end="$4"
   local prep cord drained applied reboot unc upd
-  local drain_secs apply_secs reboot_secs uncordon_secs total_phase_secs
+  local queue_secs drain_secs apply_secs reboot_secs uncordon_secs total_phase_secs
 
   prep="$(phase_iso "$node" UpdatePrepared)"
   cord="$(phase_iso "$node" Cordoned)"
@@ -274,18 +336,24 @@ record_node_completion() {
   unc="$(phase_iso "$node" Uncordoned)"
   upd="$(phase_iso "$node" Updated)"
 
+  queue_secs="$(duration_between_iso "$(epoch_to_iso "$start")" "$cord")"
   drain_secs="$(duration_between_iso "$cord" "$drained")"
   apply_secs="$(duration_between_iso "$drained" "$applied")"
   reboot_secs="$(duration_between_iso "$applied" "$reboot")"
   uncordon_secs="$(duration_between_iso "$reboot" "$unc")"
-  total_phase_secs="$(duration_between_iso "$cord" "$upd")"
+  total_phase_secs="$(duration_between_iso "${prep:-$cord}" "$upd")"
   if [[ -z "$total_phase_secs" ]]; then
-    total_phase_secs="$(duration_between_iso "$prep" "$upd")"
+    total_phase_secs="$(duration_between_iso "$cord" "$upd")"
   fi
 
   {
-    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
+    printf '%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s\n' \
       "$node" \
+      "${drain_secs:-}" \
+      "${apply_secs:-}" \
+      "${reboot_secs:-}" \
+      "${uncordon_secs:-}" \
+      "${total_phase_secs:-}" \
       "${TARGET_CFG:-}" \
       "$duration" \
       "$(epoch_to_iso "$start")" \
@@ -297,17 +365,13 @@ record_node_completion() {
       "$reboot" \
       "$unc" \
       "$upd" \
-      "${drain_secs:-}" \
-      "${apply_secs:-}" \
-      "${reboot_secs:-}" \
-      "${uncordon_secs:-}" \
-      "${total_phase_secs:-}"
+      "${queue_secs:-}"
   } >> "$CSV_FILE"
 }
 
 init_csv() {
   printf '%s\n' \
-    'node,rendered_config,total_duration_seconds,total_start_time,total_end_time,update_prepared_ts,cordoned_ts,drained_ts,applied_files_and_os_ts,rebooted_node_ts,uncordoned_ts,updated_ts,drain_seconds,apply_seconds,reboot_seconds,uncordon_seconds,total_from_phases_seconds' \
+    'node,drain_seconds,apply_seconds,reboot_seconds,uncordon_seconds,total_from_phases_seconds,rendered_config,total_duration_seconds,total_start_time,total_end_time,update_prepared_ts,cordoned_ts,drained_ts,applied_files_and_os_ts,rebooted_node_ts,uncordoned_ts,updated_ts,queue_seconds' \
     > "$CSV_FILE"
 }
 
@@ -345,9 +409,10 @@ check_mcn_updates() {
         "$(format_duration "$elapsed")" \
         "$updated_count" "$machine_count" \
         "$nodes_finished_this_run" "${#worker_nodes[@]}"
-      if [[ -n "$(phase_iso "$node" Drained)" && -n "$(phase_iso "$node" RebootedNode)" ]]; then
-        printf '%s   phases: drain=%ss apply=%ss reboot=%ss uncordon=%ss (from lastTransitionTime)\n' \
+      if [[ -n "$(phase_iso "$node" Cordoned)" && -n "$(phase_iso "$node" Drained)" ]]; then
+        printf '%s   phases: queue=%ss drain=%ss apply=%ss reboot=%ss uncordon=%ss (from lastTransitionTime)\n' \
           "$(date -Iseconds)" \
+          "$(duration_between_iso "$(epoch_to_iso "$start")" "$(phase_iso "$node" Cordoned)")" \
           "$(duration_between_iso "$(phase_iso "$node" Cordoned)" "$(phase_iso "$node" Drained)")" \
           "$(duration_between_iso "$(phase_iso "$node" Drained)" "$(phase_iso "$node" AppliedFilesAndOS)")" \
           "$(duration_between_iso "$(phase_iso "$node" AppliedFilesAndOS)" "$(phase_iso "$node" RebootedNode)")" \
