@@ -386,7 +386,9 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | COMPONENT: virt-api, virt-controller,
                                 | | | virt-handler, virt-operator (default: all)
         --delete=BATCH_ID       Delete all resources for the given batch
-        --delete-all            Delete ALL vstorm batches on the cluster
+        --delete-all            Delete ALL vstorm batches and other VM
+                                | | | namespaces on the cluster (excludes
+                                | | | openshift/kube system namespaces)
         -y / --yes              Skip confirmation prompt for delete operations
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
@@ -2498,6 +2500,247 @@ watch_batch_delete_cleanup() {
 }
 
 ################################################################
+# Return 0 if a namespace must not be deleted by --delete-all.
+is_protected_delete_namespace() {
+    local ns=$1
+    case "$ns" in
+	kube-system|kube-public|kube-node-lease|default) return 0 ;;
+    esac
+    [[ "$ns" == openshift* ]] && return 0
+    [[ "$ns" == kube-* ]] && return 0
+    return 1
+}
+
+################################################################
+# List vstorm batch namespace names (batch-id label + {batch}-ns-{N} name).
+discover_vstorm_batch_namespaces() {
+    oc get ns -l batch-id --no-headers 2>/dev/null |
+	awk '{print $1}' |
+	grep -E '^[a-zA-Z0-9._-]+-ns-[0-9]+$' |
+	sort -u
+}
+
+################################################################
+# List namespaces that contain VMs but are not vstorm batch namespaces.
+# Args: $1 = newline-separated vstorm batch namespace names (may be empty)
+discover_non_vstorm_vm_namespaces() {
+    local vstorm_ns=$1
+    local -A vstorm_set=()
+    local ns
+
+    while read -r ns ; do
+	[[ -n "$ns" ]] && vstorm_set["$ns"]=1
+    done <<< "$vstorm_ns"
+
+    local all_vm_ns
+    all_vm_ns=$(oc get vm -A --no-headers 2>/dev/null | awk '{print $1}' | sort -u) || true
+    [[ -z "$all_vm_ns" ]] && return 0
+
+    while read -r ns ; do
+	[[ -z "$ns" ]] && continue
+	[[ -n "${vstorm_set[$ns]:-}" ]] && continue
+	is_protected_delete_namespace "$ns" && continue
+	echo "$ns"
+    done <<< "$all_vm_ns"
+}
+
+################################################################
+# Wait for all VMs in a namespace to reach "Stopped" (see wait_for_batch_vms_stopped).
+# Args: $1 = namespace, $2 = newline-separated "namespace vm-name" pairs
+wait_for_namespace_vms_stopped() {
+    local ns=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    local -A pending=()
+    local vm_ns name
+    while read -r vm_ns name ; do
+	[[ -n "$vm_ns" && -n "$name" ]] || continue
+	pending["${vm_ns}/${name}"]=1
+    done <<< "$vm_list"
+
+    local -i total=${#pending[@]}
+    ((total == 0)) && return 0
+
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${STOP_WAIT_TIMEOUT:-300}
+    local -i deadline=$((SECONDS + timeout))
+
+    log_message "${C_BOLD}Waiting for ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) in ${C_VAL}${ns}${C_RST}${C_BOLD} to reach Stopped...${C_RST}"
+
+    local vm_name status key
+    while : ; do
+	while read -r vm_name status ; do
+	    [[ -n "$vm_name" ]] || continue
+	    key="${ns}/${vm_name}"
+	    if [[ "$status" == "Stopped" && -n "${pending[$key]:-}" ]] ; then
+		unset "pending[$key]"
+	    fi
+	done <<< "$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk '{print $1, $4}')"
+
+	if (( ${#pending[@]} == 0 )) ; then
+	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST} are Stopped${C_RST}"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for VMs in ${C_VAL}${ns}${C_RST} to stop (${#pending[@]}/${total} still not Stopped); proceeding with namespace delete anyway${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Gracefully stop all VMs in a namespace before namespace delete.
+# Args: $1 = namespace, $2 = newline-separated "namespace vm-name" pairs
+stop_namespace_vms() {
+    local ns=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    if [[ -z "$(type -t virtctl)" ]]; then
+	log_message "${C_WARN}virtctl not found; skipping graceful VM stop before delete${C_RST}"
+	return 0
+    fi
+
+    local -a ns_arr=() name_arr=()
+    local vm_ns name
+    while read -r vm_ns name ; do
+	[[ -n "$vm_ns" && -n "$name" ]] || continue
+	ns_arr+=("$vm_ns")
+	name_arr+=("$name")
+    done <<< "$vm_list"
+
+    local -i total=${#name_arr[@]}
+    ((total == 0)) && return 0
+
+    local -i parallel=${STOP_PARALLEL:-200}
+    ((parallel < 1)) && parallel=1
+    log_message "${C_BOLD}Stopping ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) in ${C_VAL}${ns}${C_RST}${C_BOLD} (virtctl stop, ${C_VAL}${parallel}${C_RST}${C_BOLD} parallel) before delete...${C_RST}"
+
+    local -i batch_start=0 batch_end batch_idx
+    local -a pids=()
+    while ((batch_start < total)); do
+	batch_end=$((batch_start + parallel))
+	((batch_end > total)) && batch_end=$total
+	pids=()
+	for ((batch_idx=batch_start; batch_idx<batch_end; batch_idx++)); do
+	    virtctl stop "${name_arr[$batch_idx]}" -n "${ns_arr[$batch_idx]}" >/dev/null 2>&1 &
+	    pids+=($!)
+	done
+
+	local -i idx pid rc
+	for idx in "${!pids[@]}"; do
+	    pid=${pids[$idx]}
+	    rc=0
+	    wait "$pid" || rc=$?
+	    if ((rc != 0)); then
+		local failed_idx=$((batch_start + idx))
+		log_message "  ${C_WARN}WARNING:${C_RST} virtctl stop failed for ${C_VAL}${ns_arr[$failed_idx]}/${name_arr[$failed_idx]}${C_RST} (rc=$rc); continuing"
+	    fi
+	done
+	batch_start=$batch_end
+    done
+    log_message "${C_OK}Stop requests sent for ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST}${C_RST}"
+
+    wait_for_namespace_vms_stopped "$ns" "$vm_list" || true
+}
+
+################################################################
+# Poll cluster-scoped storage still tied to a namespace after delete.
+# Args: $1 = namespace name
+watch_namespace_delete_cleanup() {
+    local ns=$1
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${DELETE_POLL_TIMEOUT:-1800}
+    local -i deadline=$((SECONDS + timeout))
+    local ns_pat="^${ns}\$"
+
+    log_message "${C_BOLD}Monitoring cleanup for namespace ${C_VAL}'$ns'${C_RST} (namespace, PVCs, PVs, VolumeAttachments; refresh every ${interval}s)...${C_RST}"
+
+    local -i ns_n pvc_n pv_n va_n
+    while : ; do
+	ns_n=$(oc get ns "$ns" --no-headers 2>/dev/null | wc -l)
+	pvc_n=$(oc get pvc -n "$ns" --no-headers 2>/dev/null | wc -l)
+
+	local pv_names_file
+	pv_names_file=$(mktemp)
+	oc get pv -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.claimRef.namespace}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pat="$ns_pat" '$2 ~ pat {print $1}' > "$pv_names_file"
+	pv_n=$(wc -l < "$pv_names_file")
+
+	va_n=$(oc get volumeattachment -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.source.persistentVolumeName}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pvf="$pv_names_file" 'BEGIN{while((getline l < pvf) > 0) pv[l]=1} $2 in pv {c++} END{print c+0}')
+	rm -f "$pv_names_file"
+
+	printf '\r  namespace=%-4s PVCs=%-4s PVs=%-4s VolumeAttachments=%-4s   ' \
+	    "$ns_n" "$pvc_n" "$pv_n" "$va_n"
+
+	if (( ns_n == 0 && pvc_n == 0 && pv_n == 0 && va_n == 0 )) ; then
+	    echo ""
+	    log_message "${C_OK}Namespace ${C_VAL}'$ns'${C_RST} fully cleaned up${C_RST} (no leftover namespace, PVCs, PVs, or VolumeAttachments)"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    echo ""
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for namespace ${C_VAL}'$ns'${C_RST} cleanup; leftovers remain: namespace=$ns_n PVCs=$pvc_n PVs=$pv_n VolumeAttachments=$va_n${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Delete a non-vstorm namespace and all VMs inside it.
+# Args: $1 = namespace, $2 = "skip-confirm" (optional, used by delete_all_batches)
+delete_vm_namespace() {
+    local ns=$1
+    local skip_confirm=${2:-}
+
+    if is_protected_delete_namespace "$ns" ; then
+	fatal "Refusing to delete protected namespace '$ns'"
+    fi
+
+    if ((! wet_run)) ; then
+	echo "(dry-run) Would delete namespace '$ns' and all its VMs:"
+	echo "  virtctl stop <vm> -n $ns   (all VMs, in parallel, up to ${STOP_PARALLEL:-200} at a time)"
+	echo "  oc delete ns $ns --wait=false"
+	echo ""
+	echo "(dry-run) Would wait (up to ${STOP_WAIT_TIMEOUT:-300}s) for all VMs to reach Stopped"
+	echo "before deleting the namespace, then monitor leftover PVCs/PVs/VolumeAttachments,"
+	echo "refreshing counts every ${DELETE_POLL_INTERVAL:-2}s until all reach zero."
+	return 0
+    fi
+
+    local vm_list vm_count
+    vm_list=$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk -v ns="$ns" '{print ns, $1}') || true
+    [[ -z "$vm_list" ]] && vm_count=0 || vm_count=$(echo "$vm_list" | wc -l)
+
+    echo "Resources in namespace '$ns':"
+    echo ""
+    echo "VirtualMachines: $vm_count"
+    echo ""
+
+    if (( ! CONFIRM_DELETE )) && [[ "$skip_confirm" != "skip-confirm" ]] ; then
+	read -r -p "Delete namespace '$ns' and its VMs? [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    echo "Aborted."
+	    return 0
+	fi
+    fi
+
+    stop_namespace_vms "$ns" "$vm_list"
+
+    log_message "Deleting namespace ${C_VAL}'$ns'${C_RST}..."
+    oc delete ns "$ns" --wait=false
+    watch_namespace_delete_cleanup "$ns"
+}
+
+################################################################
 # Delete all resources for a batch
 # Args: $1 = batch ID, $2 = "skip-confirm" (optional, used by delete_all_batches)
 delete_batch() {
@@ -2571,59 +2814,77 @@ delete_batch() {
 }
 
 ################################################################
-# Delete ALL vstorm batches on the cluster
+# Delete ALL vstorm batches and other VM namespaces on the cluster
 delete_all_batches() {
-    # Discover all vstorm-created namespaces by the batch-id label,
-    # then extract unique batch IDs from the namespace names.
-    local all_batches
+    local vstorm_batch_ns all_batches other_vm_ns
 
     if ((! wet_run)) ; then
 	cat <<-EOF
-	(dry-run) Would discover and delete all vstorm batches.
-	  oc get ns -l batch-id --no-headers
-
-	This finds all namespaces with a batch-id label matching
-	the vstorm naming pattern ({batch}-ns-{N}) and deletes them.
+	(dry-run) Would discover and delete:
+	  - all vstorm batches (oc get ns -l batch-id, {batch}-ns-{N} pattern)
+	  - all other namespaces containing VirtualMachines (oc get vm -A),
+	    excluding openshift/kube system namespaces and vstorm batch namespaces
 	EOF
 	return 0
     fi
 
-    all_batches=$(oc get ns -l batch-id --no-headers 2>/dev/null |
-	awk '{print $1}' |
+    vstorm_batch_ns=$(discover_vstorm_batch_namespaces)
+    all_batches=$(echo "$vstorm_batch_ns" |
 	grep -oP '^[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
 	sort -u) || true
+    other_vm_ns=$(discover_non_vstorm_vm_namespaces "$vstorm_batch_ns")
 
-    if [[ -z "$all_batches" ]] ; then
-	echo "No vstorm batches found on the cluster."
+    if [[ -z "$all_batches" && -z "$other_vm_ns" ]] ; then
+	echo "No vstorm batches or non-vstorm VM namespaces found on the cluster."
 	return 0
     fi
 
-    echo "Found vstorm batches:"
-    local batch
-    while read -r batch ; do
-	local ns_count
-	ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
-	local vm_count
-	vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
-	echo "  $batch  ($ns_count namespaces, $vm_count VMs)"
-    done <<< "$all_batches"
-    echo ""
+    if [[ -n "$all_batches" ]] ; then
+	echo "Found vstorm batches:"
+	local batch
+	while read -r batch ; do
+	    local ns_count vm_count
+	    ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	    vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	    echo "  $batch  ($ns_count namespaces, $vm_count VMs)"
+	done <<< "$all_batches"
+	echo ""
+    fi
+
+    if [[ -n "$other_vm_ns" ]] ; then
+	echo "Found non-vstorm VM namespaces:"
+	local ns vm_count
+	while read -r ns ; do
+	    vm_count=$(oc get vm -n "$ns" --no-headers 2>/dev/null | wc -l)
+	    echo "  $ns  ($vm_count VMs)"
+	done <<< "$other_vm_ns"
+	echo ""
+    fi
 
     # Confirmation (unless --yes)
     if (( ! CONFIRM_DELETE )) ; then
-	read -r -p "Delete ALL batches above? This is irreversible. [y/N] " confirm
+	read -r -p "Delete ALL batches and VM namespaces above? This is irreversible. [y/N] " confirm
 	if [[ "${confirm,,}" != "y" ]] ; then
 	    echo "Aborted."
 	    return 0
 	fi
     fi
 
-    # Delete each batch; skip per-batch confirmation since we already confirmed
-    while read -r batch ; do
-	delete_batch "$batch" skip-confirm
-    done <<< "$all_batches"
+    # Delete each vstorm batch; skip per-batch confirmation since we already confirmed
+    if [[ -n "$all_batches" ]] ; then
+	while read -r batch ; do
+	    delete_batch "$batch" skip-confirm
+	done <<< "$all_batches"
+    fi
 
-    log_message "${C_OK}All vstorm batches deleted.${C_RST}"
+    # Delete each non-vstorm VM namespace
+    if [[ -n "$other_vm_ns" ]] ; then
+	while read -r ns ; do
+	    delete_vm_namespace "$ns" skip-confirm
+	done <<< "$other_vm_ns"
+    fi
+
+    log_message "${C_OK}All vstorm batches and VM namespaces deleted.${C_RST}"
 }
 
 ################################################################

@@ -126,7 +126,8 @@ setup_file() {
   run bash "$VSTORM" -n --delete-all
   [ "$status" -eq 0 ]
   [[ "$output" == *"dry-run"* ]]
-  [[ "$output" == *"all vstorm batches"* ]]
+  [[ "$output" == *"vstorm batches"* ]]
+  [[ "$output" == *"other namespaces containing VirtualMachines"* ]]
 }
 
 @test "delete-all: dry-run with --yes accepted" {

@@ -40,39 +40,57 @@ case "$1" in
             volumesnapshot) echo "true" ;;
             vm)
                 # `oc get vm -A --no-headers` (optionally `-l batch-id=X`),
-                # used to: list existing VMs / poll Running+Ready in
-                # wait_for_all_vms(); list a batch's VMs in delete_batch()
-                # and stop_batch_vms(); and poll printableStatus in
-                # wait_for_batch_vms_stopped(). Set MOCK_VM_LINES
-                # (newline-separated "NAMESPACE NAME AGE STATUS READY" rows)
-                # for a static response. For a response that changes across
-                # polls (e.g. VMs going Running -> Stopped), also set
-                # MOCK_VM_STATUS_TICKS_FILE + MOCK_VM_LINES_STOPPED:
-                # MOCK_VM_LINES is returned while the countdown is > 0 (each
-                # call decrements it), MOCK_VM_LINES_STOPPED once it reaches 0.
+                # or `oc get vm -n NAMESPACE --no-headers`.
+                # Set MOCK_VM_LINES (newline-separated
+                # "NAMESPACE NAME AGE STATUS READY" rows) for a static response.
+                _vm_ns=""
+                _args=("$@")
+                for ((_i=2; _i<${#_args[@]}; _i++)); do
+                    if [[ "${_args[_i]}" == "-n" ]]; then
+                        _vm_ns="${_args[_i+1]:-}"
+                        break
+                    fi
+                done
+                _emit_vm_lines() {
+                    local lines=$1
+                    if [[ -n "$_vm_ns" ]]; then
+                        printf '%s\n' "$lines" | awk -v ns="$_vm_ns" '$1 == ns'
+                    else
+                        printf '%s\n' "$lines"
+                    fi
+                }
                 if [[ -n "${MOCK_VM_STATUS_TICKS_FILE:-}" ]]; then
                     _t=0
                     [[ -f "$MOCK_VM_STATUS_TICKS_FILE" ]] && _t=$(cat "$MOCK_VM_STATUS_TICKS_FILE")
                     if (( _t > 0 )); then
-                        [[ -n "${MOCK_VM_LINES:-}" ]] && printf '%s\n' "$MOCK_VM_LINES"
+                        [[ -n "${MOCK_VM_LINES:-}" ]] && _emit_vm_lines "$MOCK_VM_LINES"
                         _t=$((_t - 1))
                         echo "$_t" > "$MOCK_VM_STATUS_TICKS_FILE"
                     else
-                        [[ -n "${MOCK_VM_LINES_STOPPED:-}" ]] && printf '%s\n' "$MOCK_VM_LINES_STOPPED"
+                        [[ -n "${MOCK_VM_LINES_STOPPED:-}" ]] && _emit_vm_lines "$MOCK_VM_LINES_STOPPED"
                     fi
                 elif [[ -n "${MOCK_VM_LINES:-}" ]]; then
-                    printf '%s\n' "$MOCK_VM_LINES"
+                    _emit_vm_lines "$MOCK_VM_LINES"
                 fi
                 ;;
             ns)
-                # `oc get ns -l batch-id=X --no-headers`, used both for
-                # delete_batch()'s pre-delete namespace listing/validation
-                # (always the 1st call; returns MOCK_NS_LINES so the
-                # batch-name-pattern validation has something real to check)
-                # and for watch_batch_delete_cleanup()'s per-iteration poll
-                # (2nd+ call; counts down via MOCK_CLEANUP_TICKS_FILE so
-                # tests can simulate namespaces disappearing over time).
-                if [[ -n "${MOCK_NS_CALLS_FILE:-}" ]]; then
+                # `oc get ns -l batch-id=X --no-headers`, `oc get ns -l batch-id`,
+                # or `oc get ns NAMESPACE --no-headers`.
+                _ns_name=""
+                if [[ "$3" != "-l" && -n "${3:-}" ]]; then
+                    _ns_name="$3"
+                fi
+                if [[ -n "$_ns_name" ]]; then
+                    if [[ -n "${MOCK_CLEANUP_TICKS_FILE:-}" && -n "${MOCK_LEFTOVER_NS:-}" && "$_ns_name" == "$MOCK_LEFTOVER_NS" ]]; then
+                        _t=0
+                        [[ -f "$MOCK_CLEANUP_TICKS_FILE" ]] && _t=$(cat "$MOCK_CLEANUP_TICKS_FILE")
+                        if (( _t > 0 )); then
+                            printf '%s Active\n' "$_ns_name"
+                        fi
+                    elif [[ -n "${MOCK_NS_LINES:-}" ]] && printf '%s\n' "$MOCK_NS_LINES" | grep -qx "$_ns_name"; then
+                        printf '%s Active\n' "$_ns_name"
+                    fi
+                elif [[ -n "${MOCK_NS_CALLS_FILE:-}" ]]; then
                     _n=0
                     [[ -f "$MOCK_NS_CALLS_FILE" ]] && _n=$(cat "$MOCK_NS_CALLS_FILE")
                     _n=$((_n + 1))
@@ -91,15 +109,23 @@ case "$1" in
                 fi
                 ;;
             pvc)
-                # `oc get pvc -A --no-headers`, used by
-                # watch_batch_delete_cleanup() to count leftover PVCs in
-                # batch namespaces. Emits one fake row (namespace in column
-                # 1) while MOCK_CLEANUP_TICKS_FILE is > 0.
+                # `oc get pvc -A --no-headers` or `oc get pvc -n NAMESPACE --no-headers`,
+                # used by watch_batch_delete_cleanup() / watch_namespace_delete_cleanup().
+                _pvc_ns=""
+                _args=("$@")
+                for ((_i=2; _i<${#_args[@]}; _i++)); do
+                    if [[ "${_args[_i]}" == "-n" ]]; then
+                        _pvc_ns="${_args[_i+1]:-}"
+                        break
+                    fi
+                done
                 if [[ -n "${MOCK_CLEANUP_TICKS_FILE:-}" ]]; then
                     _t=0
                     [[ -f "$MOCK_CLEANUP_TICKS_FILE" ]] && _t=$(cat "$MOCK_CLEANUP_TICKS_FILE")
                     if (( _t > 0 )) && [[ -n "${MOCK_LEFTOVER_NS:-}" ]]; then
-                        printf '%s fake-pvc-1 Bound fake-pv-1 1Gi RWX fake-sc 1m\n' "$MOCK_LEFTOVER_NS"
+                        if [[ -z "$_pvc_ns" || "$_pvc_ns" == "$MOCK_LEFTOVER_NS" ]]; then
+                            printf '%s fake-pvc-1 Bound fake-pv-1 1Gi RWX fake-sc 1m\n' "$MOCK_LEFTOVER_NS"
+                        fi
                     fi
                 fi
                 ;;
