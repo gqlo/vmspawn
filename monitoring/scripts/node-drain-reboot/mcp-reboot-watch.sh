@@ -9,10 +9,12 @@
 # Pool summary (ALL_NODES row): pool_elapsed_seconds = wall clock for entire rollout;
 #   sum_total_duration_seconds = sum of per-node totals (includes overlapping queue time).
 # data_source per row: observed | inferred | mixed (poll); evt_* columns from cluster events.
+# All timestamp columns and log prefixes use UTC (RFC3339 Z).
 #
 # MCN is used for rollout detection and completion only. Phase timestamps are collected
 # two ways: node-object polling (primary CSV columns) and Kubernetes Node/MCD events
-# (evt_* columns). Raw events append to EVENTS_FILE (TSV, deduped by uid per poll).
+# (evt_* columns). Raw events append to EVENTS_FILE (TSV, deduped by uid+timestamp;
+# K8s recycles Event uids when the same reason fires again on a node).
 # Rook ceph-operator pod logs append to CEPH_OPERATOR_LOG_FILE (new lines only per poll).
 #
 # Auth: by default the script applies mcp-reboot-watch-rbac.yaml (first run needs
@@ -30,7 +32,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly MCP="${MCP:-worker}"
 readonly INTERVAL="${INTERVAL:-5}"
 readonly ACTIVE_INTERVAL="${ACTIVE_INTERVAL:-2}"
-readonly RUN_TS="$(date +%Y%m%d-%H%M%S)"
+readonly RUN_TS="$(date -u +%Y%m%d-%H%M%S)"
 readonly LOG_FILE="${LOG_FILE:-mcp-reboot-watch-${MCP}-${RUN_TS}.log}"
 readonly CSV_FILE="${CSV_FILE:-mcp-reboot-watch-${MCP}-${RUN_TS}.csv}"
 readonly EVENTS_FILE="${EVENTS_FILE:-mcp-reboot-watch-${MCP}-${RUN_TS}.events.tsv}"
@@ -63,24 +65,38 @@ declare -a worker_nodes=()
 TARGET_CFG=""
 ceph_operator_current_pod=""
 
+# All persisted timestamps (CSV, events TSV, milestones) use UTC (RFC3339 Z).
+
+now_utc_iso() {
+  date -u '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+epoch_to_iso() {
+  date -u -d "@$1" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || date -u -r "$1" '+%Y-%m-%dT%H:%M:%SZ'
+}
+
+iso_to_epoch() {
+  date -u -d "$1" +%s 2>/dev/null
+}
+
 exec > >(tee -a "$LOG_FILE") 2>&1
-printf '%s Logging to %s\n' "$(date -Iseconds)" "$LOG_FILE"
-printf '%s Per-node timing CSV: %s\n' "$(date -Iseconds)" "$CSV_FILE"
-printf '%s Node events TSV: %s\n' "$(date -Iseconds)" "$EVENTS_FILE"
+printf '%s Logging to %s\n' "$(now_utc_iso)" "$LOG_FILE"
+printf '%s Per-node timing CSV: %s\n' "$(now_utc_iso)" "$CSV_FILE"
+printf '%s Node events TSV: %s\n' "$(now_utc_iso)" "$EVENTS_FILE"
 if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
-  printf '%s Ceph operator log: %s\n' "$(date -Iseconds)" "$CEPH_OPERATOR_LOG_FILE"
+  printf '%s Ceph operator log: %s\n' "$(now_utc_iso)" "$CEPH_OPERATOR_LOG_FILE"
 fi
 
 require_jq() {
   if ! command -v jq &>/dev/null; then
-    printf '%s ERROR: jq is required\n' "$(date -Iseconds)"
+    printf '%s ERROR: jq is required\n' "$(now_utc_iso)"
     exit 1
   fi
 }
 
 require_oc() {
   if ! command -v oc &>/dev/null; then
-    printf '%s ERROR: oc is required\n' "$(date -Iseconds)"
+    printf '%s ERROR: oc is required\n' "$(now_utc_iso)"
     exit 1
   fi
 }
@@ -113,7 +129,7 @@ verify_sa_permissions() {
   fi
 
   if (( ${#missing[@]} > 0 )); then
-    printf '%s ERROR: missing API permissions: %s\n' "$(date -Iseconds)" "${missing[*]}"
+    printf '%s ERROR: missing API permissions: %s\n' "$(now_utc_iso)" "${missing[*]}"
     return 1
   fi
   return 0
@@ -124,7 +140,7 @@ verify_oc_session() {
     return 0
   fi
   printf '%s ERROR: API credentials expired — re-run script (oc login admin refreshes SA token)\n' \
-    "$(date -Iseconds)"
+    "$(now_utc_iso)"
   exit 1
 }
 
@@ -173,14 +189,14 @@ bootstrap_sa_kubeconfig() {
   local duration token durations tried=()
 
   if [[ ! -f "$RBAC_FILE" ]]; then
-    printf '%s ERROR: RBAC manifest missing: %s\n' "$(date -Iseconds)" "$RBAC_FILE"
+    printf '%s ERROR: RBAC manifest missing: %s\n' "$(now_utc_iso)" "$RBAC_FILE"
     exit 1
   fi
 
-  printf '%s Applying RBAC: %s\n' "$(date -Iseconds)" "$RBAC_FILE"
+  printf '%s Applying RBAC: %s\n' "$(now_utc_iso)" "$RBAC_FILE"
   if ! oc apply -f "$RBAC_FILE"; then
     printf '%s ERROR: oc apply failed — cluster-admin required for first-time setup\n' \
-      "$(date -Iseconds)"
+      "$(now_utc_iso)"
     exit 1
   fi
 
@@ -189,19 +205,19 @@ bootstrap_sa_kubeconfig() {
     tried+=("$duration")
     if token="$(create_sa_token "$duration")"; then
       printf '%s Minted SA token for %s/%s (duration=%s)\n' \
-        "$(date -Iseconds)" "$SA_NAMESPACE" "$SA_NAME" "$duration"
+        "$(now_utc_iso)" "$SA_NAMESPACE" "$SA_NAME" "$duration"
       break
     fi
   done
 
   if [[ -z "$token" ]]; then
     printf '%s ERROR: oc create token failed (tried durations: %s)\n' \
-      "$(date -Iseconds)" "${tried[*]}"
+      "$(now_utc_iso)" "${tried[*]}"
     exit 1
   fi
 
   if ! write_sa_kubeconfig "$token"; then
-    printf '%s ERROR: failed to write %s\n' "$(date -Iseconds)" "$SA_KUBECONFIG"
+    printf '%s ERROR: failed to write %s\n' "$(now_utc_iso)" "$SA_KUBECONFIG"
     exit 1
   fi
 
@@ -210,7 +226,7 @@ bootstrap_sa_kubeconfig() {
     exit 1
   fi
   printf '%s SA kubeconfig ready: %s (%s)\n' \
-    "$(date -Iseconds)" "$SA_KUBECONFIG" "$(oc whoami)"
+    "$(now_utc_iso)" "$SA_KUBECONFIG" "$(oc whoami)"
 }
 
 setup_oc_auth() {
@@ -219,13 +235,13 @@ setup_oc_auth() {
 
   if [[ "${MCP_WATCH_USE_ENV_KUBECONFIG:-0}" == "1" ]]; then
     if ! oc whoami &>/dev/null; then
-      printf '%s ERROR: MCP_WATCH_USE_ENV_KUBECONFIG=1 but oc whoami failed\n' "$(date -Iseconds)"
+      printf '%s ERROR: MCP_WATCH_USE_ENV_KUBECONFIG=1 but oc whoami failed\n' "$(now_utc_iso)"
       exit 1
     fi
     if ! verify_sa_permissions; then
       exit 1
     fi
-    printf '%s Using environment KUBECONFIG (%s)\n' "$(date -Iseconds)" "$(oc whoami)"
+    printf '%s Using environment KUBECONFIG (%s)\n' "$(now_utc_iso)" "$(oc whoami)"
     return 0
   fi
 
@@ -234,12 +250,12 @@ setup_oc_auth() {
     if oc whoami &>/dev/null && verify_sa_permissions; then
       export KUBECONFIG="$SA_KUBECONFIG"
       printf '%s Using SA kubeconfig: %s (%s)\n' \
-        "$(date -Iseconds)" "$SA_KUBECONFIG" "$(oc whoami)"
+        "$(now_utc_iso)" "$SA_KUBECONFIG" "$(oc whoami)"
       return 0
     fi
-    printf '%s SA kubeconfig expired or insufficient — re-minting\n' "$(date -Iseconds)"
+    printf '%s SA kubeconfig expired or insufficient — re-minting\n' "$(now_utc_iso)"
   else
-    printf '%s No SA kubeconfig at %s — bootstrapping\n' "$(date -Iseconds)" "$SA_KUBECONFIG"
+    printf '%s No SA kubeconfig at %s — bootstrapping\n' "$(now_utc_iso)" "$SA_KUBECONFIG"
   fi
 
   if [[ "$bootstrap_kubeconfig" == "$SA_KUBECONFIG" ]]; then
@@ -247,24 +263,16 @@ setup_oc_auth() {
   fi
   KUBECONFIG="$bootstrap_kubeconfig"
   if ! oc whoami &>/dev/null; then
-    printf '%s ERROR: oc login required to apply RBAC and mint SA token\n' "$(date -Iseconds)"
+    printf '%s ERROR: oc login required to apply RBAC and mint SA token\n' "$(now_utc_iso)"
     exit 1
   fi
-  printf '%s Bootstrapping SA with login identity: %s\n' "$(date -Iseconds)" "$(oc whoami)"
+  printf '%s Bootstrapping SA with login identity: %s\n' "$(now_utc_iso)" "$(oc whoami)"
   bootstrap_sa_kubeconfig
 }
 
 format_duration() {
   local secs="$1"
   printf '%dm %ds (%ds total)' $((secs / 60)) $((secs % 60)) "$secs"
-}
-
-epoch_to_iso() {
-  date -d "@$1" -Iseconds 2>/dev/null || date -u -r "$1" -Iseconds
-}
-
-iso_to_epoch() {
-  date -d "$1" +%s 2>/dev/null
 }
 
 duration_between_iso() {
@@ -301,11 +309,27 @@ set_event_milestone_first() {
   node_event_milestone_iso[$key]="$iso"
 }
 
+set_event_milestone_earliest() {
+  local node="$1" name="$2" iso="$3" key existing existing_epoch new_epoch
+
+  [[ -z "$iso" ]] && return 0
+  new_epoch="$(iso_to_epoch "$iso")" || return 0
+  key="$(milestone_key "$node" "$name")"
+  existing="${node_event_milestone_iso[$key]:-}"
+  if [[ -n "$existing" ]]; then
+    existing_epoch="$(iso_to_epoch "$existing")" || return 0
+    (( new_epoch >= existing_epoch )) && return 0
+  fi
+  node_event_milestone_iso[$key]="$iso"
+}
+
 event_dedup_key() {
   local uid="$1" node="$2" event_time="$3" reason="$4" message="$5"
 
+  # Event objects keep the same metadata.uid when lastTimestamp is updated for the
+  # same involvedObject+reason; key must include event_time so a new rollout is seen.
   if [[ -n "$uid" ]]; then
-    printf 'uid:%s' "$uid"
+    printf 'uid:%s|%s' "$uid" "$event_time"
   else
     printf 'sig:%s|%s|%s|%s' "$node" "$event_time" "$reason" "${message:0:120}"
   fi
@@ -313,7 +337,7 @@ event_dedup_key() {
 
 apply_rollout_event() {
   local node="$1" event_time="$2" reason="$3" message="$4"
-  local start_epoch event_epoch reboot_iso rebooted_iso cordoned_iso
+  local start_epoch event_epoch reboot_iso rebooted_iso cordoned_iso cordoned_epoch boot_iso
 
   [[ -n "${node_start_epoch[$node]:-}" ]] || return 0
   start_epoch="${node_start_epoch[$node]}"
@@ -336,14 +360,21 @@ apply_rollout_event() {
       if [[ -n "$reboot_iso" ]] && (( event_epoch >= $(iso_to_epoch "$reboot_iso") )); then
         return 0
       fi
-      set_event_milestone_first "$node" "cordoned" "$event_time"
+      set_event_milestone_earliest "$node" "cordoned" "$event_time"
       ;;
     NodeNotReady)
       [[ -z "$cordoned_iso" ]] && return 0
-      if [[ -n "$reboot_iso" ]] && (( event_epoch >= $(iso_to_epoch "$reboot_iso") )); then
+      cordoned_epoch="$(iso_to_epoch "$cordoned_iso")" || return 0
+      (( event_epoch < cordoned_epoch )) && return 0
+      # Drain NotReady often arrives after MCD Reboot; only skip post-reboot NotReady.
+      if [[ -n "$rebooted_iso" ]] && (( event_epoch >= $(iso_to_epoch "$rebooted_iso") )); then
         return 0
       fi
-      set_event_milestone_first "$node" "drain_done" "$event_time"
+      boot_iso="$(event_milestone_iso "$node" boot_done)"
+      if [[ -n "$boot_iso" ]] && (( event_epoch >= $(iso_to_epoch "$boot_iso") )); then
+        return 0
+      fi
+      set_event_milestone_earliest "$node" "drain_done" "$event_time"
       ;;
     Uncordon)
       [[ -n "$TARGET_CFG" && "$message" != *"$TARGET_CFG"* ]] && return 0
@@ -447,7 +478,7 @@ record_milestone() {
     boot_done)  label="NodeSchedulable" ;;
     *)          label="$name" ;;
   esac
-  printf '%s node/%s %s @ %s\n' "$(date -Iseconds)" "$node" "$label" "$(epoch_to_iso "$now")"
+  printf '%s node/%s %s @ %s\n' "$(now_utc_iso)" "$node" "$label" "$(epoch_to_iso "$now")"
 }
 
 set_milestone_iso() {
@@ -467,9 +498,9 @@ set_milestone_iso() {
     *)          label="$name" ;;
   esac
   if [[ -n "$source" ]]; then
-    printf '%s node/%s %s @ %s (%s)\n' "$(date -Iseconds)" "$node" "$label" "$iso" "$source"
+    printf '%s node/%s %s @ %s (%s)\n' "$(now_utc_iso)" "$node" "$label" "$iso" "$source"
   else
-    printf '%s node/%s %s @ %s\n' "$(date -Iseconds)" "$node" "$label" "$iso"
+    printf '%s node/%s %s @ %s\n' "$(now_utc_iso)" "$node" "$label" "$iso"
   fi
 }
 
@@ -486,14 +517,14 @@ seed_initial_milestones() {
 
   if [[ "${node_initial_unschedulable[$node]:-false}" == "true" ]]; then
     record_milestone "$node" "cordoned" "$now" "seed"
-    printf '%s   (already cordoned when tracking started)\n' "$(date -Iseconds)"
+    printf '%s   (already cordoned when tracking started)\n' "$(now_utc_iso)"
   fi
 
   ready="$(node_field_from_json "$nodes_json" "$node" 'ready')"
   if node_is_cordoned_for_drain "$node" \
       && [[ "$ready" == "False" || "$ready" == "Unknown" ]]; then
     record_milestone "$node" "drain_done" "$now" "seed"
-    printf '%s   (already NotReady when tracking started)\n' "$(date -Iseconds)"
+    printf '%s   (already NotReady when tracking started)\n' "$(now_utc_iso)"
   fi
 }
 
@@ -541,7 +572,7 @@ save_rollout_events() {
     || return 0
   [[ -z "$events_json" ]] && return 0
 
-  captured_at="$(date -Iseconds)"
+  captured_at="$(now_utc_iso)"
   node_names_json="$(printf '%s\n' "${worker_nodes[@]}" | jq -R . | jq -s .)"
 
   while IFS=$'\t' read -r event_time node namespace reason source message uid; do
@@ -555,7 +586,9 @@ save_rollout_events() {
     apply_rollout_event "$node" "$event_time" "$reason" "$message"
     new_count="$((new_count + 1))"
   done < <(jq -r --argjson nodes "$node_names_json" '
-    .items[]
+    .items
+    | sort_by(.lastTimestamp // .eventTime // .firstTimestamp // "")
+    | .[]
     | select(.involvedObject.name as $n | $nodes | index($n))
     | [
         (.lastTimestamp // .eventTime // .firstTimestamp // ""),
@@ -570,7 +603,7 @@ save_rollout_events() {
 
   if (( new_count > 0 )); then
     printf '%s appended %d new node event(s) to %s\n' \
-      "$(date -Iseconds)" "$new_count" "$EVENTS_FILE"
+      "$(now_utc_iso)" "$new_count" "$EVENTS_FILE"
   fi
 }
 
@@ -595,12 +628,12 @@ append_ceph_operator_previous() {
   if oc logs -n "$CEPH_NAMESPACE" "$pod" --previous --timestamps --tail=-1 >"$tmp" 2>/dev/null \
       && [[ -s "$tmp" ]]; then
     {
-      printf '\n### %s previous container pod/%s\n' "$(date -Iseconds)" "$pod"
+      printf '\n### %s previous container pod/%s\n' "$(now_utc_iso)" "$pod"
       cat "$tmp"
     } >>"$CEPH_OPERATOR_LOG_FILE"
     added="$(wc -l <"$tmp")"
     printf '%s saved %d previous ceph-operator line(s) for pod/%s\n' \
-      "$(date -Iseconds)" "$added" "$pod"
+      "$(now_utc_iso)" "$added" "$pod"
   fi
   rm -f "$tmp"
   ceph_operator_previous_saved[$pod]=1
@@ -619,9 +652,9 @@ save_ceph_operator_logs() {
   if [[ "$pod" != "$ceph_operator_current_pod" ]]; then
     if [[ -n "$ceph_operator_current_pod" ]]; then
       printf '\n### %s switched ceph-operator pod %s -> %s\n' \
-        "$(date -Iseconds)" "$ceph_operator_current_pod" "$pod" >>"$CEPH_OPERATOR_LOG_FILE"
+        "$(now_utc_iso)" "$ceph_operator_current_pod" "$pod" >>"$CEPH_OPERATOR_LOG_FILE"
     else
-      printf '\n### %s tracking ceph-operator pod/%s\n' "$(date -Iseconds)" "$pod" \
+      printf '\n### %s tracking ceph-operator pod/%s\n' "$(now_utc_iso)" "$pod" \
         >>"$CEPH_OPERATOR_LOG_FILE"
     fi
     ceph_operator_current_pod="$pod"
@@ -630,7 +663,7 @@ save_ceph_operator_logs() {
 
   tmp="$(mktemp)"
   if ! oc logs -n "$CEPH_NAMESPACE" "$pod" --timestamps --tail=-1 >"$tmp" 2>&1; then
-    printf '%s ceph-operator oc logs failed for pod/%s\n' "$(date -Iseconds)" "$pod"
+    printf '%s ceph-operator oc logs failed for pod/%s\n' "$(now_utc_iso)" "$pod"
     rm -f "$tmp"
     return 0
   fi
@@ -643,11 +676,11 @@ save_ceph_operator_logs() {
     tail -n +"$((old_lines + 1))" "$tmp" >>"$CEPH_OPERATOR_LOG_FILE"
     ceph_operator_pod_lines[$pod]="$new_lines"
     printf '%s appended %d ceph-operator line(s) to %s (pod/%s total %d)\n' \
-      "$(date -Iseconds)" "$added" "$CEPH_OPERATOR_LOG_FILE" "$pod" "$new_lines"
+      "$(now_utc_iso)" "$added" "$CEPH_OPERATOR_LOG_FILE" "$pod" "$new_lines"
   elif (( new_lines < old_lines )); then
     {
       printf '\n### %s ceph-operator log shrank for pod/%s (%d -> %d); snapshot follows\n' \
-        "$(date -Iseconds)" "$pod" "$old_lines" "$new_lines"
+        "$(now_utc_iso)" "$pod" "$old_lines" "$new_lines"
       cat "$tmp"
     } >>"$CEPH_OPERATOR_LOG_FILE"
     ceph_operator_pod_lines[$pod]="$new_lines"
@@ -767,7 +800,7 @@ print_tracking_status() {
   done
 
   printf '%s --- tracking status (%s/%s done) ---\n' \
-    "$(date -Iseconds)" "${#finished[@]}" "${#worker_nodes[@]}"
+    "$(now_utc_iso)" "${#finished[@]}" "${#worker_nodes[@]}"
   if [[ -n "$TARGET_CFG" ]]; then
     printf '  rollout config: %s\n' "$TARGET_CFG"
   else
@@ -827,10 +860,10 @@ detect_rollout_config() {
 
   if [[ -n "$cfg" && "$cfg" != "$TARGET_CFG" ]]; then
     if [[ -z "$TARGET_CFG" ]]; then
-      printf '%s Rollout rendered config: %s\n' "$(date -Iseconds)" "$cfg"
+      printf '%s Rollout rendered config: %s\n' "$(now_utc_iso)" "$cfg"
     else
       printf '%s Rollout rendered config changed: %s -> %s\n' \
-        "$(date -Iseconds)" "$TARGET_CFG" "$cfg"
+        "$(now_utc_iso)" "$TARGET_CFG" "$cfg"
     fi
     TARGET_CFG="$cfg"
   fi
@@ -864,7 +897,7 @@ record_node_start() {
   init_node_watch_state "$node" "$nodes_json"
   seed_initial_milestones "$node" "$now" "$nodes_json"
   printf '%s machineconfignode/%s update started (UPDATED=False for %s)\n' \
-    "$(date -Iseconds)" "$node" "${TARGET_CFG:-unknown config}"
+    "$(now_utc_iso)" "$node" "${TARGET_CFG:-unknown config}"
 }
 
 record_node_completion() {
@@ -977,7 +1010,7 @@ check_mcn_updates() {
       record_node_completion "$node" "$duration" "$start" "$end"
       updated_count="$(oc get mcp "$MCP" -o jsonpath='{.status.updatedMachineCount}')"
       printf '%s machineconfignode/%s UPDATED=True — finished %s (poll est.), %s since pool started (%s/%s MCP updated, %s/%s tracked)\n' \
-        "$(date -Iseconds)" "$node" \
+        "$(now_utc_iso)" "$node" \
         "$(format_duration "$duration")" \
         "$(format_duration "$elapsed")" \
         "$updated_count" "$machine_count" \
@@ -989,7 +1022,7 @@ check_mcn_updates() {
         "$duration" \
         "$(node_data_source "$node")"
       printf '%s   node phases (events): drain=%ss boot=%ss evt_complete=%s\n' \
-        "$(date -Iseconds)" \
+        "$(now_utc_iso)" \
         "$(duration_between_iso "$(event_milestone_iso "$node" cordoned)" "$(event_milestone_iso "$node" drain_done)")" \
         "$(duration_between_iso "$(event_milestone_iso "$node" drain_done)" "$(event_milestone_iso "$node" boot_done)")" \
         "$(event_phases_complete "$node" && printf yes || printf no)"
@@ -1001,7 +1034,7 @@ init_node_tracking() {
   local node now mcn_json nodes_json
 
   if ! mcn_available; then
-    printf '%s ERROR: MachineConfigNode CRD not available — requires OpenShift 4.16+\n' "$(date -Iseconds)"
+    printf '%s ERROR: MachineConfigNode CRD not available — requires OpenShift 4.16+\n' "$(now_utc_iso)"
     exit 1
   fi
 
@@ -1020,18 +1053,18 @@ init_node_tracking() {
     worker_nodes+=("$node")
     if ! node_updated_for_rollout "$node" "$mcn_json"; then
       record_node_start "$node" "$now" "$nodes_json"
-      printf '%s machineconfignode/%s already updating at timer start\n' "$(date -Iseconds)" "$node"
+      printf '%s machineconfignode/%s already updating at timer start\n' "$(now_utc_iso)" "$node"
     fi
   done < <(mcn_pool_nodes)
 
   if [[ ${#worker_nodes[@]} -eq 0 ]]; then
-    printf '%s ERROR: no MachineConfigNodes found for mcp/%s\n' "$(date -Iseconds)" "$MCP"
+    printf '%s ERROR: no MachineConfigNodes found for mcp/%s\n' "$(now_utc_iso)" "$MCP"
     exit 1
   fi
 
   check_mcn_updates
   printf '%s Tracking %s mcp/%s node(s); poll every %ss (%ss during active drain)\n' \
-    "$(date -Iseconds)" "${#worker_nodes[@]}" "$MCP" "$INTERVAL" "$ACTIVE_INTERVAL"
+    "$(now_utc_iso)" "${#worker_nodes[@]}" "$MCP" "$INTERVAL" "$ACTIVE_INTERVAL"
   print_tracking_status
 }
 
@@ -1044,7 +1077,7 @@ print_per_node_summary() {
   fi
 
   printf '\n%s Per-node total_duration_seconds (%s/%s node(s)):\n' \
-    "$(date -Iseconds)" "$nodes_finished_this_run" "${#worker_nodes[@]}"
+    "$(now_utc_iso)" "$nodes_finished_this_run" "${#worker_nodes[@]}"
 
   for node in "${worker_nodes[@]}"; do
     [[ -n "${node_duration_secs[$node]:-}" ]] || continue
@@ -1061,11 +1094,11 @@ print_per_node_summary() {
 
   avg="$((sum_total / nodes_finished_this_run))"
   printf '%s All nodes: pool_elapsed=%ss (%s), sum_total_duration=%ss, avg_per_node=%ss\n' \
-    "$(date -Iseconds)" \
+    "$(now_utc_iso)" \
     "$pool_elapsed" "$(format_duration "$pool_elapsed")" \
     "$sum_total" "$avg"
   printf '%s   (pool_elapsed = wall clock for full rollout; sum_total = per-node times added)\n' \
-    "$(date -Iseconds)"
+    "$(now_utc_iso)"
 }
 
 require_jq
@@ -1073,16 +1106,16 @@ require_oc
 setup_oc_auth
 
 if mcp_updating; then
-  printf '%s mcp/%s already Updating=True — skipping reboot trigger\n' "$(date -Iseconds)" "$MCP"
+  printf '%s mcp/%s already Updating=True — skipping reboot trigger\n' "$(now_utc_iso)" "$MCP"
 else
-  printf '%s Triggering reboot for mcp/%s\n' "$(date -Iseconds)" "$MCP"
+  printf '%s Triggering reboot for mcp/%s\n' "$(now_utc_iso)" "$MCP"
   oc adm reboot-machine-config-pool "mcp/$MCP"
 fi
 
 printf '%s Waiting for mcp/%s Updating=True before starting timer (poll every %ss)\n' \
-  "$(date -Iseconds)" "$MCP" "$INTERVAL"
+  "$(now_utc_iso)" "$MCP" "$INTERVAL"
 while ! mcp_updating; do
-  printf '\n%s\n' "$(date -Iseconds)"
+  printf '\n%s\n' "$(now_utc_iso)"
   oc get mcp -A
   sleep "$INTERVAL"
 done
@@ -1095,12 +1128,12 @@ if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
 fi
 init_node_tracking
 
-printf '\n%s mcp/%s Updating=True — timer started\n' "$(date -Iseconds)" "$MCP"
+printf '\n%s mcp/%s Updating=True — timer started\n' "$(now_utc_iso)" "$MCP"
 oc get mcp -A
 oc get machineconfignode -o wide 2>/dev/null || true
 
 printf '%s Waiting for %s mcp/%s node(s) to complete this rollout\n' \
-  "$(date -Iseconds)" "${#worker_nodes[@]}" "$MCP"
+  "$(now_utc_iso)" "${#worker_nodes[@]}" "$MCP"
 print_tracking_status
 
 poll_count=0
@@ -1117,12 +1150,12 @@ done
 
 elapsed="$(( $(date +%s) - start_epoch ))"
 printf '\n%s mcp/%s: all %s worker node(s) tracked — pool elapsed %s\n' \
-  "$(date -Iseconds)" "$MCP" "${#worker_nodes[@]}" "$(format_duration "$elapsed")"
+  "$(now_utc_iso)" "$MCP" "${#worker_nodes[@]}" "$(format_duration "$elapsed")"
 append_csv_summary "$(date +%s)"
 print_per_node_summary "$elapsed"
-printf '%s Full log saved to %s\n' "$(date -Iseconds)" "$LOG_FILE"
-printf '%s Per-node timing CSV saved to %s\n' "$(date -Iseconds)" "$CSV_FILE"
-printf '%s Node events TSV saved to %s\n' "$(date -Iseconds)" "$EVENTS_FILE"
+printf '%s Full log saved to %s\n' "$(now_utc_iso)" "$LOG_FILE"
+printf '%s Per-node timing CSV saved to %s\n' "$(now_utc_iso)" "$CSV_FILE"
+printf '%s Node events TSV saved to %s\n' "$(now_utc_iso)" "$EVENTS_FILE"
 if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
-  printf '%s Ceph operator log saved to %s\n' "$(date -Iseconds)" "$CEPH_OPERATOR_LOG_FILE"
+  printf '%s Ceph operator log saved to %s\n' "$(now_utc_iso)" "$CEPH_OPERATOR_LOG_FILE"
 fi
