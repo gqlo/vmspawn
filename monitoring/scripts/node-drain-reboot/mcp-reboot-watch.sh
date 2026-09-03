@@ -14,8 +14,18 @@
 # two ways: node-object polling (primary CSV columns) and Kubernetes Node/MCD events
 # (evt_* columns). Raw events append to EVENTS_FILE (TSV, deduped by uid per poll).
 # Rook ceph-operator pod logs append to CEPH_OPERATOR_LOG_FILE (new lines only per poll).
+#
+# Auth: by default the script applies mcp-reboot-watch-rbac.yaml (first run needs
+# oc login with cluster-admin), mints a long-lived SA token, and writes
+# mcp-reboot-watch.kubeconfig beside this script. Override with MCP_WATCH_USE_ENV_KUBECONFIG=1.
+#
+# Usage:
+#   ./mcp-reboot-watch.sh
+#   MCP=worker INTERVAL=5 ./mcp-reboot-watch.sh
 
 set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 readonly MCP="${MCP:-worker}"
 readonly INTERVAL="${INTERVAL:-5}"
@@ -28,6 +38,11 @@ readonly CEPH_OPERATOR_LOG_FILE="${CEPH_OPERATOR_LOG_FILE:-mcp-reboot-watch-${MC
 readonly CEPH_OPERATOR_LOGS="${CEPH_OPERATOR_LOGS:-1}"
 readonly CEPH_NAMESPACE="${CEPH_NAMESPACE:-openshift-storage}"
 readonly CEPH_POD_LABEL="${CEPH_POD_LABEL:-app=rook-ceph-operator}"
+readonly SA_NAMESPACE="${SA_NAMESPACE:-vstorm-node-drain}"
+readonly SA_NAME="${SA_NAME:-mcp-reboot-watch}"
+readonly SA_TOKEN_DURATION="${SA_TOKEN_DURATION:-168h}"
+readonly RBAC_FILE="${RBAC_FILE:-${SCRIPT_DIR}/mcp-reboot-watch-rbac.yaml}"
+readonly SA_KUBECONFIG="${SA_KUBECONFIG:-${SCRIPT_DIR}/mcp-reboot-watch.kubeconfig}"
 
 declare -A node_start_epoch=()
 declare -A node_finished=()
@@ -61,6 +76,182 @@ require_jq() {
     printf '%s ERROR: jq is required\n' "$(date -Iseconds)"
     exit 1
   fi
+}
+
+require_oc() {
+  if ! command -v oc &>/dev/null; then
+    printf '%s ERROR: oc is required\n' "$(date -Iseconds)"
+    exit 1
+  fi
+}
+
+oc_auth_can_i() {
+  local verb="$1" resource="$2" namespace="${3:-}" answer
+
+  if [[ -n "$namespace" ]]; then
+    answer="$(oc auth can-i "$verb" "$resource" -n "$namespace" 2>/dev/null || true)"
+  else
+    answer="$(oc auth can-i "$verb" "$resource" 2>/dev/null || true)"
+  fi
+  [[ "$answer" == yes ]]
+}
+
+verify_sa_permissions() {
+  local missing=()
+
+  oc_auth_can_i get machineconfigpools || missing+=('get machineconfigpools')
+  oc_auth_can_i patch machineconfigpools || missing+=('patch machineconfigpools')
+  oc_auth_can_i get machineconfignodes || missing+=('get machineconfignodes')
+  oc_auth_can_i get machineconfigs || missing+=('get machineconfigs')
+  oc_auth_can_i create machineconfigs || missing+=('create machineconfigs')
+  oc_auth_can_i get nodes || missing+=('get nodes')
+  oc_auth_can_i list events || missing+=('list events')
+
+  if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
+    oc_auth_can_i get pods "$CEPH_NAMESPACE" || missing+=("get pods -n ${CEPH_NAMESPACE}")
+    oc_auth_can_i get pods/log "$CEPH_NAMESPACE" || missing+=("get pods/log -n ${CEPH_NAMESPACE}")
+  fi
+
+  if (( ${#missing[@]} > 0 )); then
+    printf '%s ERROR: missing API permissions: %s\n' "$(date -Iseconds)" "${missing[*]}"
+    return 1
+  fi
+  return 0
+}
+
+verify_oc_session() {
+  if oc whoami &>/dev/null; then
+    return 0
+  fi
+  printf '%s ERROR: API credentials expired — re-run script (oc login admin refreshes SA token)\n' \
+    "$(date -Iseconds)"
+  exit 1
+}
+
+create_sa_token() {
+  local duration="$1" token
+
+  token="$(oc create token "$SA_NAME" -n "$SA_NAMESPACE" --duration="$duration" 2>/dev/null || true)"
+  [[ -n "$token" ]] || return 1
+  printf '%s' "$token"
+}
+
+write_sa_kubeconfig() {
+  local token="$1" server ca_data tmp
+
+  server="$(oc whoami --show-server)"
+  ca_data="$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
+  [[ -n "$server" && -n "$ca_data" && -n "$token" ]] || return 1
+
+  tmp="$(mktemp)"
+  cat >"$tmp" <<EOF
+apiVersion: v1
+kind: Config
+clusters:
+- name: cluster
+  cluster:
+    server: ${server}
+    certificate-authority-data: ${ca_data}
+users:
+- name: ${SA_NAME}
+  user:
+    token: ${token}
+contexts:
+- name: ${SA_NAME}
+  context:
+    cluster: cluster
+    user: ${SA_NAME}
+    namespace: ${SA_NAMESPACE}
+current-context: ${SA_NAME}
+EOF
+  install -m 600 "$tmp" "$SA_KUBECONFIG"
+  rm -f "$tmp"
+  return 0
+}
+
+bootstrap_sa_kubeconfig() {
+  local duration token durations tried=()
+
+  if [[ ! -f "$RBAC_FILE" ]]; then
+    printf '%s ERROR: RBAC manifest missing: %s\n' "$(date -Iseconds)" "$RBAC_FILE"
+    exit 1
+  fi
+
+  printf '%s Applying RBAC: %s\n' "$(date -Iseconds)" "$RBAC_FILE"
+  if ! oc apply -f "$RBAC_FILE"; then
+    printf '%s ERROR: oc apply failed — cluster-admin required for first-time setup\n' \
+      "$(date -Iseconds)"
+    exit 1
+  fi
+
+  token=""
+  for duration in "$SA_TOKEN_DURATION" 168h 72h 24h 8h 1h; do
+    tried+=("$duration")
+    if token="$(create_sa_token "$duration")"; then
+      printf '%s Minted SA token for %s/%s (duration=%s)\n' \
+        "$(date -Iseconds)" "$SA_NAMESPACE" "$SA_NAME" "$duration"
+      break
+    fi
+  done
+
+  if [[ -z "$token" ]]; then
+    printf '%s ERROR: oc create token failed (tried durations: %s)\n' \
+      "$(date -Iseconds)" "${tried[*]}"
+    exit 1
+  fi
+
+  if ! write_sa_kubeconfig "$token"; then
+    printf '%s ERROR: failed to write %s\n' "$(date -Iseconds)" "$SA_KUBECONFIG"
+    exit 1
+  fi
+
+  export KUBECONFIG="$SA_KUBECONFIG"
+  if ! verify_sa_permissions; then
+    exit 1
+  fi
+  printf '%s SA kubeconfig ready: %s (%s)\n' \
+    "$(date -Iseconds)" "$SA_KUBECONFIG" "$(oc whoami)"
+}
+
+setup_oc_auth() {
+  local default_kubeconfig="$HOME/.kube/config"
+  local bootstrap_kubeconfig="${KUBECONFIG:-$default_kubeconfig}"
+
+  if [[ "${MCP_WATCH_USE_ENV_KUBECONFIG:-0}" == "1" ]]; then
+    if ! oc whoami &>/dev/null; then
+      printf '%s ERROR: MCP_WATCH_USE_ENV_KUBECONFIG=1 but oc whoami failed\n' "$(date -Iseconds)"
+      exit 1
+    fi
+    if ! verify_sa_permissions; then
+      exit 1
+    fi
+    printf '%s Using environment KUBECONFIG (%s)\n' "$(date -Iseconds)" "$(oc whoami)"
+    return 0
+  fi
+
+  if [[ -f "$SA_KUBECONFIG" ]]; then
+    KUBECONFIG="$SA_KUBECONFIG"
+    if oc whoami &>/dev/null && verify_sa_permissions; then
+      export KUBECONFIG="$SA_KUBECONFIG"
+      printf '%s Using SA kubeconfig: %s (%s)\n' \
+        "$(date -Iseconds)" "$SA_KUBECONFIG" "$(oc whoami)"
+      return 0
+    fi
+    printf '%s SA kubeconfig expired or insufficient — re-minting\n' "$(date -Iseconds)"
+  else
+    printf '%s No SA kubeconfig at %s — bootstrapping\n' "$(date -Iseconds)" "$SA_KUBECONFIG"
+  fi
+
+  if [[ "$bootstrap_kubeconfig" == "$SA_KUBECONFIG" ]]; then
+    bootstrap_kubeconfig="$default_kubeconfig"
+  fi
+  KUBECONFIG="$bootstrap_kubeconfig"
+  if ! oc whoami &>/dev/null; then
+    printf '%s ERROR: oc login required to apply RBAC and mint SA token\n' "$(date -Iseconds)"
+    exit 1
+  fi
+  printf '%s Bootstrapping SA with login identity: %s\n' "$(date -Iseconds)" "$(oc whoami)"
+  bootstrap_sa_kubeconfig
 }
 
 format_duration() {
@@ -877,6 +1068,10 @@ print_per_node_summary() {
     "$(date -Iseconds)"
 }
 
+require_jq
+require_oc
+setup_oc_auth
+
 if mcp_updating; then
   printf '%s mcp/%s already Updating=True — skipping reboot trigger\n' "$(date -Iseconds)" "$MCP"
 else
@@ -908,8 +1103,13 @@ printf '%s Waiting for %s mcp/%s node(s) to complete this rollout\n' \
   "$(date -Iseconds)" "${#worker_nodes[@]}" "$MCP"
 print_tracking_status
 
+poll_count=0
 while [[ "$nodes_finished_this_run" -lt ${#worker_nodes[@]} ]]; do
   sleep "$(current_poll_interval)"
+  poll_count="$((poll_count + 1))"
+  if (( poll_count % 60 == 0 )); then
+    verify_oc_session
+  fi
   check_mcn_updates
   print_tracking_status
   oc get mcp -A

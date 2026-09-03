@@ -1,0 +1,65 @@
+# RBAC for mcp-reboot-watch.sh (ServiceAccount + minimal cluster permissions).
+# Applied automatically on first run by mcp-reboot-watch.sh (requires oc login admin).
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: vstorm-node-drain
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcp-reboot-watch
+  namespace: vstorm-node-drain
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: mcp-reboot-watch
+rules:
+  - apiGroups: ["machineconfiguration.openshift.io"]
+    resources: ["machineconfigpools", "machineconfignodes", "machineconfigs"]
+    verbs: ["get", "list", "watch", "patch", "update", "create"]
+  - apiGroups: [""]
+    resources: ["nodes", "events"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: mcp-reboot-watch
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mcp-reboot-watch
+subjects:
+  - kind: ServiceAccount
+    name: mcp-reboot-watch
+    namespace: vstorm-node-drain
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcp-reboot-watch-ceph-logs
+  namespace: openshift-storage
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcp-reboot-watch-ceph-logs
+  namespace: openshift-storage
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: mcp-reboot-watch-ceph-logs
+subjects:
+  - kind: ServiceAccount
+    name: mcp-reboot-watch
+    namespace: vstorm-node-drain
