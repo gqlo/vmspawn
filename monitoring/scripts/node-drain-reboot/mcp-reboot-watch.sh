@@ -152,12 +152,108 @@ create_sa_token() {
   printf '%s' "$token"
 }
 
-write_sa_kubeconfig() {
-  local token="$1" server ca_data tmp
+cluster_ca_pem_to_data() {
+  local ca_pem="$1"
 
-  server="$(oc whoami --show-server)"
-  ca_data="$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}')"
-  [[ -n "$server" && -n "$ca_data" && -n "$token" ]] || return 1
+  [[ -n "$ca_pem" ]] || return 1
+  if printf '%s' "$ca_pem" | base64 -w0 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$ca_pem" | base64 | tr -d '\n'
+}
+
+cluster_ca_from_api() {
+  local ca_pem ns
+
+  for ns in openshift-config-managed kube-public; do
+    ca_pem="$(oc get configmap kube-root-ca.crt -n "$ns" -o jsonpath='{.data.ca\.crt}' 2>/dev/null || true)"
+    [[ -n "$ca_pem" ]] || continue
+    cluster_ca_pem_to_data "$ca_pem"
+    return 0
+  done
+  return 1
+}
+
+cluster_ca_from_kubeconfig() {
+  local ca_data ca_file insecure cluster_name
+
+  cluster_name="$(oc config view --minify -o jsonpath='{.contexts[0].context.cluster}' 2>/dev/null || true)"
+  if [[ -n "$cluster_name" ]]; then
+    ca_data="$(oc config view --raw -o jsonpath="{.clusters[?(@.name==\"${cluster_name}\")].cluster.certificate-authority-data}" 2>/dev/null | head -1 || true)"
+    if [[ -n "$ca_data" ]]; then
+      printf '%s' "$ca_data"
+      return 0
+    fi
+
+    ca_file="$(oc config view --raw -o jsonpath="{.clusters[?(@.name==\"${cluster_name}\")].cluster.certificate-authority}" 2>/dev/null | head -1 || true)"
+    if [[ -n "$ca_file" && -r "$ca_file" ]]; then
+      if base64 -w0 "$ca_file" 2>/dev/null; then
+        return 0
+      fi
+      base64 "$ca_file" | tr -d '\n'
+      return 0
+    fi
+
+    insecure="$(oc config view --raw -o jsonpath="{.clusters[?(@.name==\"${cluster_name}\")].cluster.insecure-skip-tls-verify}" 2>/dev/null | head -1 || true)"
+    if [[ "$insecure" == "true" ]]; then
+      printf 'INSECURE'
+      return 0
+    fi
+  fi
+
+  ca_data="$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority-data}' 2>/dev/null || true)"
+  if [[ -n "$ca_data" ]]; then
+    printf '%s' "$ca_data"
+    return 0
+  fi
+
+  ca_file="$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.certificate-authority}' 2>/dev/null || true)"
+  if [[ -n "$ca_file" && -r "$ca_file" ]]; then
+    if base64 -w0 "$ca_file" 2>/dev/null; then
+      return 0
+    fi
+    base64 "$ca_file" | tr -d '\n'
+    return 0
+  fi
+
+  insecure="$(oc config view --minify --raw -o jsonpath='{.clusters[0].cluster.insecure-skip-tls-verify}' 2>/dev/null || true)"
+  if [[ "$insecure" == "true" ]]; then
+    printf 'INSECURE'
+    return 0
+  fi
+
+  cluster_ca_from_api
+}
+
+write_sa_kubeconfig() {
+  local token="$1" server ca_data tmp cluster_block
+
+  server="$(oc whoami --show-server 2>/dev/null || true)"
+  ca_data="$(cluster_ca_from_kubeconfig || true)"
+  if [[ -z "$server" || -z "$token" ]]; then
+    printf '%s ERROR: cannot build SA kubeconfig (server=%s token=%s)\n' \
+      "$(now_utc_iso)" "${server:-missing}" "$([[ -n "$token" ]] && printf present || printf missing)"
+    return 1
+  fi
+  if [[ -z "$ca_data" ]]; then
+    printf '%s ERROR: no cluster CA found (kubeconfig has no CA; kube-root-ca.crt lookup failed)\n' \
+      "$(now_utc_iso)"
+    return 1
+  fi
+
+  if [[ "$ca_data" == "INSECURE" ]]; then
+    cluster_block="$(cat <<EOF
+    server: ${server}
+    insecure-skip-tls-verify: true
+EOF
+)"
+  else
+    cluster_block="$(cat <<EOF
+    server: ${server}
+    certificate-authority-data: ${ca_data}
+EOF
+)"
+  fi
 
   tmp="$(mktemp)"
   cat >"$tmp" <<EOF
@@ -166,8 +262,7 @@ kind: Config
 clusters:
 - name: cluster
   cluster:
-    server: ${server}
-    certificate-authority-data: ${ca_data}
+${cluster_block}
 users:
 - name: ${SA_NAME}
   user:
@@ -180,7 +275,12 @@ contexts:
     namespace: ${SA_NAMESPACE}
 current-context: ${SA_NAME}
 EOF
-  install -m 600 "$tmp" "$SA_KUBECONFIG"
+  if ! install -m 600 "$tmp" "$SA_KUBECONFIG"; then
+    rm -f "$tmp"
+    printf '%s ERROR: install failed writing %s (check directory permissions)\n' \
+      "$(now_utc_iso)" "$SA_KUBECONFIG"
+    return 1
+  fi
   rm -f "$tmp"
   return 0
 }
@@ -217,7 +317,6 @@ bootstrap_sa_kubeconfig() {
   fi
 
   if ! write_sa_kubeconfig "$token"; then
-    printf '%s ERROR: failed to write %s\n' "$(now_utc_iso)" "$SA_KUBECONFIG"
     exit 1
   fi
 
