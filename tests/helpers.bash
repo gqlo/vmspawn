@@ -54,7 +54,9 @@ case "$1" in
                 _emit_vm_lines() {
                     local lines=$1
                     if [[ -n "$_vm_ns" ]]; then
-                        printf '%s\n' "$lines" | awk -v ns="$_vm_ns" '$1 == ns'
+                        # Namespaced `oc get vm -n NS` omits the namespace column;
+                        # MOCK_VM_LINES always uses the cluster-wide "NS NAME ..." shape.
+                        printf '%s\n' "$lines" | awk -v ns="$_vm_ns" '$1 == ns {print substr($0, index($0, $2))}'
                     else
                         printf '%s\n' "$lines"
                     fi
