@@ -36,7 +36,7 @@ One test per README Quick Start example. Each validates the full YAML output end
 |---|---|---|
 | QS-1 | `--vms=10 --namespaces=2` | DataSource DV, snapshot, 10 VMs, auto cloud-init, labels, VM spec |
 | QS-2 | `--datasource=fedora --vms=5` | Fedora DataSource in DV, snapshot path, auto cloud-init |
-| QS-3 | `--dv-url=... --vms=10` | URL import DV with explicit size, snapshot, 10 VMs, no auto cloud-init |
+| QS-3 | `--dv-url=... --vms=10` | URL import DV with explicit size, snapshot, 10 VMs, default cloud-init auto-applied |
 | QS-4 | `--cloudinit=...stress... --vms=10` | Custom cloud-init Secret per namespace, secretRef, not auto-applied |
 | QS-5 | `--datasource=centos-stream9 --vms=5` | Different DataSource with default cloud-init auto-applied |
 | QS-6 | `--storage-class=my-nfs-sc --vms=10` | Non-OCS storage class auto-disables snapshots, direct DataSource clone (no base DV) |
@@ -61,6 +61,22 @@ vstorm -n --batch-id=dr-test --datasource=rhel9 --vms=1 --namespaces=1 \
   --cloudinit=workload/cloudinit-dirty-mem-pages.yaml --env DIRTY_RATE_FRACTION=0.4
 ```
 
+### Result collector unreachable
+
+Guest scripts keep working when `RESULT_SERVER_URL` cannot be reached
+(`http://127.0.0.1:1/…` in tests, with `RESULT_RETRY=1` / `RESULT_TIMEOUT=1`):
+
+| Test | File | What it validates |
+|---|---|---|
+| boot-ts unreachable | `tests/15-boot-timestamp.bats` | Timestamp file written; exit 0; POST failure logged (no spool) |
+| boot-ts missing batch id | `tests/15-boot-timestamp.bats` | File written; POST skipped when `VSTORM_BATCH_ID` unset |
+| boot-ts mock 2xx / non-2xx | `tests/15-boot-timestamp.bats` | Payload fields on success; file intact + exit 0 on HTTP 503 |
+| boot-ts embed parity | `tests/15-boot-timestamp.bats` | Each cloud-init embed matches `workload/vstorm-boot-timestamp.sh` |
+| FIO unreachable spool | `tests/14-fio-workload-script.bats` | Job finishes; result kept under `results/` and `results/pending/`; `post_error` recorded |
+| FIO local success | `tests/14-fio-workload-script.bats` | Unreachable collector does not fail the fio job itself |
+
+Host manifest POST is best-effort: create still succeeds and JSON is kept under `logs/` (see warning text in `vstorm`).
+
 ### Dry-run YAML file tests
 
 | Test | What it validates |
@@ -73,7 +89,7 @@ vstorm -n --batch-id=dr-test --datasource=rhel9 --vms=1 --namespaces=1 \
 ### Core functionality
 
 - **Batch ID** -- auto-generated 6-character hex ID
-- **Namespace naming** -- `vm-{batch}-ns-{N}` pattern
+- **Namespace naming** -- `{batch}-ns-{N}` pattern
 - **VM distribution** -- even spread with remainder in first namespaces
 
 ### Validation / error handling
@@ -225,7 +241,7 @@ Multi-option combination tests that validate interactions between 3+ options use
 | COMBO-10 | `--dv-url=... --snapshot-class=... --cloudinit=FILE` | URL + snapshot + custom cloud-init |
 | COMBO-11 | `--dv-url=... --no-snapshot --cloudinit=FILE` | URL + no-snapshot + custom cloud-init |
 | COMBO-12 | `--no-snapshot --cloudinit=FILE --namespaces=3` | Secret created per namespace in DataSource clone |
-| COMBO-13 | `--dv-url=... --snapshot-class=...` (no `--cloudinit`) | URL+snapshot: no auto cloud-init applied |
+| COMBO-13 | `--dv-url=... --snapshot-class=...` (no `--cloudinit`) | URL+snapshot: default cloud-init auto-applied |
 | COMBO-14 | `--no-snapshot --basename=fedora --cloudinit=FILE` | Custom basename affects Secret name + DataSource clone |
 
 #### Category 3: Clone path x VM resource requests (COMBO-15 through COMBO-18)
@@ -322,7 +338,7 @@ Tests in `tests/14-udn.bats` cover the `--udn-l2[=CIDR]` and `--service` flags. 
 | UDN-6 | (no UDN flags) | Default masquerade networking unchanged |
 | UDN-7 | `--udn-l2 --containerdisk` | Auto cloud-init includes DHCP `networkData` |
 | UDN-8 | `--udn-l2 --cloudinit=...` | Explicit cloud-init includes DHCP `networkData` |
-| UDN-9 | `--udn-l2 --dv-url=... --no-snapshot` | No `networkData` when cloud-init not applied |
+| UDN-9 | `--udn-l2 --dv-url=... --no-snapshot` | Default cloud-init auto-applied with DHCP `networkData` |
 | UDN-10 | `--udn-l2 --service --namespaces=2` | NodePort Service per namespace, port 22 (32222+) |
 | UDN-11 | `--udn-l2 --service=clusterip` | ClusterIP Service, port 22, no `nodePort` |
 | UDN-12 | `--udn-l2 --service --namespaces=2` | NodePort auto-increment logged per namespace |
@@ -350,13 +366,16 @@ Path 2 was introduced to eliminate the intermediate base DV, which caused WaitFo
 
 ## CI pipeline
 
-GitHub Actions runs three jobs on every push and PR to `main`:
+GitHub Actions runs four jobs on every push and PR to `main`:
 
 | Job | Tool | Scope |
 |---|---|---|
 | `test` | `bats` | All tests in `tests/` |
+| `test-python` | `unittest` | `monitoring/tests/` (data-collector, monitoring scripts); installs `monitoring/tests/requirements.txt` |
 | `lint-yaml` | `yamllint` | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` |
 | `lint-markdown` | `markdownlint-cli2` | All `*.md` files |
+
+Local pre-commit (`hooks/pre-commit`) also runs `python3 -m unittest discover -s monitoring/tests -v` when staged files touch `monitoring/data-collector/`, `monitoring/tests/`, or `monitoring/scripts/`. Full suite: `./helpers/run-all-tests.sh`.
 
 Configuration files:
 

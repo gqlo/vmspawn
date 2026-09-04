@@ -17,7 +17,8 @@
 - [Options](#options)
 - [How it works](#how-it-works)
 - [Development](#development)
-- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cloud-init and fio workload](docs/cloud-init-fio-workload.md) | [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
+- **Docs:** [logging](docs/logging.md) | [cloud-init and stress-ng workload](docs/cloud-init-stress-ng-workload.md) | [cloud-init and fio workload](docs/cloud-init-fio-workload.md) | [workload result sync and dashboard](docs/workload-result-sync-and-dashboard.md)
+- **More docs:** [cluster profiler](docs/cluster-profiler.md) | [testing](docs/testing.md) | [live cluster test report](docs/live-cluster-test-report.md) | [bug tracker](docs/bug-tracker.md) | [custom build images](custom-build-images/README.md)
 - **Helpers:** [vm-ssh](helpers/vm-ssh) | [vm-export](helpers/vm-export) | [install-virtctl](helpers/install-virtctl)
 
 ---
@@ -94,8 +95,8 @@ vstorm --udn-l2 --service --containerdisk --vms=6 --namespaces=3
 
 # 12. UDN + ClusterIP (defaults: port 22, targetPort 22; access via pod network from a debug pod in the namespace)
 vstorm --udn-l2 --service=clusterip --vms=20 --namespaces=4
-# oc -n vm-<batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
-# ssh -o PubkeyAuthentication=no root@svc-clusterip-vm-<batch-id>.vm-<batch-id>-ns-1.svc.cluster.local  (password: password)
+# oc -n <batch-id>-ns-1 run -it --rm ssh-debug --image=quay.io/rh_ee_lguoqing/nettools-fedora:latest --restart=Never -- bash
+# ssh -o PubkeyAuthentication=no root@svc-clusterip-<batch-id>.<batch-id>-ns-1.svc.cluster.local  (password: password)
 
 # 13. UDN + NodePort: service port 8080, VM targetPort 8080 (nodeport:SERVICE_PORT)
 vstorm --udn-l2 --service=nodeport:8080 --vms=10 --namespaces=2
@@ -113,30 +114,37 @@ vstorm --memory=8Gi --cores=2 \
   --env STRESS_TOGETHER=0 \
   --env CPU_ACTIVE_PROBABILITY=30 \
   --env MEM_ACTIVE_PROBABILITY=80 \
-  --wait --basename=desched-t1 --vms=11 --namespaces=2
+  --wait --wait-ssh --basename=desched-t1 --vms=11 --namespaces=2
 ```
 
 ## Cloud-init
 
 Cloud-init user-data is stored in a per-namespace Kubernetes Secret and referenced via `cloudInitNoCloud.secretRef`, so there is no size limit and nothing needs to be baked into the disk image.
 
-### Default cloud-init (DataSource and container disk modes)
+### Default cloud-init
 
-When using `--datasource` or `--containerdisk`, a built-in cloud-init (`helpers/cloudinit-default.yaml`) is automatically injected if no `--cloudinit` is specified. It configures:
+When `--cloudinit` is omitted, vstorm injects [`workload/cloudinit-default.yaml`](workload/cloudinit-default.yaml) in every create mode (URL, DataSource, container disk). It configures:
 
 - **Root password**: `password`
-- **PasswordAuthentication**: enabled in sshd
-- **PermitRootLogin**: enabled in sshd
+- **PasswordAuthentication** / **PermitRootLogin**: enabled in sshd
+- **Boot timestamp**: `vstorm-boot-timestamp.service` writes `/root/timestamp.txt` and POSTs a boot heartbeat to the default lab collector (`RESULT_SERVER_URL`) unless you override or clear it via `--env` (no workload job)
+
+### Result collector URL
+
+By default vstorm injects:
+
+`RESULT_SERVER_URL=http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results`
+
+so host manifests and guest boot/result POSTs go to that data-collector. Override with `--env RESULT_SERVER_URL=http://other:8080/v1/results`, or disable with `--env RESULT_SERVER_URL=`.
 
 ```bash
-# DataSource VMs reachable via: ssh root@<vm-ip>  (password: password)
+# Any mode: default profile (SSH + boot timestamp only)
 vstorm --vms=10 --namespaces=2
-
-# Container disk VMs work the same way -- no storage class required
 vstorm --containerdisk --vms=5 --namespaces=1
+vstorm --dv-url=http://example.com/disk.qcow2 --vms=5
 ```
 
-To override, pass your own file with `--cloudinit=FILE`. In default (URL) mode, no cloud-init is injected unless you pass `--cloudinit`.
+Override with `--cloudinit=FILE` for fio / stress-ng / dirty-mem or a custom profile.
 
 ### Custom cloud-init
 
@@ -232,17 +240,19 @@ NodePort values are auto-allocated from 32222 upward (one per namespace). OVN lo
 
 `--volume-mode=Block|Filesystem` sets PVC `volumeMode` (default `Block`). Use `Filesystem` for NFS/NAS storage classes. Access mode is still auto-detected from the StorageProfile for the chosen volume mode unless you pass `--access-mode`.
 
+`--data-disk-size=N` attaches a **blank** second disk (`vdb`) via a DataVolume (opt-in; e.g. `20G`). Omit the flag (or pass `0`) for no data disk. The fio cloud-init formats and mounts it on `/root/data` when present. Root/OS disk size remains `--storage-size`.
+
 KubeVirt sets **no resource limits** by default — only requests. The guest VM cannot exceed `--memory` (enforced by QEMU), and CPU can burst beyond the request to use idle node capacity. Auto-limits only apply if the namespace has a ResourceQuota.
 
 Use `--create-existing-vm` with `--batch-id` to re-apply VM YAML for an existing batch (e.g. after changing `--cores` or `--memory`); without it, VMs that already exist on the cluster are skipped.
 
 ## How it works
 
-Each invocation auto-generates a 6-character hex **batch ID** (e.g. `a3f7b2`). This ID is embedded in every resource name and applied as a Kubernetes label, making each run fully isolated.
+Each invocation auto-generates a **batch ID** as `vstorm-` plus 6 hex digits (e.g. `vstorm-a3f7b2`), so it always starts with letters. Override with `--batch-id=ID`. This ID is embedded in every resource name and applied as a Kubernetes label, making each run fully isolated.
 
 The tool performs these steps in order:
 
-1. **Create namespaces** -- `vm-{batch}-ns-1`, `vm-{batch}-ns-2`, ...
+1. **Create namespaces** -- `{batch}-ns-1`, `{batch}-ns-2`, ...
 2. **Create UDN** *(optional, `--udn-l2`)* -- `UserDefinedNetwork` CR per namespace with the chosen subnet
 3. **Create base disk** *(snapshot and URL modes only)* -- one DataVolume per namespace, cloned from a DataSource or imported from a URL; skipped in container disk mode
 4. **Snapshot base disk** *(snapshot mode only)* -- creates a VolumeSnapshot per namespace for fast cloning; skipped in container disk mode
@@ -262,7 +272,7 @@ vstorm auto-detects most storage settings from the cluster. Here are the common 
 | VolumeSnapshot never becomes ready | No matching VolumeSnapshotClass for your storage | Pass `--snapshot-class=CLASS`, or omit it to auto-disable snapshots |
 | VMs can't live-migrate | PVCs use ReadWriteOnce (local storage) | Expected -- use shared storage (Ceph/NFS) with RWX for live migration |
 
-In DataSource and container disk modes, a cloud-init is auto-injected (root password: `password`). In default (URL) mode, no cloud-init is injected unless you pass `--cloudinit`.
+In every create mode, when `--cloudinit` is omitted, [`workload/cloudinit-default.yaml`](workload/cloudinit-default.yaml) is auto-injected (root password `password`, boot-timestamp heartbeat only; no fio/stress workload). Override with `--cloudinit=FILE`.
 
 VMs are distributed evenly across namespaces, with any remainder allocated to the first namespaces.
 
@@ -270,15 +280,16 @@ VMs are distributed evenly across namespaces, with any remainder allocated to th
 
 ### CI workflow
 
-GitHub Actions runs three independent jobs on every push and pull request to `main` (defined in `.github/workflows/test.yaml`):
+GitHub Actions runs four independent jobs on every push and pull request to `main` (defined in `.github/workflows/test.yaml`):
 
 | Job | Tool | What it checks |
 |---|---|---|
 | `test` | `bats` | Runs all unit tests (`bats tests/`) |
+| `test-python` | `unittest` | Monitoring / data-collector Python tests (`monitoring/tests/`; needs `pip install -r monitoring/tests/requirements.txt`) |
 | `lint-yaml` | `yamllint` | Lints plain YAML (`helpers/`, `workload/`, `monitoring/yaml/`, `monitoring/tests/fixtures/`, `.github/workflows/`) |
 | `lint-markdown` | `markdownlint-cli2` | Lints all Markdown files (`**/*.md`) |
 
-All three jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook.
+All four jobs run in parallel on `ubuntu-latest`. The same checks are also enforced locally by the pre-commit hook (Python tests when monitoring paths are staged).
 
 ### Pre-commit hook
 
@@ -293,6 +304,7 @@ The hook runs only the checks relevant to the files you are committing:
 | Staged files | Check |
 |---|---|
 | `vstorm`, `templates/*`, `helpers/*`, `workload/*`, `tests/*.bats` | `bats tests/` |
+| `monitoring/data-collector/*`, `monitoring/tests/*`, `monitoring/scripts/*` | `python3 -m unittest discover -s monitoring/tests -v` |
 | `helpers/*.yaml`, `workload/*.yaml`, `monitoring/yaml/*.yaml`, `monitoring/tests/fixtures/*.yaml`, `.github/workflows/*.yaml` | `yamllint` on changed files |
 | any staged `*.md` / `*.MD` (e.g. `docs/...`, `monitoring/...`) | `markdownlint-cli2` on changed files |
 

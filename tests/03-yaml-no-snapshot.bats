@@ -55,7 +55,7 @@ setup_file() {
   # VM metadata
   [[ "$output" == *"kind: VirtualMachine"* ]]
   [[ "$output" == *"name: rhel9-yaml03-1"* ]]
-  [[ "$output" == *"namespace: vm-yaml03-ns-1"* ]]
+  [[ "$output" == *"namespace: yaml03-ns-1"* ]]
 
   # Spec
   [[ "$output" == *"runStrategy: Always"* ]]
@@ -117,8 +117,8 @@ setup_file() {
 
   [[ "$output" == *"apiVersion: snapshot.storage.k8s.io/v1"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"name: rhel9-vm-yaml05-ns-1"* ]]
-  [[ "$output" == *"namespace: vm-yaml05-ns-1"* ]]
+  [[ "$output" == *"name: rhel9-yaml05-ns-1"* ]]
+  [[ "$output" == *"namespace: yaml05-ns-1"* ]]
   [[ "$output" == *"volumeSnapshotClassName:"* ]]
   [[ "$output" == *"persistentVolumeClaimName: rhel9-base"* ]]
 }
@@ -132,7 +132,7 @@ setup_file() {
 
   [[ "$output" == *"apiVersion: v1"* ]]
   [[ "$output" == *"kind: Namespace"* ]]
-  [[ "$output" == *"name: vm-yaml06-ns-1"* ]]
+  [[ "$output" == *"name: yaml06-ns-1"* ]]
   [[ "$output" == *'batch-id: "yaml06"'* ]]
 }
 
@@ -147,7 +147,7 @@ setup_file() {
   [[ "$output" == *"apiVersion: v1"* ]]
   [[ "$output" == *"kind: Secret"* ]]
   [[ "$output" == *"name: rhel9-cloudinit"* ]]
-  [[ "$output" == *"namespace: vm-yaml07-ns-1"* ]]
+  [[ "$output" == *"namespace: yaml07-ns-1"* ]]
   [[ "$output" == *"type: Opaque"* ]]
   [[ "$output" == *"userdata:"* ]]
   [[ "$output" == *'batch-id: "yaml07"'* ]]
@@ -257,9 +257,9 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 3 namespaces ---
-  [[ "$output" == *"name: vm-nosn05-ns-1"* ]]
-  [[ "$output" == *"name: vm-nosn05-ns-2"* ]]
-  [[ "$output" == *"name: vm-nosn05-ns-3"* ]]
+  [[ "$output" == *"name: nosn05-ns-1"* ]]
+  [[ "$output" == *"name: nosn05-ns-2"* ]]
+  [[ "$output" == *"name: nosn05-ns-3"* ]]
 
   # --- 10 VMs ---
   local vm_count
@@ -315,7 +315,7 @@ setup_file() {
   # VM metadata
   [[ "$output" == *"kind: VirtualMachine"* ]]
   [[ "$output" == *"name: rhel9-nosn08-1"* ]]
-  [[ "$output" == *"namespace: vm-nosn08-ns-1"* ]]
+  [[ "$output" == *"namespace: nosn08-ns-1"* ]]
 
   # Spec
   [[ "$output" == *"runStrategy: Always"* ]]

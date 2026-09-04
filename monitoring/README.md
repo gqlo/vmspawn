@@ -4,6 +4,7 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 
 ## Contents
 
+- [Data collector + dashboard](#data-collector--dashboard)
 - [Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)](#persist-your-json-dashboard-in-dittybopper-provisioning-to-dittybopper)
 - [Run Prometheus queries](#prom-query)
 - [VM dirty rate (libvirt vs KubeVirt)](#vm-dirty-rate-libvirt-vs-kubevirt)
@@ -11,6 +12,24 @@ This directory holds **Grafana dashboards**, **Prometheus-related YAML**, and **
 - [Compute Euclidean distance](#compute_euclidean_distancepy)
 - [Troubleshooting](#troubleshooting)
 - [Appendix](#appendix)
+
+## Data collector + dashboard
+
+Python collector for guest/vstorm workload result JSON (separate from Grafana/Prom).
+Design: [`docs/workload-result-sync-and-dashboard.md`](../docs/workload-result-sync-and-dashboard.md).
+Code and **installation steps** (foreground + systemd):
+[`monitoring/data-collector/data-collector.md`](data-collector/data-collector.md).
+
+```bash
+python3 monitoring/data-collector/serve.py --listen 0.0.0.0:8080 \
+  --data-dir monitoring/data-collector/workload-result-data
+# Dashboard: http://<host>:8080/
+# Ingest:    POST http://<host>:8080/v1/results
+```
+
+Standalone UI (laptop) against a remote collector: `./monitoring/data-collector/run-dashboard.sh`, then set the header **API** field to `http://<collector>:8080` (see data-collector.md).
+
+Binding to `0.0.0.0` serves plain HTTP and exposes unauthenticated ingest/control APIs — use only on trusted or lab networks. Pass `--token SECRET` (and the matching `RESULT_SERVER_TOKEN` / dashboard Bearer token) when authentication is required.
 
 ## Persist your JSON dashboard in Dittybopper (provisioning to dittybopper)
 
@@ -80,10 +99,17 @@ python3 scripts/migration-stats.py --summary --start 2026-03-19T10:00:00Z
 python3 scripts/migration-stats.py --eviction-counts --start 2026-03-19T10:00:00Z --end 2026-03-19T11:00:00Z
 ```
 
-Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling) from repo root:
+Run monitoring unit tests (`migration-stats.py`, `prom_query_yaml` / `prom-query` YAML handling, data-collector) from repo root:
 
 ```bash
+pip install -r monitoring/tests/requirements.txt   # PyYAML for prom-query tests
 python3 -m unittest discover -s monitoring/tests -v
+```
+
+Dashboard helper unit tests (Node built-in runner, no npm install):
+
+```bash
+node --test monitoring/tests/test_dashboard_lib.js
 ```
 
 ### `compute_euclidean_distance.py`

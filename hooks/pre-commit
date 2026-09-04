@@ -8,8 +8,10 @@
 #   ln -sf ../../hooks/pre-commit .git/hooks/pre-commit
 #
 # Runs yamllint on staged plain YAML (same globs as CI lint-yaml; templates/*.yaml
-# omitted — not valid YAML for yamllint), markdownlint-cli2 on any staged *.md, and
-# bats when vstorm / templates / helpers / workload / tests change.
+# omitted — not valid YAML for yamllint), markdownlint-cli2 on any staged *.md,
+# bats when vstorm / templates / helpers / workload / tests change,
+# python3 unittest (monitoring/tests/) when monitoring collector/scripts/tests change,
+# and node --test for dashboard-lib.js when static UI helpers change.
 
 set -eu
 
@@ -18,6 +20,8 @@ staged=$(git diff --cached --name-only --diff-filter=d)
 
 errors=0
 run_tests=0
+run_py_tests=0
+run_js_tests=0
 yaml_files=()
 md_files=()
 
@@ -40,6 +44,16 @@ while IFS= read -r f; do
         vstorm|templates/*|helpers/*|workload/*|tests/*.bats|tests/helpers.bash)
             run_tests=1 ;;
     esac
+
+    case "$f" in
+        monitoring/data-collector/*|monitoring/tests/*|monitoring/scripts/*)
+            run_py_tests=1 ;;
+    esac
+
+    case "$f" in
+        monitoring/data-collector/static/*|monitoring/tests/test_dashboard_lib.js)
+            run_js_tests=1 ;;
+    esac
 done <<< "$staged"
 
 if ((run_tests)); then
@@ -48,6 +62,26 @@ if ((run_tests)); then
         bats tests/ || { echo "pre-commit: bats FAILED"; errors=$((errors + 1)); }
     else
         echo "pre-commit: WARNING -- bats not found, skipping tests"
+    fi
+fi
+
+if ((run_py_tests)); then
+    if type -p python3 &>/dev/null; then
+        echo "pre-commit: running monitoring Python unit tests..."
+        python3 -m unittest discover -s monitoring/tests -v \
+            || { echo "pre-commit: python unittest FAILED"; errors=$((errors + 1)); }
+    else
+        echo "pre-commit: WARNING -- python3 not found, skipping monitoring tests"
+    fi
+fi
+
+if ((run_js_tests)); then
+    if type -p node &>/dev/null; then
+        echo "pre-commit: running dashboard JS unit tests..."
+        node --test monitoring/tests/test_dashboard_lib.js \
+            || { echo "pre-commit: node --test FAILED"; errors=$((errors + 1)); }
+    else
+        echo "pre-commit: WARNING -- node not found, skipping dashboard JS tests"
     fi
 fi
 

@@ -7,10 +7,10 @@ vstorm produces two types of output files in the `logs/` directory: **log files*
 Every live run (non-dry-run) writes a timestamped log file:
 
 ```
-logs/{BATCH_ID}-{YYYY}-{MM}-{DD}T{HH}:{MM}:{SS}.log
+logs/{BATCH_ID}-{YYYY}-{MM}-{DD}T{HH}:{MM}:{SS}Z.log
 ```
 
-For example: `logs/a3f7b2-2026-02-11T14:30:05.log`
+For example: `logs/a3f7b2-2026-02-11T14:30:05Z.log`
 
 The batch ID is prepended so you can easily find the log for a specific batch:
 
@@ -24,7 +24,7 @@ ls -lt logs/*.log
 
 ### What gets logged
 
-Each log entry is prefixed with a `YYYY-MM-DD HH:MM:SS` timestamp. The log captures the full lifecycle:
+Each log entry is prefixed with a UTC `YYYY-MM-DDTHH:MM:SSZ` timestamp. The log captures the full lifecycle:
 
 1. **Configuration** -- batch ID, VM count, namespaces, storage class, snapshot mode, CPU/memory, cloud-init
 2. **Prerequisite checks** -- oc CLI, OpenShift Virtualization, storage class validation
@@ -33,7 +33,8 @@ Each log entry is prefixed with a `YYYY-MM-DD HH:MM:SS` timestamp. The log captu
 5. **VolumeSnapshot creation** *(snapshot mode only)* -- one per namespace, with readiness polling
 6. **VM creation** -- each VM logged individually with namespace and ID
 7. **VM readiness** *(with --wait)* -- periodic progress updates (`5/10 ready`)
-8. **Completion summary** -- total resources created
+8. **SSH port check** *(with --wait-ssh)* -- probes guest SSH via virtctl port-forward + nc (30s hard fail, batched via `SSH_PROBE_PARALLEL`, default 1000); writes `logs/batch-{id}.ssh-ready.json`
+9. **Completion summary** -- total resources created
 
 ### Log output
 
@@ -42,31 +43,31 @@ Log messages are written to both the terminal (stdout) and the log file simultan
 ### Example log output
 
 ```
-2026-02-11 14:30:05 Log file created: logs/a3f7b2-2026-02-11T14:30:05.log
-2026-02-11 14:30:05 Prerequisites OK: oc CLI, OpenShift Virtualization, storage class 'ocs-storagecluster-ceph-rbd-virtualization', snapshot class 'ocs-storagecluster-rbdplugin-snapclass'
-2026-02-11 14:30:05 Starting resource creation process...
-2026-02-11 14:30:05 Batch ID:      a3f7b2
-2026-02-11 14:30:05 Configuration: 10 VMs across 2 namespaces
-2026-02-11 14:30:05 DataSource:    rhel9 (from openshift-virtualization-os-images)
-2026-02-11 14:30:05 Storage class: ocs-storagecluster-ceph-rbd-virtualization
-2026-02-11 14:30:05 Snapshot mode: enabled (class: ocs-storagecluster-rbdplugin-snapclass)
-2026-02-11 14:30:05 VM CPU cores:  4
-2026-02-11 14:30:05 VM memory:     8Gi
-2026-02-11 14:30:05 Cloud-init:    helpers/cloudinit-default.yaml
-2026-02-11 14:30:05 Run strategy:  Always
-2026-02-11 14:30:05 Creating namespaces...
-2026-02-11 14:30:06 Creating namespace: vm-a3f7b2-ns-1
-2026-02-11 14:30:06 Creating namespace: vm-a3f7b2-ns-2
-2026-02-11 14:30:06 Creating DataVolumes...
+2026-02-11T14:30:05Z Log file created: logs/a3f7b2-2026-02-11T14:30:05Z.log
+2026-02-11T14:30:05Z Prerequisites OK: oc CLI, OpenShift Virtualization, storage class 'ocs-storagecluster-ceph-rbd-virtualization', snapshot class 'ocs-storagecluster-rbdplugin-snapclass'
+2026-02-11T14:30:05Z Starting resource creation process...
+2026-02-11T14:30:05Z Batch ID:      a3f7b2
+2026-02-11T14:30:05Z Configuration: 10 VMs across 2 namespaces
+2026-02-11T14:30:05Z DataSource:    rhel9 (from openshift-virtualization-os-images)
+2026-02-11T14:30:05Z Storage class: ocs-storagecluster-ceph-rbd-virtualization
+2026-02-11T14:30:05Z Snapshot mode: enabled (class: ocs-storagecluster-rbdplugin-snapclass)
+2026-02-11T14:30:05Z VM CPU cores:  4
+2026-02-11T14:30:05Z VM memory:     8Gi
+2026-02-11T14:30:05Z Cloud-init:    helpers/cloudinit-default.yaml
+2026-02-11T14:30:05Z Run strategy:  Always
+2026-02-11T14:30:05Z Creating namespaces...
+2026-02-11T14:30:06Z Creating namespace: a3f7b2-ns-1
+2026-02-11T14:30:06Z Creating namespace: a3f7b2-ns-2
+2026-02-11T14:30:06Z Creating DataVolumes...
 ...
-2026-02-11 14:31:20 All DataVolumes are completed successfully!
-2026-02-11 14:31:20 Creating VolumeSnapshots...
+2026-02-11T14:31:20Z All DataVolumes are completed successfully!
+2026-02-11T14:31:20Z Creating VolumeSnapshots...
 ...
-2026-02-11 14:31:45 Creating VirtualMachines...
-2026-02-11 14:31:45 Creating VirtualMachine 1 for namespace: vm-a3f7b2-ns-1
+2026-02-11T14:31:45Z Creating VirtualMachines...
+2026-02-11T14:31:45Z Creating VirtualMachine 1 for namespace: a3f7b2-ns-1
 ...
-2026-02-11 14:31:50 Resource creation completed successfully!
-2026-02-11 14:31:50 Created 2 namespaces, 2 DataVolumes, 2 VolumeSnapshots, and 10 total VirtualMachines
+2026-02-11T14:31:50Z Resource creation completed successfully!
+2026-02-11T14:31:50Z Created 2 namespaces, 2 DataVolumes, 2 VolumeSnapshots, and 10 total VirtualMachines
 ```
 
 ## Manifest files
@@ -75,35 +76,52 @@ After each successful run, a manifest file is written:
 
 ```
 logs/batch-{BATCH_ID}.manifest
+logs/batch-{BATCH_ID}.manifest.json   # full JSON body POSTed to RESULT_SERVER_URL (when set)
+logs/batch-{BATCH_ID}.dv-created.json # DV/PVC timestamp collect sidecar (when non-empty)
 ```
 
 For example: `logs/batch-a3f7b2.manifest`
 
-The manifest is a YAML-like summary of what was created:
+The text manifest is a YAML-like summary of what was created:
 
 ```yaml
 batch-id: a3f7b2
-created: 2026-02-11T14:30:05
+created: 2026-02-11T14:30:05Z
 basename: rhel9
 total-vms: 10
 total-namespaces: 2
-namespaces: vm-a3f7b2-ns-1, vm-a3f7b2-ns-2
-vms: vm-a3f7b2-ns-1/rhel9-a3f7b2-1, vm-a3f7b2-ns-1/rhel9-a3f7b2-2, ...
+namespaces: a3f7b2-ns-1, a3f7b2-ns-2
+vms: a3f7b2-ns-1/rhel9-a3f7b2-1, a3f7b2-ns-1/rhel9-a3f7b2-2, ...
 ```
+
+When `RESULT_SERVER_URL` is supplied via vstorm `--env RESULT_SERVER_URL=...` (not merely a shell-exported variable), vstorm also POSTs the same kind of inventory to the data-collector as JSON (`record_type: "manifest"`) and **keeps** that body at `logs/batch-{id}.manifest.json` (pretty-printed) for inspection. See [workload result sync and dashboard](workload-result-sync-and-dashboard.md).
+
+### Progress manifests (large-scale DataVolume waits)
+
+Waiting for every DataVolume in a large batch to reach `Ready`/`Bound` can take a long time (thousands of clones). Rather than staying silent until that wait finishes, vstorm POSTs the manifest **incrementally** whenever `RESULT_SERVER_URL` is configured:
+
+1. **Early POST** right after VMs are created — the batch shows up on the dashboard immediately, before any DV timestamps are complete.
+2. **Progress POSTs** while waiting for DataVolumes — sent whenever the pending-DV count changes, throttled to at most once per `MANIFEST_PROGRESS_INTERVAL` seconds (default `60`; override via the environment, e.g. `MANIFEST_PROGRESS_INTERVAL=30 ./vstorm ...`).
+3. **Final POST** after the wait completes (or times out) — the same manifest as before, with the most complete DV/PVC/SSH timestamps available.
+
+Every POST fully replaces the collector's stored manifest for that `batch_id` (no server-side merging), and carries a `"manifest_phase": "progress" | "final"` field so consumers can tell whether DV timestamps may still be incomplete. `logs/batch-{id}.manifest.json` on disk always reflects the **last** POST (progress or final).
 
 ### Listing batches
 
 ```bash
 # List all batch manifests
-ls logs/*.manifest
+ls logs/*.manifest*
 
-# View a specific batch manifest
+# View a specific batch manifest (text summary)
 cat logs/batch-a3f7b2.manifest
+
+# View the exact JSON uploaded to the result server
+cat logs/batch-a3f7b2.manifest.json
 ```
 
 ### Cleanup
 
-When you delete a batch with `--delete`, the manifest file is automatically removed along with the Kubernetes resources. Log files are kept for historical reference.
+When you delete a batch with `--delete`, only Kubernetes resources are removed. All local files under `logs/` (manifests, manifest JSON, DV/SSH sidecars, and timestamped run logs) are kept for historical reference.
 
 ## Dry-run YAML files
 

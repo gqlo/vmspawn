@@ -7,7 +7,7 @@ _vstorm() {
 	local opts=(
 		-n -q -y -h
 		--help
-		--datasource= --dv-url= --storage-size= --storage-class=
+		--datasource= --dv-url= --storage-size= --data-disk-size= --storage-class=
 		--access-mode=
 		--volume-mode=
 		--snapshot-class= --no-snapshot

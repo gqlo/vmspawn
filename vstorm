@@ -19,6 +19,7 @@ DATASOURCE=
 DATASOURCE_NS="openshift-virtualization-os-images"
 DV_URL="http://storage.scalelab.redhat.com/lee/vm-images/rhel9-cloud-init.qcow"
 STORAGE_SIZE="32Gi"
+DATA_DISK_SIZE=""
 STORAGE_CLASS="ocs-storagecluster-ceph-rbd-virtualization"
 ACCESS_MODE="ReadWriteMany"
 VOLUME_MODE="Block"
@@ -39,8 +40,8 @@ VM_SERVICE_INFO=()
 SUBNET="10.132.10.0/16"
 SNAPSHOT_CLASS_SET=0
 SNAPSHOT_EXPLICITLY_SET=0
-BASE_PVC_NAME="vm-base"
-VM_BASENAME="vm"
+BASE_PVC_NAME="base"
+VM_BASENAME=""
 BASENAME_SET=0
 PVC_BASE_NAME_SET=0
 VM_CPU_CORES="1"
@@ -53,18 +54,51 @@ VM_CPU_REQUEST=
 VM_MEMORY_REQUEST=
 CLOUDINIT_FILE=
 GUEST_ENV_ARR=()
-# Generate a random 6-character hex batch ID (16.7M unique values)
+# Default collector ingest URL when --env RESULT_SERVER_URL=… is omitted.
+# Override with --env RESULT_SERVER_URL=…, or disable with --env RESULT_SERVER_URL=
+DEFAULT_RESULT_SERVER_URL="http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results"
+# Original argv (for manifest cmdline); set before getopts mutates "$@"
+VSTORM_ARGV=("$@")
+# Epoch when logging/setup starts; filled in setup_logging
+STARTED_AT=
+# Ordered VM list for this batch (survives wait_for_all_vms unsetting expected_vms)
+BATCH_VMS_ORDERED=()
+# Auto batch ID: "vstorm-" + 6 hex chars so it always starts with letters (YAML-safe).
+# Override with --batch-id=ID.
 if [[ -z "$(type -t xxd)" ]] ; then
     echo "Error: xxd command is not installed (needed to generate batch IDs)"
     exit 1
 fi
-BATCH_ID=$(head -c 3 /dev/urandom | xxd -p)
+BATCH_ID="vstorm-$(head -c 3 /dev/urandom | xxd -p)"
 BATCH_ID_SET=0
 NUM_VMS=1
 NUM_VMS_PER_NAMESPACE=
 NUM_NAMESPACES=1
+# 0 (default): create/wait all namespaces together (current behavior).
+# 1: fully create + wait one namespace (DVs, snapshots, VMs -> Running)
+# before starting the next one.
+NS_SEQUENTIAL_CREATION=0
 RUN_STRATEGY=Always
 WAIT=0
+# After VMs are Running, probe guest SSH (port-forward + nc). 30s hard fail.
+WAIT_SSH=0
+SSH_READY_TIMEOUT=30
+# Max concurrent virtctl port-forward probes (override: SSH_PROBE_PARALLEL=N).
+SSH_PROBE_PARALLEL=1000
+# Max concurrent `virtctl stop` calls before delete (override: STOP_PARALLEL=N,
+# default 200 -- read via "${STOP_PARALLEL:-200}" at the call site; no
+# top-level default assignment here, since that would unconditionally
+# overwrite an env-supplied override before it's ever read).
+# Max seconds to wait for VMs to actually reach Stopped after `virtctl stop`
+# before giving up and proceeding with delete anyway (override:
+# STOP_WAIT_TIMEOUT=N, default 300 -- same reasoning, read via
+# "${STOP_WAIT_TIMEOUT:-300}" at the call site).
+# JSON blob for manifest: vm_ssh_ready / vm_ssh_failed / ssh_ready_*
+BATCH_SSH_JSON=
+# Set to 1 by wait_for_batch_datavolumes_for_timestamps if its deadline is hit
+# with DVs still pending; surfaced on the manifest as dv_wait_timed_out so a
+# "final" manifest can be distinguished from one truncated by the wait timeout.
+DV_WAIT_TIMED_OUT=0
 CONTAINERDISK_IMAGE=
 RECREATE_EXISTING_VMS=0
 DELETE_BATCH=
@@ -74,6 +108,14 @@ PROFILE_TARGET=
 PROFILER_BIN=
 PROFILER_DOWNLOAD_URL="https://github.com/gqlo/vstorm/releases/latest/download/cluster-profiler-linux-amd64"
 declare -A expected_vms=()
+# VMs that already exist on the cluster (populated once by create_virtualmachines
+# on its first call, reused across --ns-sequential-creation groups so we don't re-list
+# every group).
+declare -A existing_vms=()
+# Set to 1 once create_virtualmachines has built its per-run templates
+# (cloud-init, data disk, existing_vms, ...) so repeated calls -- one per
+# --ns-sequential-creation group -- reuse them instead of recomputing/re-listing.
+VM_TEMPLATES_READY=0
 # Validated template paths, keyed by role.  Filled by
 # validate_required_templates; read by creation functions.
 declare -A TEMPLATE_CACHE=()
@@ -230,6 +272,13 @@ validate_args() {
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] && { [[ -n "$DATASOURCE" ]] || [[ -n "$DV_URL" ]] ; } ; then
 	    fatal "--containerdisk cannot be combined with --datasource or --dv-url"
 	fi
+
+	# Blank data disk is opt-in via --data-disk-size=N; 0 clears it if set.
+	if [[ "$DATA_DISK_SIZE" == "0" ]] ; then
+	    DATA_DISK_SIZE=""
+	elif [[ -n "$DATA_DISK_SIZE" ]] && [[ ! "$DATA_DISK_SIZE" =~ ^[0-9]+([KMGT]i?)?$ ]]; then
+	    usage_error "Invalid --data-disk-size '$DATA_DISK_SIZE' (example: 20G or 50Gi; omit or use 0 for none)"
+	fi
     fi
 }
 
@@ -246,11 +295,15 @@ derive_defaults() {
     # Always keep BASE_PVC_NAME in sync with VM_BASENAME unless the user
     # explicitly set --pvc-base-name.  Previously this derivation only ran
     # inside the DATASOURCE block, so --dv-url + --basename left
-    # BASE_PVC_NAME at the default "vm-base" while the DV template created
+    # BASE_PVC_NAME at the default while the DV template created
     # a PVC named "{VM_BASENAME}-base", causing VolumeSnapshot to reference
-    # a non-existent PVC.
+    # a non-existent PVC.  Empty basename → "base" (no leading dash).
     if (( ! PVC_BASE_NAME_SET )) ; then
-	BASE_PVC_NAME="${VM_BASENAME}-base"
+	if [[ -n "$VM_BASENAME" ]]; then
+	    BASE_PVC_NAME="${VM_BASENAME}-base"
+	else
+	    BASE_PVC_NAME="base"
+	fi
     fi
 
     # Auto-disable snapshots when a custom storage class is used without
@@ -272,7 +325,8 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         -q                      Only list objects to be created
         --datasource=NAME       Clone from OCP DataSource (overrides default URL)
         --dv-url=URL            Import disk from URL (default: $DV_URL)
-        --storage-size=N        Storage size ($STORAGE_SIZE)
+        --storage-size=N        Root / OS disk size ($STORAGE_SIZE)
+        --data-disk-size=N      Blank data disk as vdb (opt-in; e.g. 20G; 0=none)
         --storage-class=class   Storage class ($STORAGE_CLASS)
                                 | | | (auto-disables snapshots unless
                                 | | | --snapshot-class is also provided)
@@ -282,10 +336,11 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | (default: $VOLUME_MODE)
         --snapshot-class=class  Snapshot class ($SNAPSHOT_CLASS); turns snapshot mode on
         --no-snapshot           Clone VMs directly from PVC (no snapshot)
-        --pvc-base-name=name    base PVC name ($BASE_PVC_NAME)
+        --pvc-base-name=name    base PVC name (default: {basename}-base or base)
         --batch-id=ID           Batch ID for this run ($BATCH_ID)
                                 (auto-generated if not specified)
-        --basename=name         VM basename ($VM_BASENAME)
+        --basename=name         VM name prefix (default: none; auto from
+                                | | | --datasource / --containerdisk)
         --cores=N               VM CPU cores ($VM_CPU_CORES)
         --memory=N              VM memory size ($VM_MEMORY)
         --firmware=MODE         Guest boot firmware: bios or efi (default: $VM_FIRMWARE)
@@ -294,6 +349,12 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
         --vms=N                 Number of VMs ($NUM_VMS)
         --vms-per-namespace=N   Number of VMs per namespace (not set)
         --namespaces=N          Number of namespaces ($NUM_NAMESPACES)
+        --ns-sequential-creation[=true|false]
+                                Namespace creation order (default: false)
+                                | | | false: create/wait all namespaces together
+                                | | | true: fully create + wait one namespace
+                                | | | (DVs, snapshots, VMs -> Running) before
+                                | | | starting the next one
         --udn-l2[=CIDR]         Layer 2 primary UDN (default subnet: $SUBNET)
         --service[=TYPE[:PORT[:TARGET_PORT]]]
                                 Expose VMs in each namespace via Service
@@ -306,19 +367,28 @@ Usage: $0 [options] [number_of_vms (default $NUM_VMS) [number_of_namespaces (def
                                 | | | Use with --batch-id to update an existing
                                 | | | batch (e.g. to resize CPU or memory)
         --wait[=true|false]     Wait for VMs to reach Running (default: false)
+        --wait-ssh[=true|false] After Running, probe guest SSH port via virtctl
+                                | | | port-forward + nc (implies --wait).
+                                | | | Fails the run if any VM is not up within
+                                | | | ${SSH_READY_TIMEOUT}s (default: false)
         --containerdisk[=IMAGE] Use a container disk image instead of PVC-backed
                                 | | | storage -- no storage class required.
                                 | | | Default image:
                                 | | | quay.io/containerdisks/fedora:latest
         --cloudinit=FILE        Inject cloud-init user-data from FILE
                                 into each VM (e.g. workload/cloudinit-stress-ng-workload.yaml)
-        --env KEY=VAL           Set env in guest (repeatable; written to /etc/default/vstorm-guest-env)
+        --env KEY=VAL           Set env in guest (repeatable; written to /etc/default/vstorm-guest-env).
+                                | | | RESULT_SERVER_URL defaults to the lab collector
+                                | | | (${DEFAULT_RESULT_SERVER_URL}); override or set
+                                | | | RESULT_SERVER_URL= (empty) to disable POSTs.
         --profile[=COMPONENT]   Profile KubeVirt control plane during
                                 | | | VM creation (CPU, memory, goroutine, etc.)
                                 | | | COMPONENT: virt-api, virt-controller,
                                 | | | virt-handler, virt-operator (default: all)
         --delete=BATCH_ID       Delete all resources for the given batch
-        --delete-all            Delete ALL vstorm batches on the cluster
+        --delete-all            Delete ALL vstorm batches and other VM
+                                | | | namespaces on the cluster (excludes
+                                | | | openshift/kube system namespaces)
         -y / --yes              Skip confirmation prompt for delete operations
     Specify either --vms (total VMs) or --vms-per-namespace.
     --vms-per-namespace takes precedence.
@@ -347,6 +417,7 @@ process_option() {
 	dvurl)     DV_URL=$value; DATASOURCE= ;;
 	storagecl*) STORAGE_CLASS=$value; STORAGE_CLASS_SET=1 ;;
 	storagesi*|storage) STORAGE_SIZE=$value ;;
+	datadisksi*|datadisksize) DATA_DISK_SIZE=$value ;;
 	accessmod*|accessmode) ACCESS_MODE=$value; ACCESS_MODE_SET=1 ;;
 	volumemod*|volumemode) VOLUME_MODE=$value; VOLUME_MODE_SET=1 ;;
 	snapshotcl*) SNAPSHOT_CLASS=$value; SNAPSHOT_CLASS_SET=1; USE_SNAPSHOT=1; SNAPSHOT_EXPLICITLY_SET=1 ;;
@@ -366,6 +437,14 @@ process_option() {
 	vmsper*)   NUM_VMS_PER_NAMESPACE=$value ;;
 	vms*)	   NUM_VMS=$value ;;
 	namesp*)   NUM_NAMESPACES=$value ;;
+	nssequentialcreation) case "${value,,}" in
+		       '') NS_SEQUENTIAL_CREATION=1 ;;  # --ns-sequential-creation with no value
+		       0|1|true|false|yes|no|on|off) case "${value,,}" in
+		           0|false|no|off) NS_SEQUENTIAL_CREATION=0 ;;
+		           *) NS_SEQUENTIAL_CREATION=1 ;;
+		           esac ;;
+		       *) fatal "Invalid --ns-sequential-creation value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
+		   esac ;;
 	udnl2)
 	    UDN_L2=1
 	    if [[ -n "$value" ]]; then
@@ -385,8 +464,24 @@ process_option() {
 		           esac ;;
 		       *) fatal "Invalid --wait value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
 		   esac ;;
+	waitssh)   case "${value,,}" in
+		       '') WAIT_SSH=1; WAIT=1 ;;
+		       0|1|true|false|yes|no|on|off) case "${value,,}" in
+		           0|false|no|off) WAIT_SSH=0 ;;
+		           *) WAIT_SSH=1; WAIT=1 ;;
+		           esac ;;
+		       *) fatal "Invalid --wait-ssh value '$value'; use true, false, 1, 0, yes, no, on, or off" ;;
+		   esac ;;
 	cloudinit) CLOUDINIT_FILE=$value ;;
-	env)       GUEST_ENV_ARR+=("$value") ;;
+	env)
+	    # Keep full KEY=VAL (including KEY= and KEY=a=b). Do not use $value from
+	    # IFS== read — a trailing '=' is dropped (RESULT_SERVER_URL= → RESULT_SERVER_URL).
+	    if [[ "$optstr" == env=* ]]; then
+		GUEST_ENV_ARR+=("${optstr#env=}")
+	    else
+		GUEST_ENV_ARR+=("$value")
+	    fi
+	    ;;
 	containerdisk) CONTAINERDISK_IMAGE=${value:-quay.io/containerdisks/fedora:latest}
 		   DATASOURCE=; DV_URL= ;;
 	createex*) RECREATE_EXISTING_VMS=1 ;;
@@ -450,14 +545,14 @@ _log_message() {
 	local line
 	while IFS= read -r line ; do
 	    if ((wet_run)) ; then
-		printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$line"
+		TZ=UTC printf "%(%Y-%m-%dT%H:%M:%S)TZ %s\n" -1 "$line"
 	    else
 		echo "$line"
 	    fi
 	done
     else
 	if ((wet_run)) ; then
-	    printf "%(%Y-%m-%d %H:%M:%S)T %s\n" -1 "$*"
+	    TZ=UTC printf "%(%Y-%m-%dT%H:%M:%S)TZ %s\n" -1 "$*"
 	else
 	    echo "$*"
 	fi
@@ -473,7 +568,8 @@ log_message() {
 }
 
 setup_logging() {
-    LOG_FILE="${LOG_DIR}/${BATCH_ID}-${VM_BASENAME}-$(date +%Y-%m-%dT%H:%M:%S).log"
+    STARTED_AT=$(date -u +%s)
+    LOG_FILE="${LOG_DIR}/$(join_name "$BATCH_ID" "$VM_BASENAME")-$(date -u +%Y-%m-%dT%H:%M:%SZ).log"
     if ((wet_run)) ; then
 	if [[ ! -d "$LOG_DIR" ]]; then
 	    mkdir -p "$LOG_DIR"
@@ -562,8 +658,8 @@ check_prerequisites() {
 	    ((errors++))
 	fi
 
-	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	    if ((USE_SNAPSHOT)) ; then
+	if [[ -z "$CONTAINERDISK_IMAGE" || -n "$DATA_DISK_SIZE" ]] ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] && ((USE_SNAPSHOT)) ; then
 		if ! oc get ns openshift-storage >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} OpenShift Data Foundation is not installed (openshift-storage namespace not found)"
 		    echo "  ${C_WARN}Hint:${C_RST} use --no-snapshot to skip VolumeSnapshot-based cloning"
@@ -578,7 +674,7 @@ check_prerequisites() {
 		((errors++))
 	    fi
 
-	    if ((USE_SNAPSHOT)) ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] && ((USE_SNAPSHOT)) ; then
 		if ! oc get volumesnapshotclass "$SNAPSHOT_CLASS" >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} volume snapshot class ${C_VAL}'$SNAPSHOT_CLASS'${C_RST} not found"
 		    echo "  Available volume snapshot classes:"
@@ -588,7 +684,7 @@ check_prerequisites() {
 		fi
 	    fi
 
-	    if [[ -n "$DATASOURCE" ]] ; then
+	    if [[ -z "$CONTAINERDISK_IMAGE" && -n "$DATASOURCE" ]] ; then
 		if ! oc get datasource "$DATASOURCE" -n "$DATASOURCE_NS" >/dev/null 2>&1 ; then
 		    echo "${C_ERR}Error:${C_RST} DataSource ${C_VAL}'$DATASOURCE'${C_RST} not found in namespace ${C_VAL}'$DATASOURCE_NS'${C_RST}"
 		    echo "  Available DataSources:"
@@ -762,6 +858,48 @@ validate_delete_and_profile_options() {
     fi
 }
 
+# Apply workload/cloudinit-default.yaml when --cloudinit was omitted.
+# Safe to call more than once; no-ops if CLOUDINIT_FILE is already set.
+apply_default_cloudinit_if_needed() {
+    if [[ -n "$CLOUDINIT_FILE" ]] ; then
+	return 0
+    fi
+    CLOUDINIT_FILE="$(dirname "$0")/workload/cloudinit-default.yaml"
+    if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
+	fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
+    fi
+    log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST}, boot timestamp only)"
+}
+
+# Inject DEFAULT_RESULT_SERVER_URL unless the user already passed RESULT_SERVER_URL=
+# (including empty to disable). Safe to call more than once.
+ensure_default_result_server_url() {
+    local e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL|RESULT_SERVER_URL=*) return 0 ;;
+	esac
+    done
+    GUEST_ENV_ARR+=("RESULT_SERVER_URL=${DEFAULT_RESULT_SERVER_URL}")
+}
+
+# True (0) if a non-empty RESULT_SERVER_URL is configured (default or --env).
+# Used to skip expensive cluster-wide DV/PVC/VS collects for progress manifest
+# POSTs when no one is listening.
+_result_server_url_configured() {
+    ensure_default_result_server_url
+    local e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL=*)
+		[[ -n "${e#RESULT_SERVER_URL=}" ]] && return 0
+		return 1
+		;;
+	esac
+    done
+    return 1
+}
+
 prepare_creation() {
     # Skip creation-specific checks when deleting
     [[ -n "$DELETE_BATCH" ]] || ((DELETE_ALL)) && return
@@ -775,6 +913,7 @@ prepare_creation() {
     fi
 
     validate_required_templates
+    apply_default_cloudinit_if_needed
 
     # Calculate VMs per namespace
     VMS_PER_NAMESPACE=$((NUM_VMS / NUM_NAMESPACES))
@@ -793,12 +932,14 @@ Creating resources for:
   Access Mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$ACCESS_MODE"; fi)
   Volume Mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; else echo "$VOLUME_MODE"; fi)
   Snapshot mode: $(if [[ -n "$CONTAINERDISK_IMAGE" ]]; then echo "N/A (container disk)"; elif ((USE_SNAPSHOT)); then echo "enabled (class: $SNAPSHOT_CLASS)"; elif [[ -n "$DATASOURCE" ]]; then echo "disabled (direct DataSource clone)"; else echo "disabled (direct PVC clone)"; fi)
-  VM Basename: $VM_BASENAME
+  VM Basename: ${VM_BASENAME:-"(none)"}
   VM CPU Cores: $VM_CPU_CORES
   VM Memory: $VM_MEMORY
   Cloud-init: ${CLOUDINIT_FILE:-none}
   UDN L2: $(if ((UDN_L2)); then echo "enabled (subnet: $SUBNET)"; else echo "disabled"; fi)
   Service: $(if ((VM_SERVICE)); then local _svc_ports="port $VM_SERVICE_PORT"; if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then _svc_ports="port $VM_SERVICE_PORT -> targetPort $VM_SERVICE_TARGET_PORT"; fi; if [[ "$VM_SERVICE_TYPE" == clusterip ]]; then echo "enabled (ClusterIP, $_svc_ports)"; else echo "enabled (NodePort, $_svc_ports, node ports from $VM_SERVICE_NODEPORT_BASE, auto-incremented per service)"; fi; else echo "disabled"; fi)
+  Wait for Running: $(if ((WAIT)); then echo "yes"; else echo "no"; fi)
+  Wait for SSH: $(if ((WAIT_SSH)); then echo "yes (${SSH_READY_TIMEOUT}s hard fail)"; else echo "no"; fi)
 
 EOF
 }
@@ -820,13 +961,26 @@ oc_apply() {
     fi
 }
 
+# Join non-empty name parts with '-'.
+join_name() {
+    local out= part
+    for part in "$@"; do
+	[[ -z "$part" ]] && continue
+	if [[ -n "$out" ]]; then
+	    out+="-$part"
+	else
+	    out="$part"
+	fi
+    done
+    printf '%s' "$out"
+}
+
 # Replace templated variables in YAML files with their values.
 process_template() {
     local file=$1
     local -a sed_args=(
         -e "s/{vm-ns}/$namespace/g"
         -e "s/{vm-id}/${VM_ID:-}/g"
-        -e "s/{VM_BASENAME}/$VM_BASENAME/g"
         -e "s/{BATCH_ID}/$BATCH_ID/g"
         -e "s|{DV_URL}|$DV_URL|g"
         -e "s/{DATASOURCE}/${DATASOURCE:-}/g"
@@ -848,6 +1002,14 @@ process_template() {
         -e "s/{SVC_TARGET_PORT}/${VM_SERVICE_TARGET_PORT}/g"
         -e "s/{SSH_NODEPORT_LINE}/${SSH_NODEPORT_LINE:-}/g"
     )
+    # Empty default basename: strip "{VM_BASENAME}-" so resource names
+    # become {BATCH_ID}-{id}, base, cloudinit, etc. Bare "{VM_BASENAME}"
+    # (labels/selectors) falls back to BATCH_ID so domain matching still works.
+    if [[ -n "$VM_BASENAME" ]]; then
+	sed_args+=(-e "s/{VM_BASENAME}/$VM_BASENAME/g")
+    else
+	sed_args+=(-e "s/{VM_BASENAME}-//g" -e "s/{VM_BASENAME}/$BATCH_ID/g")
+    fi
 
     sed "${sed_args[@]}" "$file"
 }
@@ -877,6 +1039,7 @@ indent_token() {
 ################################################################
 # Function to create namespaces
 create_namespaces() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Creating namespaces...${C_RST}"
     local -i ns
     local ns_file="${TEMPLATE_CACHE[namespace]}"
@@ -891,8 +1054,8 @@ create_namespaces() {
 	    if [[ -n "$namespace" ]] ; then existing_namespaces["$namespace"]=1; fi
 	done <<< "$(oc get namespace --no-headers 2>/dev/null | awk '{print $1}')"
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
 
         # Check if namespace already exists
 		if [[ -n "${existing_namespaces[$namespace]:-}" ]] ; then
@@ -951,22 +1114,25 @@ next_service_nodeport() {
 }
 
 create_vm_service() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     local svc_file="${TEMPLATE_CACHE[vm-service]}"
     local -i ns
     local svc_name node_port_info
-    VM_SERVICE_INFO=()
-    if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
-	init_service_nodeport_next
+    if ((ns_start == 1)); then
+	VM_SERVICE_INFO=()
+	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
+	    init_service_nodeport_next
+	fi
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-	namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+	namespace="${BATCH_ID}-ns-${ns}"
 	if [[ "$VM_SERVICE_TYPE" == nodeport ]]; then
 	    SVC_TYPE=NodePort
 	    SVC_NAME_SUFFIX=nodeport
 	    next_service_nodeport
 	    SSH_NODEPORT_LINE="    nodePort: $SSH_NODEPORT"
 	    node_port_info=$SSH_NODEPORT
-	    svc_name="svc-nodeport-${VM_BASENAME}-${BATCH_ID}"
+	    svc_name="svc-nodeport-$(join_name "$VM_BASENAME" "$BATCH_ID")"
 	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
 		log_message "Creating NodePort Service ${C_VAL}$svc_name${C_RST} on nodePort ${C_VAL}$SSH_NODEPORT${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	    else
@@ -977,7 +1143,7 @@ create_vm_service() {
 	    SVC_NAME_SUFFIX=clusterip
 	    SSH_NODEPORT_LINE=
 	    node_port_info=
-	    svc_name="svc-clusterip-${VM_BASENAME}-${BATCH_ID}"
+	    svc_name="svc-clusterip-$(join_name "$VM_BASENAME" "$BATCH_ID")"
 	    if (( VM_SERVICE_TARGET_PORT != VM_SERVICE_PORT )); then
 		log_message "Creating ClusterIP Service ${C_VAL}$svc_name${C_RST} (port ${C_VAL}$VM_SERVICE_PORT${C_RST} -> targetPort ${C_VAL}$VM_SERVICE_TARGET_PORT${C_RST}) for VMs in namespace: ${C_VAL}$namespace${C_RST}"
 	    else
@@ -992,7 +1158,8 @@ create_vm_service() {
 # DataVolumes
 check_datavolume_status() {
     local namespace=$1
-    local datavolume_name="${VM_BASENAME}-base"
+    local datavolume_name
+    datavolume_name="$(join_name "$VM_BASENAME" "base")"
 
     log_message "Checking DataVolume status in namespace: ${C_VAL}$namespace${C_RST}"
 
@@ -1023,11 +1190,12 @@ check_datavolume_status() {
 
 # Function to wait for all DataVolumes to complete
 wait_for_all_datavolumes() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Waiting for all DataVolumes to complete...${C_RST}"
 
     local -i ns
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_datavolume_status "$namespace"; then
             fatal "Failed to create DataVolume in namespace ${C_VAL}$namespace${C_RST}"
@@ -1037,7 +1205,121 @@ wait_for_all_datavolumes() {
     log_message "${C_OK}All DataVolumes are completed successfully!${C_RST}"
 }
 
+# Wait for per-VM / data-disk DataVolumes before timestamp collect.
+# Base DVs are already waited during create_datavolumes; blank data DVs and
+# snapshot-clone DVs appear only after VM apply. Without --wait, create used to
+# collect immediately and leave data_dv_ready / data_pvc_bound empty in CSV.
+#
+# At large scale this wait can take a long time, so — when RESULT_SERVER_URL
+# is configured — vstorm also POSTs incremental "progress" manifests as the
+# pending DV count changes (throttled by MANIFEST_PROGRESS_INTERVAL, default
+# 60s), instead of leaving the collector/dashboard blind until this returns.
+# The caller still does a final collect + POST after this returns.
+wait_for_batch_datavolumes_for_timestamps() {
+    DV_WAIT_TIMED_OUT=0
+    if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
+	return 0
+    fi
+    # Containerdisk with no blank data disk: no extra DVs to wait on.
+    if [[ -n "$CONTAINERDISK_IMAGE" && -z "$DATA_DISK_SIZE" ]]; then
+	return 0
+    fi
+
+    local ns_json='[]'
+    if ((NUM_NAMESPACES > 0)); then
+	ns_json=$(BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"{bid}-ns-{i}" for i in range(1,n+1)]))' 2>/dev/null || echo '[]')
+    fi
+
+    local -i progress_interval="${MANIFEST_PROGRESS_INTERVAL:-60}"
+    local -i progress_enabled=0
+    _result_server_url_configured && progress_enabled=1
+    local -i last_progress_post=-1000000 last_progress_pending=-1
+
+    log_message "${C_BOLD}Waiting for batch DataVolumes to Succeed (timestamp collect)...${C_RST}"
+    local -i deadline=$((SECONDS + 1800))
+    local pending_msg="" pending_n=0
+    while (( SECONDS < deadline )); do
+	pending_msg=$(
+	    BID="$BATCH_ID" NS_JSON="$ns_json" python3 - <<'PY'
+import json, os, subprocess
+
+batch_id = (os.environ.get("BID") or "").strip()
+try:
+    ns_set = set(json.loads(os.environ.get("NS_JSON") or "[]"))
+except json.JSONDecodeError:
+    ns_set = set()
+
+try:
+    raw = subprocess.check_output(
+        ["oc", "get", "datavolume", "-A", "-o", "json"],
+        stderr=subprocess.DEVNULL,
+        text=True,
+    )
+    doc = json.loads(raw) if raw.strip() else {}
+except Exception:
+    print("oc-error")
+    raise SystemExit(0)
+
+pending = []
+for it in doc.get("items") or []:
+    md = it.get("metadata") or {}
+    name = md.get("name") or ""
+    ns = md.get("namespace") or ""
+    labels = md.get("labels") or {}
+    if not name:
+        continue
+    in_batch = (batch_id and str(labels.get("batch-id") or "") == batch_id) or (ns in ns_set)
+    if not in_batch:
+        continue
+    phase = str(((it.get("status") or {}).get("phase") or "") or "Pending")
+    ready = False
+    bound = False
+    for c in ((it.get("status") or {}).get("conditions") or []):
+        if not isinstance(c, dict):
+            continue
+        if c.get("type") == "Ready" and c.get("status") == "True":
+            ready = True
+        if c.get("type") == "Bound" and c.get("status") == "True":
+            bound = True
+    if phase == "Failed":
+        pending.append(f"{ns}/{name}:Failed")
+    elif phase != "Succeeded" and not (ready and bound):
+        pending.append(f"{ns}/{name}:{phase or 'Pending'}")
+
+if not pending:
+    print("0")
+else:
+    print(f"{len(pending)}:{','.join(pending[:5])}")
+PY
+	)
+	if [[ "$pending_msg" == "0" ]]; then
+	    log_message "${C_OK}Batch DataVolumes Succeeded (Ready/Bound) — collecting timestamps${C_RST}"
+	    return 0
+	fi
+	if [[ "$pending_msg" == "oc-error" ]]; then
+	    log_message "${C_WARN}Could not list DataVolumes; collecting timestamps without wait${C_RST}"
+	    return 0
+	fi
+	pending_n=${pending_msg%%:*}
+	log_message "Waiting for ${C_VAL}${pending_n}${C_RST} DataVolume(s): ${C_WARN}${pending_msg#*:}${C_RST}"
+	if ((progress_enabled)) && ((pending_n != last_progress_pending)) \
+	    && ((SECONDS - last_progress_post >= progress_interval)); then
+	    local dv_created_json
+	    dv_created_json=$(collect_batch_dv_created_json)
+	    BATCH_DV_CREATED_JSON="$dv_created_json"
+	    post_batch_result_metadata progress
+	    last_progress_post=$SECONDS
+	    last_progress_pending=$pending_n
+	fi
+	sleep 5
+    done
+    log_message "${C_WARN}Timed out waiting for DataVolumes; collecting timestamps anyway${C_RST}"
+    DV_WAIT_TIMED_OUT=1
+    return 0
+}
+
 create_datavolumes() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     # In no-snapshot mode with a DataSource, each VM's DataVolumeTemplate
     # clones directly from the DataSource -- no intermediate base DV needed.
     if [[ -n "$DATASOURCE" ]] && ! ((USE_SNAPSHOT)) ; then
@@ -1048,8 +1330,8 @@ create_datavolumes() {
     log_message "${C_BOLD}Creating DataVolumes...${C_RST}"
     local -i ns
     local dv_file="${TEMPLATE_CACHE[dv]}"
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
 
         log_message "Creating DataVolume for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$dv_file" | oc_apply
@@ -1058,7 +1340,7 @@ create_datavolumes() {
 	if ((WAIT_FOR_FIRST_CONSUMER)) ; then
 	    log_message "Skipping DataVolume wait (${C_VAL}WaitForFirstConsumer${C_RST}); VMs will trigger PVC binding."
 	else
-	    wait_for_all_datavolumes
+	    wait_for_all_datavolumes "$ns_start" "$ns_end"
 	fi
     fi
 }
@@ -1067,7 +1349,8 @@ create_datavolumes() {
 # VolumeSnapshots
 check_volumesnapshot_status() {
     local namespace=$1
-    local snapshot_name="${VM_BASENAME}-${namespace}"
+    local snapshot_name
+    snapshot_name="$(join_name "$VM_BASENAME" "$namespace")"
 
     log_message "Checking VolumeSnapshot status in namespace: ${C_VAL}$namespace${C_RST}"
 
@@ -1091,11 +1374,12 @@ check_volumesnapshot_status() {
 
 # Function to wait for all VolumeSnapshots to be ready
 wait_for_all_volumesnapshots() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Waiting for all VolumeSnapshots to be ready...${C_RST}"
 
     local -i ns
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
 
         if ! check_volumesnapshot_status "$namespace"; then
             fatal "Failed to create VolumeSnapshot in namespace ${C_VAL}$namespace${C_RST}"
@@ -1106,15 +1390,433 @@ wait_for_all_volumesnapshots() {
 }
 
 create_volumesnapshots() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}"
     log_message "${C_BOLD}Creating VolumeSnapshots...${C_RST}"
     local -i ns
     local vs_file="${TEMPLATE_CACHE[volumesnapshot]}"
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
         log_message "Creating VolumeSnapshot for namespace: ${C_VAL}$namespace${C_RST}"
         process_template "$vs_file" | oc_apply
     done
-    if ((wet_run)) ; then wait_for_all_volumesnapshots; fi
+    if ((wet_run)) ; then wait_for_all_volumesnapshots "$ns_start" "$ns_end"; fi
+}
+
+################################################################
+# Workload-result collector: POST run manifest (optional)
+# Finds RESULT_SERVER_URL in GUEST_ENV_ARR; no-ops if unset.
+
+# Best-effort: DataVolume + PVC creationTimestamps (and DV Ready/completed) for this batch.
+# Never fails the create path. DV/PVC lists are scoped to batch namespaces (not label-only),
+# because per-VM snapshot clone DVs and CDI PVCs often lack batch-id labels.
+collect_batch_dv_created_json() {
+    if [[ -z "$(type -t oc)" ]] || [[ -z "$(type -t python3)" ]]; then
+	echo '{}'
+	return 0
+    fi
+
+    local vm_file ns_file
+    vm_file=$(mktemp)
+    ns_file=$(mktemp)
+    if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
+	printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))' > "$vm_file" 2>/dev/null \
+	    || printf '%s\n' '[]' > "$vm_file"
+    else
+	printf '%s\n' '[]' > "$vm_file"
+    fi
+
+    if ((NUM_NAMESPACES > 0)); then
+	BID="$BATCH_ID" N="$NUM_NAMESPACES" python3 -c 'import json,os; bid=os.environ["BID"]; n=int(os.environ["N"]); print(json.dumps([f"{bid}-ns-{i}" for i in range(1,n+1)]))' > "$ns_file" 2>/dev/null \
+	    || printf '%s\n' '[]' > "$ns_file"
+    else
+	printf '%s\n' '[]' > "$ns_file"
+    fi
+
+    # Write cluster-wide DV/PVC JSON to temp files.
+    # 1) Avoid Linux MAX_ARG_STRLEN (~128KiB) — large env values cause
+    #    "Argument list too long" and a silent {} fallback (empty CSV columns).
+    # 2) Avoid bash "${var:-{}}" which parses as default "{" plus a literal "}"
+    #    and corrupts JSON with a trailing brace.
+    local dv_file pvc_file vs_file py_rc=0 out_json=""
+    dv_file=$(mktemp)
+    pvc_file=$(mktemp)
+    vs_file=$(mktemp)
+    if ! oc get datavolume -A -o json > "$dv_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$dv_file"
+    fi
+    if ! oc get pvc -A -o json > "$pvc_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$pvc_file"
+    fi
+    if ! oc get volumesnapshot -A -o json > "$vs_file" 2>/dev/null; then
+	printf '%s\n' '{}' > "$vs_file"
+    fi
+    local collector
+    collector="$(cd "$(dirname "$0")" && pwd)/monitoring/data-collector/collect_batch_dv_created.py"
+    out_json=$(
+	BASENAME="$VM_BASENAME" BATCH_ID="$BATCH_ID" \
+	VM_JSON_FILE="$vm_file" NS_JSON_FILE="$ns_file" \
+	DV_JSON_FILE="$dv_file" PVC_JSON_FILE="$pvc_file" VS_JSON_FILE="$vs_file" \
+	python3 "$collector" 2>/dev/null) || py_rc=$?
+    rm -f "$dv_file" "$pvc_file" "$vs_file" "$vm_file" "$ns_file"
+    if [[ "$py_rc" -ne 0 || -z "$out_json" ]]; then
+	echo '{}'
+	return 0
+    fi
+    printf '%s\n' "$out_json"
+}
+
+post_batch_result_metadata() {
+    # phase: "final" (default; last POST of the run) or "progress" (interim
+    # POST while still waiting on DataVolumes at scale — see
+    # wait_for_batch_datavolumes_for_timestamps). Both build/POST the full
+    # manifest; the collector replaces the previous manifest either way.
+    local phase="${1:-final}"
+    ensure_default_result_server_url
+    local url="" token="" e
+    for e in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+	case "$e" in
+	    RESULT_SERVER_URL=*) url="${e#RESULT_SERVER_URL=}" ;;
+	    RESULT_SERVER_TOKEN=*) token="${e#RESULT_SERVER_TOKEN=}" ;;
+	esac
+    done
+    [[ -n "$url" ]] || return 0
+    if [[ -z "$(type -t curl)" ]]; then
+	log_message "${C_WARN}RESULT_SERVER_URL set but curl missing; skip manifest POST${C_RST}"
+	return 0
+    fi
+    if [[ -z "$(type -t python3)" ]]; then
+	log_message "${C_WARN}RESULT_SERVER_URL set but python3 missing; skip manifest POST${C_RST}"
+	return 0
+    fi
+
+    local stopped_at reported_at
+    stopped_at=$(date -u +%s)
+    reported_at=$stopped_at
+    local started_at="${STARTED_AT:-$stopped_at}"
+
+    local ns_json vm_json guest_env_json cmdline_json log_text=""
+    local dv_created_json="${BATCH_DV_CREATED_JSON:-}"
+    if [[ -z "$dv_created_json" ]]; then
+	dv_created_json=$(collect_batch_dv_created_json)
+    fi
+    # Env must prefix python3 inside $(); bash does not pass VAR=val into ns_json=$(...).
+    ns_json=$(BID="$BATCH_ID" NNS="$NUM_NAMESPACES" python3 - <<'PY'
+import json, os
+bid = os.environ["BID"]
+n = int(os.environ["NNS"])
+print(json.dumps([f"{bid}-ns-{i}" for i in range(1, n + 1)]))
+PY
+)
+
+    if ((${#BATCH_VMS_ORDERED[@]} > 0)); then
+	vm_json=$(printf '%s\n' "${BATCH_VMS_ORDERED[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin if l.strip()]))' 2>/dev/null || echo '[]')
+    else
+	vm_json='[]'
+    fi
+
+    if ((${#GUEST_ENV_ARR[@]} > 0)); then
+	guest_env_json=$(printf '%s\n' "${GUEST_ENV_ARR[@]}" | python3 -c '
+import json, sys
+env = {}
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line or "=" not in line:
+        continue
+    k, _, v = line.partition("=")
+    if k == "RESULT_SERVER_TOKEN":
+        v = "***"
+    env[k] = v
+print(json.dumps(env))
+')
+    else
+	guest_env_json='{}'
+    fi
+
+    if ((${#VSTORM_ARGV[@]} > 0)); then
+	cmdline_json=$(printf '%s\n' "vstorm" "${VSTORM_ARGV[@]}" | python3 -c 'import json,sys; print(json.dumps([l.rstrip("\n") for l in sys.stdin]))')
+    else
+	cmdline_json='["vstorm"]'
+    fi
+
+    if [[ -n "${LOG_FILE:-}" && -f "$LOG_FILE" ]]; then
+	log_text=$(python3 -c 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); t=p.read_text(encoding="utf-8", errors="replace"); print(t[:65536])' "$LOG_FILE" 2>/dev/null || true)
+    fi
+
+    # Cluster identity (best-effort; never fail the create path).
+    local api_server="" oc_version_text="" worker_nodes="" master_nodes=""
+    api_server=$(oc config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null || true)
+    oc_version_text=$(oc version 2>/dev/null || true)
+    worker_nodes=$(oc get nodes -l node-role.kubernetes.io/worker --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    master_nodes=$(oc get nodes -l node-role.kubernetes.io/master --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    # Newer clusters may label control-plane without master; take the larger count.
+    local control_plane_nodes=""
+    control_plane_nodes=$(oc get nodes -l node-role.kubernetes.io/control-plane --no-headers 2>/dev/null | wc -l | tr -d '[:space:]')
+    if [[ "$control_plane_nodes" =~ ^[0-9]+$ && "$master_nodes" =~ ^[0-9]+$ ]]; then
+	if (( control_plane_nodes > master_nodes )); then
+	    master_nodes=$control_plane_nodes
+	fi
+    elif [[ "$control_plane_nodes" =~ ^[0-9]+$ ]]; then
+	master_nodes=$control_plane_nodes
+    fi
+    [[ "$worker_nodes" =~ ^[0-9]+$ ]] || worker_nodes=""
+    [[ "$master_nodes" =~ ^[0-9]+$ ]] || master_nodes=""
+
+    # Large JSON must not go through the environment (Linux MAX_ARG_STRLEN
+    # ~128KiB) — 2k VMs easily blows DV_CREATED_JSON / VM_JSON / SSH_JSON.
+    local payload_file ns_file vm_file guest_env_file cmdline_file
+    local dv_file ssh_file log_file_tmp=""
+    if [[ -n "${LOG_DIR:-}" ]]; then
+	mkdir -p "$LOG_DIR"
+	payload_file="${LOG_DIR}/batch-${BATCH_ID}.manifest.json"
+    else
+	payload_file=$(mktemp)
+    fi
+    ns_file=$(mktemp)
+    vm_file=$(mktemp)
+    guest_env_file=$(mktemp)
+    cmdline_file=$(mktemp)
+    dv_file=$(mktemp)
+    ssh_file=$(mktemp)
+    printf '%s\n' "$ns_json" > "$ns_file"
+    printf '%s\n' "$vm_json" > "$vm_file"
+    printf '%s\n' "$guest_env_json" > "$guest_env_file"
+    printf '%s\n' "$cmdline_json" > "$cmdline_file"
+    if [[ -n "$dv_created_json" ]]; then
+	printf '%s\n' "$dv_created_json" > "$dv_file"
+    else
+	printf '%s\n' '{}' > "$dv_file"
+    fi
+    if [[ -n "${BATCH_SSH_JSON:-}" ]]; then
+	printf '%s\n' "$BATCH_SSH_JSON" > "$ssh_file"
+    else
+	printf '%s\n' '{}' > "$ssh_file"
+    fi
+    if [[ -n "$log_text" ]]; then
+	log_file_tmp=$(mktemp)
+	printf '%s' "$log_text" > "$log_file_tmp"
+    fi
+
+    if BATCH_ID="$BATCH_ID" \
+	BASENAME="$VM_BASENAME" \
+	TOTAL_VMS="$NUM_VMS" \
+	TOTAL_NS="$NUM_NAMESPACES" \
+	CORES="$VM_CPU_CORES" \
+	MEMORY="$VM_MEMORY" \
+	CLOUDINIT="${CLOUDINIT_FILE:-}" \
+	STORAGE_CLASS="$STORAGE_CLASS" \
+	VOLUME_MODE="$VOLUME_MODE" \
+	LOG_PATH="${LOG_FILE:-}" \
+	STARTED_AT="$started_at" \
+	STOPPED_AT="$stopped_at" \
+	REPORTED_AT="$reported_at" \
+	MANIFEST_PHASE="$phase" \
+	DV_WAIT_TIMED_OUT="${DV_WAIT_TIMED_OUT:-0}" \
+	API_SERVER="$api_server" \
+	OC_VERSION="$oc_version_text" \
+	WORKER_NODES="$worker_nodes" \
+	MASTER_NODES="$master_nodes" \
+	NS_JSON_FILE="$ns_file" \
+	VM_JSON_FILE="$vm_file" \
+	GUEST_ENV_JSON_FILE="$guest_env_file" \
+	CMDLINE_JSON_FILE="$cmdline_file" \
+	DV_CREATED_JSON_FILE="$dv_file" \
+	SSH_JSON_FILE="$ssh_file" \
+	LOG_TEXT_FILE="${log_file_tmp:-}" \
+	PAYLOAD_OUT="$payload_file" \
+	python3 - <<'PY'
+import json, os
+from datetime import datetime, timezone
+from pathlib import Path
+
+def fmt_utc(unix):
+    return datetime.fromtimestamp(int(unix), tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+def opt_int(key):
+    raw = (os.environ.get(key) or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+def load_json_file(key, default):
+    path = (os.environ.get(key) or "").strip()
+    if not path:
+        return default
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return default
+
+cluster = {
+    "api_server": (os.environ.get("API_SERVER") or "").strip() or None,
+    "oc_version": (os.environ.get("OC_VERSION") or "").rstrip("\n") or None,
+    "worker_nodes": opt_int("WORKER_NODES"),
+    "master_nodes": opt_int("MASTER_NODES"),
+}
+
+payload = {
+    "schema_version": 1,
+    "record_type": "manifest",
+    "source": "vstorm",
+    "manifest_phase": os.environ.get("MANIFEST_PHASE") or "final",
+    "dv_wait_timed_out": (os.environ.get("DV_WAIT_TIMED_OUT") or "0") == "1",
+    "reported_at": fmt_utc(os.environ["REPORTED_AT"]),
+    "started_at": fmt_utc(os.environ["STARTED_AT"]),
+    "stopped_at": fmt_utc(os.environ["STOPPED_AT"]),
+    "batch_id": os.environ["BATCH_ID"],
+    "basename": os.environ["BASENAME"],
+    "total_vms": int(os.environ["TOTAL_VMS"]),
+    "total_namespaces": int(os.environ["TOTAL_NS"]),
+    "namespaces": load_json_file("NS_JSON_FILE", []),
+    "vms": load_json_file("VM_JSON_FILE", []),
+    "cores": int(os.environ["CORES"]) if str(os.environ.get("CORES", "")).isdigit() else os.environ.get("CORES"),
+    "memory": os.environ["MEMORY"],
+    "cloudinit": os.environ.get("CLOUDINIT") or None,
+    "guest_env": load_json_file("GUEST_ENV_JSON_FILE", {}),
+    "storage_class": os.environ["STORAGE_CLASS"],
+    "volume_mode": os.environ["VOLUME_MODE"],
+    "cmdline": load_json_file("CMDLINE_JSON_FILE", ["vstorm"]),
+    "log_path": os.environ.get("LOG_PATH") or None,
+    "cluster": cluster,
+}
+
+dv_info = load_json_file("DV_CREATED_JSON_FILE", {})
+if isinstance(dv_info, dict):
+    for key in (
+        "dv_created",
+        "dv_created_at",
+        "dv_ready_at",
+        "dv_bound_at",
+        "base_dv",
+        "base_dv_created_at",
+        "base_dv_ready_at",
+        "base_dv_bound_at",
+        "snapshots",
+        "snapshot_created_at",
+        "snapshot_ready_at",
+        "vm_dv_created",
+        "vm_data_dv_created",
+        "vm_dv_ready",
+        "vm_data_dv_ready",
+        "vm_dv_bound",
+        "vm_data_dv_bound",
+        "pvc_created",
+        "pvc_created_at",
+        "pvc_bound_at",
+        "vm_pvc_created",
+        "vm_data_pvc_created",
+        "vm_pvc_bound",
+        "vm_data_pvc_bound",
+    ):
+        if dv_info.get(key):
+            payload[key] = dv_info[key]
+
+ssh_info = load_json_file("SSH_JSON_FILE", {})
+if isinstance(ssh_info, dict):
+    for key in (
+        "vm_ssh_ready",
+        "vm_ssh_failed",
+        "ssh_ready_at",
+        "ssh_ready_status",
+        "ssh_ready_port",
+        "ssh_ready_timeout_s",
+    ):
+        if key in ssh_info and ssh_info[key] is not None and ssh_info[key] != "" and ssh_info[key] != [] and ssh_info[key] != {}:
+            payload[key] = ssh_info[key]
+
+log_path = (os.environ.get("LOG_TEXT_FILE") or "").strip()
+if log_path:
+    try:
+        log_text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        log_text = ""
+    if log_text:
+        payload["log_text"] = log_text
+
+out = os.environ["PAYLOAD_OUT"]
+with open(out, "w", encoding="utf-8") as f:
+    json.dump(payload, f, indent=2, sort_keys=True)
+    f.write("\n")
+PY
+    then
+	:
+    else
+	rm -f "$ns_file" "$vm_file" "$guest_env_file" "$cmdline_file" "$dv_file" "$ssh_file" ${log_file_tmp:+"$log_file_tmp"}
+	log_message "${C_WARN}Failed to build manifest JSON; skip POST to $url${C_RST}"
+	return 0
+    fi
+    rm -f "$ns_file" "$vm_file" "$guest_env_file" "$cmdline_file" "$dv_file" "$ssh_file" ${log_file_tmp:+"$log_file_tmp"}
+    log_message "Manifest JSON written to: ${C_VAL}${payload_file}${C_RST}"
+
+    # Summarize DV/PVC timestamps included in this host-side POST (best-effort).
+    local ts_summary=""
+    ts_summary=$(
+	python3 -c '
+import json, sys
+try:
+    p = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    print("(timestamps unavailable)")
+    raise SystemExit(0)
+parts = []
+for k in (
+    "base_dv_created_at",
+    "base_dv_ready_at",
+    "base_dv_bound_at",
+    "snapshot_created_at",
+    "snapshot_ready_at",
+    "dv_created_at",
+    "dv_ready_at",
+    "pvc_created_at",
+    "pvc_bound_at",
+):
+    v = p.get(k)
+    if v:
+        parts.append(f"{k}={v}")
+counts = []
+for k, label in (
+    ("vm_dv_created", "vm_dv"),
+    ("vm_dv_ready", "vm_dv_ready"),
+    ("vm_pvc_created", "vm_pvc"),
+    ("vm_pvc_bound", "vm_pvc_bound"),
+    ("vm_data_dv_created", "data_dv"),
+    ("vm_data_dv_ready", "data_dv_ready"),
+    ("vm_data_pvc_created", "data_pvc"),
+    ("vm_data_pvc_bound", "data_pvc_bound"),
+    ("vm_ssh_ready", "vm_ssh_ready"),
+    ("snapshots", "snapshots"),
+    ("base_dv", "base_dv"),
+):
+    m = p.get(k)
+    if isinstance(m, dict) and m:
+        counts.append(f"{label}={len(m)}")
+    elif isinstance(m, list) and m:
+        counts.append(f"{label}={len(m)}")
+failed = p.get("vm_ssh_failed")
+if isinstance(failed, list) and failed:
+    counts.append(f"vm_ssh_failed={len(failed)}")
+status = p.get("ssh_ready_status")
+if status:
+    counts.append(f"ssh_ready_status={status}")
+if not parts and not counts:
+    print("no DV/PVC timestamps in payload")
+else:
+    print(", ".join(parts + counts))
+' "$payload_file" 2>/dev/null || echo "(timestamps unavailable)"
+    )
+    local phase_label="manifest"
+    [[ "$phase" == "progress" ]] && phase_label="progress manifest"
+    log_message "Posting batch ${C_VAL}${BATCH_ID}${C_RST} ${phase_label} (DV/PVC/SSH timestamps) to ${C_VAL}${url}${C_RST}"
+    log_message "  timestamps: ${C_VAL}${ts_summary}${C_RST}"
+
+    local curl_args=(-sS -f -X POST -H "Content-Type: application/json" --data-binary @"$payload_file"
+	--connect-timeout 15 --max-time 60)
+    if [[ -n "$token" ]]; then
+	curl_args+=(-H "Authorization: Bearer ${token}")
+    fi
+    if curl "${curl_args[@]}" "$url"; then
+	log_message "Posted ${phase_label} for batch ${C_VAL}${BATCH_ID}${C_RST} to ${C_VAL}${url}${C_RST} (kept ${C_VAL}${payload_file}${C_RST})"
+    else
+	log_message "${C_WARN}Failed to POST ${phase_label} for batch ${BATCH_ID} to $url (create still succeeded; JSON kept at ${payload_file})${C_RST}"
+    fi
 }
 
 ################################################################
@@ -1146,23 +1848,30 @@ wait_for_all_vms() {
 }
 
 create_virtualmachines() {
+    local -i ns_start="${1:-1}" ns_end="${2:-$NUM_NAMESPACES}" force_wait="${3:-0}"
+    # NOTE: ns is deliberately "local -i" (only ever holds a namespace index),
+    # but vm must stay a plain (non-integer) local: wait_for_all_vms(), called
+    # from below, reuses this same variable name via bash's dynamic scoping
+    # (it has no "local vm" of its own) and assigns it "namespace/vm-name"
+    # strings. If vm had the -i attribute, that string assignment would be
+    # evaluated as arithmetic and blow up under `set -u` on the first
+    # non-numeric token (e.g. "vstorm: unbound variable").
+    local -i ns
+    local vm
     log_message "${C_BOLD}Creating VirtualMachines...${C_RST}"
+    # One-time template setup (cloud-init, data disk, existing VM lookup, ...).
+    # Guarded so repeated calls -- one per --ns-sequential-creation namespace -- reuse it
+    # instead of recomputing/re-listing (e.g. `oc get vm -A`) every time.
+    if ((! VM_TEMPLATES_READY)) ; then
     VM_ID=1
 	if ((UDN_L2)); then
 		vm_file="${TEMPLATE_CACHE[vm-udn]}"
 	else
 		vm_file="${TEMPLATE_CACHE[vm]}"
 	fi
-    # Auto-apply default cloud-init when using DataSource or container disk
-    # without an explicit --cloudinit, so VMs are accessible via SSH out of the box.
-    if [[ ( -n "$DATASOURCE" || -n "$CONTAINERDISK_IMAGE" ) && -z "$CLOUDINIT_FILE" ]] ; then
-	CLOUDINIT_FILE="$(dirname "$0")/workload/cloudinit-default.yaml"
-	if [[ ! -f "$CLOUDINIT_FILE" ]] ; then
-	    fatal "Default cloud-init file not found: $CLOUDINIT_FILE"
-	fi
-	log_message "No --cloudinit specified; applying default cloud-init (root password: ${C_VAL}password${C_RST})"
-    fi
-    local requeststr=
+    # Default profile when --cloudinit omitted (SSH + boot timestamp; no workload).
+    apply_default_cloudinit_if_needed
+    requeststr=
     local -A requests=()
     if [[ -n "${VM_CPU_REQUEST:-}" ]] ; then requests[cpu]=$VM_CPU_REQUEST; fi
     if [[ -n "${VM_MEMORY_REQUEST:-}" ]] ; then requests[memory]=$VM_MEMORY_REQUEST; fi
@@ -1176,11 +1885,15 @@ $(local resource; for resource in "${!requests[@]}" ; do echo "    $resource: ${
     # Build cloud-init YAML fragments if a cloud-init file is specified.
     # Userdata is stored in a Secret per namespace (to avoid the 2048-byte
     # inline limit) and referenced via userDataSecretRef.
-    local cloudinit_disk=""
-    local cloudinit_volume=""
-    local cloudinit_b64=""
-    local cloudinit_secret_file=""
-    local domain_firmware=
+    cloudinit_disk=""
+    cloudinit_volume=""
+    cloudinit_b64=""
+    cloudinit_secret_file=""
+    data_dv_templates=""
+    data_dv_template=""
+    data_disk=""
+    data_volume=""
+    domain_firmware=
     case "${VM_FIRMWARE,,}" in
 	efi)
 	    domain_firmware="features:
@@ -1206,10 +1919,29 @@ firmware:
 	_guest_env_branch=false
 	if [[ "$cloudinit_content" == *"{VSTORM_GUEST_ENV}"* ]]; then
 	    _guest_env_branch=true
+	    # Count user --env before auto-inject so we can keep the “no --env” marker.
+	    local -i _user_env_count=${#GUEST_ENV_ARR[@]}
+	    # Always inject batch id for result sync / policy poll (no-op if already set).
+	    local -i _has_vstorm_batch=0
+	    local _ge
+	    for _ge in "${GUEST_ENV_ARR[@]+"${GUEST_ENV_ARR[@]}"}"; do
+		if [[ "$_ge" == VSTORM_BATCH_ID=* ]]; then
+		    _has_vstorm_batch=1
+		    break
+		fi
+	    done
+	    if ((_has_vstorm_batch == 0)); then
+		GUEST_ENV_ARR+=("VSTORM_BATCH_ID=${BATCH_ID}")
+	    fi
+	    # Lab collector URL unless user set/cleared RESULT_SERVER_URL via --env.
+	    ensure_default_result_server_url
 	    # Replace entire line containing placeholder so indentation is uniform (6 spaces per line).
 	    # Use bash while-read to avoid awk multi-line replacement duplicating or corrupting lines.
 	    if [[ "${#GUEST_ENV_ARR[@]}" -gt 0 ]]; then
 		GUEST_ENV_LINES=$(printf '%s\n' "${GUEST_ENV_ARR[@]}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sed 's/^/      /')
+		if ((_user_env_count == 0)); then
+		    GUEST_ENV_LINES="      # no --env passed"$'\n'"$GUEST_ENV_LINES"
+		fi
 	    else
 		GUEST_ENV_LINES="      # no --env passed"
 	    fi
@@ -1236,7 +1968,7 @@ firmware:
 	if ((UDN_L2)); then
 	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
-      name: ${VM_BASENAME}-cloudinit
+      name: $(join_name "$VM_BASENAME" "cloudinit")
     networkData: |
       version: 2
       ethernets:
@@ -1248,19 +1980,52 @@ firmware:
 	else
 	    cloudinit_volume="- cloudInitNoCloud:
     secretRef:
-      name: ${VM_BASENAME}-cloudinit
+      name: $(join_name "$VM_BASENAME" "cloudinit")
   name: cloudinit"
 	fi
     fi
-    local -A existing_vms=()
+
+    if [[ -n "$DATA_DISK_SIZE" ]] ; then
+	# Blank data disk (vdb). Name is filled per-VM in the create loop.
+	data_disk="- disk:
+    bus: virtio
+  name: vdb"
+	data_volume="- dataVolume:
+    name: __DATA_DV_NAME__
+  name: vdb"
+	data_dv_template="- apiVersion: cdi.kubevirt.io/v1beta1
+  kind: DataVolume
+  metadata:
+    name: __DATA_DV_NAME__
+    labels:
+      batch-id: \"${BATCH_ID}\"
+  spec:
+    source:
+      blank: {}
+    storage:
+      accessModes:
+      - ${ACCESS_MODE}
+      resources:
+        requests:
+          storage: ${DATA_DISK_SIZE}
+      volumeMode: ${VOLUME_MODE}
+      storageClassName: ${STORAGE_CLASS}"
+	# containerdisk templates have no dataVolumeTemplates section yet
+	data_dv_templates="dataVolumeTemplates:
+${data_dv_template}"
+	log_message "Data disk enabled: ${C_VAL}${DATA_DISK_SIZE}${C_RST} blank volume as ${C_VAL}vdb${C_RST}"
+    fi
+
     if ((! RECREATE_EXISTING_VMS)) ; then
 	local vm
 	while read -r vm ; do
 	    if [[ -n "$vm" ]] ; then existing_vms["$vm"]=1; fi
 	done <<< "$(oc get vm -A --no-headers | awk '{printf "%s/%s\n", $1, $2}')"
     fi
-    for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-        namespace="vm-${BATCH_ID}-ns-${ns}"
+    VM_TEMPLATES_READY=1
+    fi
+    for ((ns=ns_start; ns<=ns_end; ns++)); do
+        namespace="${BATCH_ID}-ns-${ns}"
 
 	# Create cloud-init Secret in this namespace if needed
 	if [[ -n "$cloudinit_secret_file" ]] ; then
@@ -1279,23 +2044,36 @@ firmware:
 
         # Create VMs for this namespace
         for ((vm=1; vm<=vms_in_this_namespace; vm++)); do
-	    local vm_name="${namespace}/${VM_BASENAME}-${BATCH_ID}-${VM_ID}"
+	    local vm_name="${namespace}/$(join_name "$VM_BASENAME" "$BATCH_ID" "$VM_ID")"
 	    if [[ -z "${existing_vms[$vm_name]:-}" ]] ; then
 		log_message "Creating VirtualMachine ${C_VAL}$VM_ID${C_RST} for namespace: ${C_VAL}$namespace${C_RST}"
+		local data_dv_name
+		data_dv_name="$(join_name "$VM_BASENAME" "$BATCH_ID" "$VM_ID" "data")"
+		local data_dv_templates_vm="" data_dv_template_vm="" data_volume_vm=""
+		if [[ -n "$DATA_DISK_SIZE" ]] ; then
+		    data_dv_template_vm=${data_dv_template//__DATA_DV_NAME__/$data_dv_name}
+		    data_dv_templates_vm=${data_dv_templates//__DATA_DV_NAME__/$data_dv_name}
+		    data_volume_vm=${data_volume//__DATA_DV_NAME__/$data_dv_name}
+		fi
 		process_template "$vm_file" |
 		    indent_token DOMAIN_FIRMWARE "$domain_firmware" |
 		    indent_token RESOURCES "$requeststr" |
 		    indent_token CLOUDINIT_DISK "$cloudinit_disk" |
 		    indent_token CLOUDINIT_VOLUME "$cloudinit_volume" |
+		    indent_token DATA_DV_TEMPLATES "$data_dv_templates_vm" |
+		    indent_token DATA_DV_TEMPLATE "$data_dv_template_vm" |
+		    indent_token DATA_DISK "$data_disk" |
+		    indent_token DATA_VOLUME "$data_volume_vm" |
 		    oc_apply ||
 		    fatal "Cannot create vm $vm_name!"
 	    fi
 	    expected_vms["$vm_name"]=1
+	    BATCH_VMS_ORDERED+=("$vm_name")
             VM_ID=$((VM_ID + 1))
         done
     done
     if ((wet_run)) ; then
-	if ((WAIT)) ; then
+	if ((WAIT || force_wait)) ; then
 	    wait_for_all_vms
 	else
 	    log_message "Not waiting for all VMs"
@@ -1391,6 +2169,578 @@ verify_cloudinit() {
 }
 
 ################################################################
+# Workload-agnostic SSH reachability check.
+# Uses virtctl port-forward + nc (no password/key). Each VM has
+# SSH_READY_TIMEOUT seconds; any still down => failure.
+# Probes run in batches of SSH_PROBE_PARALLEL to avoid fd/PID exhaustion.
+# Sets BATCH_SSH_JSON for the host manifest POST (via temp files — not env).
+# Returns 0 if all probed VMs are up, 1 otherwise.
+verify_ssh_port() {
+    BATCH_SSH_JSON=
+    local -a vm_keys=("${BATCH_VMS_ORDERED[@]+"${BATCH_VMS_ORDERED[@]}"}")
+    local -i total=${#vm_keys[@]}
+    if ((total == 0)); then
+	log_message "${C_WARN}SSH check: no VMs in batch; skipping${C_RST}"
+	return 0
+    fi
+
+    if [[ -z "$(type -t virtctl)" ]]; then
+	fatal "Error: --wait-ssh requires virtctl (see helpers/install-virtctl)"
+    fi
+    if [[ -z "$(type -t nc)" ]]; then
+	fatal "Error: --wait-ssh requires nc (nmap-ncat / netcat)"
+    fi
+
+    local guest_port="${VM_SERVICE_TARGET_PORT:-22}"
+    local timeout="${SSH_READY_TIMEOUT:-30}"
+    local -i parallel="${SSH_PROBE_PARALLEL:-1000}"
+    ((parallel < 1)) && parallel=1
+    log_message "${C_BOLD}Checking SSH port ${C_VAL}${guest_port}${C_RST}${C_BOLD} on ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) (timeout ${C_VAL}${timeout}s${C_RST}${C_BOLD} each, ${C_VAL}${parallel}${C_RST}${C_BOLD} parallel)...${C_RST}"
+
+    local tmpdir
+    tmpdir=$(mktemp -d)
+    # shellcheck disable=SC2064
+    trap "rm -rf '$tmpdir'" RETURN
+
+    local ready_tsv="${tmpdir}/ready.tsv"
+    local failed_txt="${tmpdir}/failed.txt"
+    : > "$ready_tsv"
+    : > "$failed_txt"
+
+    local -i ok_count=0 fail_count=0
+    local -i log_each=1
+    ((total > 100)) && log_each=0
+
+    local -i batch_start=0 batch_end batch_idx slot
+    local vm_key ns vm_name local_port out_file
+    local -a pids=() probe_vms=()
+    local idx pid rc ready_ts
+
+    while ((batch_start < total)); do
+	batch_end=$((batch_start + parallel))
+	((batch_end > total)) && batch_end=$total
+	pids=()
+	probe_vms=()
+
+	for ((batch_idx=batch_start; batch_idx<batch_end; batch_idx++)); do
+	    vm_key="${vm_keys[$batch_idx]}"
+	    ns="${vm_key%%/*}"
+	    vm_name="${vm_key##*/}"
+	    slot=$((batch_idx - batch_start))
+	    local_port=$((23000 + slot))
+	    out_file="${tmpdir}/${vm_name}.ready"
+	    probe_vms+=("$vm_name")
+	    (
+		local pf_pid="" deadline now
+		deadline=$(($(date +%s) + timeout))
+		cleanup_pf() {
+		    if [[ -n "${pf_pid:-}" ]]; then
+			kill "$pf_pid" 2>/dev/null || true
+			wait "$pf_pid" 2>/dev/null || true
+		    fi
+		}
+		trap cleanup_pf EXIT
+		virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+		pf_pid=$!
+		while true; do
+		    now=$(date +%s)
+		    if ((now >= deadline)); then
+			exit 1
+		    fi
+		    if ! kill -0 "$pf_pid" 2>/dev/null; then
+			wait "$pf_pid" 2>/dev/null || true
+			virtctl port-forward -n "$ns" "vmi/${vm_name}" "${local_port}:${guest_port}" >/dev/null 2>&1 &
+			pf_pid=$!
+			sleep 1
+			continue
+		    fi
+		    if nc -z -w 1 127.0.0.1 "$local_port" 2>/dev/null; then
+			date -u +%Y-%m-%dT%H:%M:%SZ > "$out_file"
+			exit 0
+		    fi
+		    sleep 1
+		done
+	    ) &
+	    pids+=($!)
+	done
+
+	for idx in "${!pids[@]}"; do
+	    pid=${pids[$idx]}
+	    vm_name=${probe_vms[$idx]}
+	    rc=0
+	    wait "$pid" || rc=$?
+	    if ((rc == 0)) && [[ -f "${tmpdir}/${vm_name}.ready" ]]; then
+		ready_ts=$(cat "${tmpdir}/${vm_name}.ready")
+		printf '%s\t%s\n' "$vm_name" "$ready_ts" >> "$ready_tsv"
+		if ((log_each)); then
+		    log_message "  ${C_VAL}${vm_name}${C_RST}: SSH port ${C_OK}UP${C_RST} at ${C_VAL}${ready_ts}${C_RST}"
+		fi
+		ok_count=$((ok_count + 1))
+	    else
+		printf '%s\n' "$vm_name" >> "$failed_txt"
+		log_message "  ${C_WARN}WARNING:${C_RST} ${C_VAL}${vm_name}${C_RST}: SSH port ${C_ERR}DOWN${C_RST} after ${C_VAL}${timeout}s${C_RST}"
+		fail_count=$((fail_count + 1))
+	    fi
+	done
+
+	if ((!log_each)); then
+	    log_message "  SSH check progress: ${C_VAL}$((ok_count + fail_count))${C_RST}/${C_VAL}${total}${C_RST} (${C_VAL}${ok_count}${C_RST} UP, ${C_ERR}${fail_count}${C_RST} failed)"
+	fi
+	batch_start=$batch_end
+    done
+
+    # Large JSON must not go through the environment (Linux MAX_ARG_STRLEN ~128KiB).
+    local ssh_json_file="${tmpdir}/ssh.json"
+    python3 - "$ready_tsv" "$failed_txt" "$guest_port" "$timeout" "$ssh_json_file" <<'PY'
+import json, sys
+from pathlib import Path
+
+ready_path, failed_path, port, timeout, out_path = sys.argv[1:6]
+ready = {}
+for line in Path(ready_path).read_text(encoding="utf-8").splitlines():
+    if not line or "\t" not in line:
+        continue
+    k, _, v = line.partition("\t")
+    ready[k] = v
+failed = [l.strip() for l in Path(failed_path).read_text(encoding="utf-8").splitlines() if l.strip()]
+out = {
+    "vm_ssh_ready": ready,
+    "vm_ssh_failed": failed,
+    "ssh_ready_status": "ok" if not failed else "failed",
+    "ssh_ready_port": int(port or 22),
+    "ssh_ready_timeout_s": int(timeout or 30),
+}
+if ready and not failed:
+    out["ssh_ready_at"] = min(ready.values())
+Path(out_path).write_text(json.dumps(out), encoding="utf-8")
+PY
+    BATCH_SSH_JSON=$(<"$ssh_json_file")
+
+    if ((fail_count > 0)); then
+	log_message "SSH check: ${C_VAL}${ok_count}${C_RST} UP, ${C_ERR}${fail_count}${C_RST} FAILED (timeout ${C_VAL}${timeout}s${C_RST})"
+	return 1
+    fi
+    log_message "${C_OK}SSH check: ${ok_count}/${total} VM(s) — all ports UP${C_RST}"
+    return 0
+}
+
+################################################################
+# Gracefully stop all VMs in a batch (parallel `virtctl stop`) before
+# `oc delete ns` tears down their namespaces, instead of letting namespace
+# deletion abruptly kill running VMIs. Best-effort: a missing virtctl
+# binary, or an individual VM that's already stopped/gone, only logs a
+# warning -- it never blocks the delete. Runs in batches of STOP_PARALLEL
+# concurrent `virtctl stop` calls (default 200) to avoid PID/fd exhaustion
+# on very large batches. Once stop requests are sent, waits (best-effort,
+# see wait_for_batch_vms_stopped) for the VMs to actually reach Stopped.
+# Args: $1 = batch ID, $2 = newline-separated "namespace vm-name" pairs (may be empty)
+stop_batch_vms() {
+    local batch=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    if [[ -z "$(type -t virtctl)" ]]; then
+	log_message "${C_WARN}virtctl not found; skipping graceful VM stop before delete${C_RST}"
+	return 0
+    fi
+
+    local -a ns_arr=() name_arr=()
+    local ns name
+    while read -r ns name ; do
+	[[ -n "$ns" && -n "$name" ]] || continue
+	ns_arr+=("$ns")
+	name_arr+=("$name")
+    done <<< "$vm_list"
+
+    local -i total=${#name_arr[@]}
+    ((total == 0)) && return 0
+
+    local -i parallel=${STOP_PARALLEL:-200}
+    ((parallel < 1)) && parallel=1
+    log_message "${C_BOLD}Stopping ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) (virtctl stop, ${C_VAL}${parallel}${C_RST}${C_BOLD} parallel) before delete...${C_RST}"
+
+    local -i batch_start=0 batch_end batch_idx
+    local -a pids=()
+    while ((batch_start < total)); do
+	batch_end=$((batch_start + parallel))
+	((batch_end > total)) && batch_end=$total
+	pids=()
+	for ((batch_idx=batch_start; batch_idx<batch_end; batch_idx++)); do
+	    virtctl stop "${name_arr[$batch_idx]}" -n "${ns_arr[$batch_idx]}" >/dev/null 2>&1 &
+	    pids+=($!)
+	done
+
+	local -i idx pid rc
+	for idx in "${!pids[@]}"; do
+	    pid=${pids[$idx]}
+	    rc=0
+	    wait "$pid" || rc=$?
+	    if ((rc != 0)); then
+		local failed_idx=$((batch_start + idx))
+		log_message "  ${C_WARN}WARNING:${C_RST} virtctl stop failed for ${C_VAL}${ns_arr[$failed_idx]}/${name_arr[$failed_idx]}${C_RST} (rc=$rc); continuing"
+	    fi
+	done
+	batch_start=$batch_end
+    done
+    log_message "${C_OK}Stop requests sent for ${C_VAL}${total}${C_RST} VM(s)${C_RST}"
+
+    # Best-effort: a timeout here only warns (inside the function); `|| true`
+    # keeps that non-zero status from tripping `set -e` and aborting the
+    # delete -- we still proceed to `oc delete ns` either way.
+    wait_for_batch_vms_stopped "$batch" "$vm_list" || true
+}
+
+################################################################
+# Wait for all VMs in a batch to actually reach "Stopped" after
+# stop_batch_vms() fires parallel `virtctl stop` calls, before namespace
+# deletion proceeds. `virtctl stop` only submits the stop request -- the VM
+# still needs a few seconds to shut down its VMI -- so this polls
+# `oc get vm -l batch-id=...` every DELETE_POLL_INTERVAL (default 2s) until
+# every VM's printableStatus is Stopped, or STOP_WAIT_TIMEOUT (default 300s)
+# is hit. Best-effort: on timeout it only warns and returns 1 -- callers
+# proceed with `oc delete ns` regardless, which forcibly cleans up whatever
+# is still shutting down.
+# Args: $1 = batch ID, $2 = newline-separated "namespace vm-name" pairs
+wait_for_batch_vms_stopped() {
+    local batch=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    local -A pending=()
+    local ns name
+    while read -r ns name ; do
+	[[ -n "$ns" && -n "$name" ]] || continue
+	pending["${ns}/${name}"]=1
+    done <<< "$vm_list"
+
+    local -i total=${#pending[@]}
+    ((total == 0)) && return 0
+
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${STOP_WAIT_TIMEOUT:-300}
+    local -i deadline=$((SECONDS + timeout))
+
+    log_message "${C_BOLD}Waiting for ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) to reach Stopped...${C_RST}"
+
+    local vm_ns vm_name status key
+    while : ; do
+	while read -r vm_ns vm_name status ; do
+	    [[ -n "$vm_ns" && -n "$vm_name" ]] || continue
+	    key="${vm_ns}/${vm_name}"
+	    if [[ "$status" == "Stopped" && -n "${pending[$key]:-}" ]] ; then
+		unset "pending[$key]"
+	    fi
+	done <<< "$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1, $2, $4}')"
+
+	if (( ${#pending[@]} == 0 )) ; then
+	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) are Stopped${C_RST}"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for VMs to stop (${#pending[@]}/${total} still not Stopped); proceeding with namespace delete anyway${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Poll cluster-scoped storage still tied to a batch's namespaces after
+# `oc delete ns --wait=false` returns, refreshing counts every
+# DELETE_POLL_INTERVAL (default 2s) until namespaces, PVCs, PVs, and
+# VolumeAttachments all reach zero, or DELETE_POLL_TIMEOUT (default 1800s)
+# is hit. PVs and VolumeAttachments are cluster-scoped and carry no
+# batch-id label, so they are correlated to the batch via the namespace
+# naming pattern ({batch}-ns-{N}) instead (PVs via spec.claimRef.namespace,
+# VolumeAttachments via spec.source.persistentVolumeName -> that PV).
+# Args: $1 = batch ID
+watch_batch_delete_cleanup() {
+    local batch=$1
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${DELETE_POLL_TIMEOUT:-1800}
+    local -i deadline=$((SECONDS + timeout))
+    local ns_pat="^${batch}-ns-[0-9]+\$"
+
+    log_message "${C_BOLD}Monitoring cleanup for batch ${C_VAL}'$batch'${C_RST} (namespaces, PVCs, PVs, VolumeAttachments; refresh every ${interval}s)...${C_RST}"
+
+    local -i ns_n pvc_n pv_n va_n
+    while : ; do
+	ns_n=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	pvc_n=$(oc get pvc -A --no-headers 2>/dev/null | awk -v pat="$ns_pat" '$1 ~ pat {c++} END{print c+0}')
+
+	local pv_names_file
+	pv_names_file=$(mktemp)
+	oc get pv -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.claimRef.namespace}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pat="$ns_pat" '$2 ~ pat {print $1}' > "$pv_names_file"
+	pv_n=$(wc -l < "$pv_names_file")
+
+	va_n=$(oc get volumeattachment -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.source.persistentVolumeName}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pvf="$pv_names_file" 'BEGIN{while((getline l < pvf) > 0) pv[l]=1} $2 in pv {c++} END{print c+0}')
+	rm -f "$pv_names_file"
+
+	printf '\r  namespaces=%-4s PVCs=%-4s PVs=%-4s VolumeAttachments=%-4s   ' \
+	    "$ns_n" "$pvc_n" "$pv_n" "$va_n"
+
+	if (( ns_n == 0 && pvc_n == 0 && pv_n == 0 && va_n == 0 )) ; then
+	    echo ""
+	    log_message "${C_OK}Batch ${C_VAL}'$batch'${C_RST} fully cleaned up${C_RST} (no leftover namespaces, PVCs, PVs, or VolumeAttachments)"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    echo ""
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for batch ${C_VAL}'$batch'${C_RST} cleanup; leftovers remain: namespaces=$ns_n PVCs=$pvc_n PVs=$pv_n VolumeAttachments=$va_n${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Return 0 if a namespace must not be deleted by --delete-all.
+is_protected_delete_namespace() {
+    local ns=$1
+    case "$ns" in
+	kube-system|kube-public|kube-node-lease|default) return 0 ;;
+    esac
+    [[ "$ns" == openshift* ]] && return 0
+    [[ "$ns" == kube-* ]] && return 0
+    return 1
+}
+
+################################################################
+# List vstorm batch namespace names (batch-id label + {batch}-ns-{N} name).
+discover_vstorm_batch_namespaces() {
+    oc get ns -l batch-id --no-headers 2>/dev/null |
+	awk '{print $1}' |
+	grep -E '^[a-zA-Z0-9._-]+-ns-[0-9]+$' |
+	sort -u
+}
+
+################################################################
+# List namespaces that contain VMs but are not vstorm batch namespaces.
+# Args: $1 = newline-separated vstorm batch namespace names (may be empty)
+discover_non_vstorm_vm_namespaces() {
+    local vstorm_ns=$1
+    local -A vstorm_set=()
+    local ns
+
+    while read -r ns ; do
+	[[ -n "$ns" ]] && vstorm_set["$ns"]=1
+    done <<< "$vstorm_ns"
+
+    local all_vm_ns
+    all_vm_ns=$(oc get vm -A --no-headers 2>/dev/null | awk '{print $1}' | sort -u) || true
+    [[ -z "$all_vm_ns" ]] && return 0
+
+    while read -r ns ; do
+	[[ -z "$ns" ]] && continue
+	[[ -n "${vstorm_set[$ns]:-}" ]] && continue
+	is_protected_delete_namespace "$ns" && continue
+	echo "$ns"
+    done <<< "$all_vm_ns"
+}
+
+################################################################
+# Wait for all VMs in a namespace to reach "Stopped" (see wait_for_batch_vms_stopped).
+# Args: $1 = namespace, $2 = newline-separated "namespace vm-name" pairs
+wait_for_namespace_vms_stopped() {
+    local ns=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    local -A pending=()
+    local vm_ns name
+    while read -r vm_ns name ; do
+	[[ -n "$vm_ns" && -n "$name" ]] || continue
+	pending["${vm_ns}/${name}"]=1
+    done <<< "$vm_list"
+
+    local -i total=${#pending[@]}
+    ((total == 0)) && return 0
+
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${STOP_WAIT_TIMEOUT:-300}
+    local -i deadline=$((SECONDS + timeout))
+
+    log_message "${C_BOLD}Waiting for ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) in ${C_VAL}${ns}${C_RST}${C_BOLD} to reach Stopped...${C_RST}"
+
+    local vm_name status key
+    while : ; do
+	while read -r vm_name status ; do
+	    [[ -n "$vm_name" ]] || continue
+	    key="${ns}/${vm_name}"
+	    if [[ "$status" == "Stopped" && -n "${pending[$key]:-}" ]] ; then
+		unset "pending[$key]"
+	    fi
+	done <<< "$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk '{print $1, $3}')"
+
+	if (( ${#pending[@]} == 0 )) ; then
+	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST} are Stopped${C_RST}"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for VMs in ${C_VAL}${ns}${C_RST} to stop (${#pending[@]}/${total} still not Stopped); proceeding with namespace delete anyway${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Gracefully stop all VMs in a namespace before namespace delete.
+# Args: $1 = namespace, $2 = newline-separated "namespace vm-name" pairs
+stop_namespace_vms() {
+    local ns=$1
+    local vm_list=$2
+    [[ -n "$vm_list" ]] || return 0
+
+    if [[ -z "$(type -t virtctl)" ]]; then
+	log_message "${C_WARN}virtctl not found; skipping graceful VM stop before delete${C_RST}"
+	return 0
+    fi
+
+    local -a ns_arr=() name_arr=()
+    local vm_ns name
+    while read -r vm_ns name ; do
+	[[ -n "$vm_ns" && -n "$name" ]] || continue
+	ns_arr+=("$vm_ns")
+	name_arr+=("$name")
+    done <<< "$vm_list"
+
+    local -i total=${#name_arr[@]}
+    ((total == 0)) && return 0
+
+    local -i parallel=${STOP_PARALLEL:-200}
+    ((parallel < 1)) && parallel=1
+    log_message "${C_BOLD}Stopping ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) in ${C_VAL}${ns}${C_RST}${C_BOLD} (virtctl stop, ${C_VAL}${parallel}${C_RST}${C_BOLD} parallel) before delete...${C_RST}"
+
+    local -i batch_start=0 batch_end batch_idx
+    local -a pids=()
+    while ((batch_start < total)); do
+	batch_end=$((batch_start + parallel))
+	((batch_end > total)) && batch_end=$total
+	pids=()
+	for ((batch_idx=batch_start; batch_idx<batch_end; batch_idx++)); do
+	    virtctl stop "${name_arr[$batch_idx]}" -n "${ns_arr[$batch_idx]}" >/dev/null 2>&1 &
+	    pids+=($!)
+	done
+
+	local -i idx pid rc
+	for idx in "${!pids[@]}"; do
+	    pid=${pids[$idx]}
+	    rc=0
+	    wait "$pid" || rc=$?
+	    if ((rc != 0)); then
+		local failed_idx=$((batch_start + idx))
+		log_message "  ${C_WARN}WARNING:${C_RST} virtctl stop failed for ${C_VAL}${ns_arr[$failed_idx]}/${name_arr[$failed_idx]}${C_RST} (rc=$rc); continuing"
+	    fi
+	done
+	batch_start=$batch_end
+    done
+    log_message "${C_OK}Stop requests sent for ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST}${C_RST}"
+
+    wait_for_namespace_vms_stopped "$ns" "$vm_list" || true
+}
+
+################################################################
+# Poll cluster-scoped storage still tied to a namespace after delete.
+# Args: $1 = namespace name
+watch_namespace_delete_cleanup() {
+    local ns=$1
+    local -i interval=${DELETE_POLL_INTERVAL:-2}
+    local -i timeout=${DELETE_POLL_TIMEOUT:-1800}
+    local -i deadline=$((SECONDS + timeout))
+    local ns_pat="^${ns}\$"
+
+    log_message "${C_BOLD}Monitoring cleanup for namespace ${C_VAL}'$ns'${C_RST} (namespace, PVCs, PVs, VolumeAttachments; refresh every ${interval}s)...${C_RST}"
+
+    local -i ns_n pvc_n pv_n va_n
+    while : ; do
+	ns_n=$(oc get ns "$ns" --no-headers 2>/dev/null | wc -l)
+	pvc_n=$(oc get pvc -n "$ns" --no-headers 2>/dev/null | wc -l)
+
+	local pv_names_file
+	pv_names_file=$(mktemp)
+	oc get pv -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.claimRef.namespace}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pat="$ns_pat" '$2 ~ pat {print $1}' > "$pv_names_file"
+	pv_n=$(wc -l < "$pv_names_file")
+
+	va_n=$(oc get volumeattachment -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.spec.source.persistentVolumeName}{"\n"}{end}' 2>/dev/null \
+	    | awk -v pvf="$pv_names_file" 'BEGIN{while((getline l < pvf) > 0) pv[l]=1} $2 in pv {c++} END{print c+0}')
+	rm -f "$pv_names_file"
+
+	printf '\r  namespace=%-4s PVCs=%-4s PVs=%-4s VolumeAttachments=%-4s   ' \
+	    "$ns_n" "$pvc_n" "$pv_n" "$va_n"
+
+	if (( ns_n == 0 && pvc_n == 0 && pv_n == 0 && va_n == 0 )) ; then
+	    echo ""
+	    log_message "${C_OK}Namespace ${C_VAL}'$ns'${C_RST} fully cleaned up${C_RST} (no leftover namespace, PVCs, PVs, or VolumeAttachments)"
+	    return 0
+	fi
+
+	if (( SECONDS >= deadline )) ; then
+	    echo ""
+	    log_message "${C_WARN}Timed out after ${timeout}s waiting for namespace ${C_VAL}'$ns'${C_RST} cleanup; leftovers remain: namespace=$ns_n PVCs=$pvc_n PVs=$pv_n VolumeAttachments=$va_n${C_RST}"
+	    return 1
+	fi
+
+	sleep "$interval"
+    done
+}
+
+################################################################
+# Delete a non-vstorm namespace and all VMs inside it.
+# Args: $1 = namespace, $2 = "skip-confirm" (optional, used by delete_all_batches)
+delete_vm_namespace() {
+    local ns=$1
+    local skip_confirm=${2:-}
+
+    if is_protected_delete_namespace "$ns" ; then
+	fatal "Refusing to delete protected namespace '$ns'"
+    fi
+
+    if ((! wet_run)) ; then
+	echo "(dry-run) Would delete namespace '$ns' and all its VMs:"
+	echo "  virtctl stop <vm> -n $ns   (all VMs, in parallel, up to ${STOP_PARALLEL:-200} at a time)"
+	echo "  oc delete ns $ns --wait=false"
+	echo ""
+	echo "(dry-run) Would wait (up to ${STOP_WAIT_TIMEOUT:-300}s) for all VMs to reach Stopped"
+	echo "before deleting the namespace, then monitor leftover PVCs/PVs/VolumeAttachments,"
+	echo "refreshing counts every ${DELETE_POLL_INTERVAL:-2}s until all reach zero."
+	return 0
+    fi
+
+    local vm_list vm_count
+    vm_list=$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk -v ns="$ns" '{print ns, $1}') || true
+    [[ -z "$vm_list" ]] && vm_count=0 || vm_count=$(echo "$vm_list" | wc -l)
+
+    echo "Resources in namespace '$ns':"
+    echo ""
+    echo "VirtualMachines: $vm_count"
+    echo ""
+
+    if (( ! CONFIRM_DELETE )) && [[ "$skip_confirm" != "skip-confirm" ]] ; then
+	read -r -p "Delete namespace '$ns' and its VMs? [y/N] " confirm
+	if [[ "${confirm,,}" != "y" ]] ; then
+	    echo "Aborted."
+	    return 0
+	fi
+    fi
+
+    stop_namespace_vms "$ns" "$vm_list"
+
+    log_message "Deleting namespace ${C_VAL}'$ns'${C_RST}..."
+    oc delete ns "$ns" --wait=false
+    watch_namespace_delete_cleanup "$ns"
+}
+
+################################################################
 # Delete all resources for a batch
 # Args: $1 = batch ID, $2 = "skip-confirm" (optional, used by delete_all_batches)
 delete_batch() {
@@ -1399,19 +2749,23 @@ delete_batch() {
 
     if ((! wet_run)) ; then
         echo "(dry-run) Would delete all resources for batch '$batch':"
-        echo "  oc delete ns -l batch-id=$batch"
+        echo "  virtctl stop <vm> -n <namespace>   (all VMs, in parallel, up to ${STOP_PARALLEL:-200} at a time)"
+        echo "  oc delete ns -l batch-id=$batch --wait=false"
         echo ""
         echo "This deletes all namespaces, VMs, DataVolumes, VolumeSnapshots,"
         echo "and PVCs belonging to batch '$batch'."
+        echo "(dry-run) Would wait (up to ${STOP_WAIT_TIMEOUT:-300}s) for all VMs to reach Stopped"
+        echo "before deleting namespaces, then monitor leftover namespaces/PVCs/PVs/VolumeAttachments,"
+        echo "refreshing counts every ${DELETE_POLL_INTERVAL:-2}s until all reach zero."
         return 0
     fi
 
     # Show what will be deleted (counts only, not full listing)
-    local ns_list ns_count vm_count
+    local ns_list ns_count vm_list vm_count
     ns_list=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1}') || true
     [[ -z "$ns_list" ]] && ns_count=0 || ns_count=$(echo "$ns_list" | wc -l)
-    vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l) || true
-    vm_count=${vm_count:-0}
+    vm_list=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1, $2}') || true
+    [[ -z "$vm_list" ]] && vm_count=0 || vm_count=$(echo "$vm_list" | wc -l)
 
     echo "Resources for batch '$batch':"
     echo ""
@@ -1430,8 +2784,8 @@ delete_batch() {
     # may have been manually tagged with a batch-id label.
     local ns_name
     while read -r ns_name ; do
-	if [[ -n "$ns_name" && ! "$ns_name" =~ ^vm-[a-zA-Z0-9._-]+-ns-[0-9]+$ ]] ; then
-	    fatal "Refusing to delete namespace '$ns_name': does not match vstorm naming pattern (vm-{batch}-ns-{N})"
+	if [[ -n "$ns_name" && ! "$ns_name" =~ ^${batch}-ns-[0-9]+$ ]] ; then
+	    fatal "Refusing to delete namespace '$ns_name': does not match vstorm naming pattern ({batch}-ns-{N})"
 	fi
     done <<< "$ns_list"
 
@@ -1444,73 +2798,93 @@ delete_batch() {
 	fi
     fi
 
-    # Delete namespaces (cascades VMs, DVs, snapshots, PVCs)
-    log_message "Deleting namespaces for batch ${C_VAL}'$batch'${C_RST}..."
-    oc delete ns -l batch-id="$batch"
-    log_message "${C_OK}All resources for batch ${C_VAL}'$batch'${C_RST} deleted${C_RST}"
+    # Gracefully stop all VMs (parallel `virtctl stop`) before their
+    # namespaces are torn down, rather than letting namespace deletion
+    # abruptly kill running VMIs. Also waits (best-effort) for the stop to
+    # actually take effect before proceeding.
+    stop_batch_vms "$batch" "$vm_list"
 
-    # Clean up manifest file
-    local manifest="${LOG_DIR}/batch-${batch}.manifest"
-    if [[ -f "$manifest" ]] ; then
-        rm -f "$manifest"
-        log_message "Removed manifest: ${C_VAL}$manifest${C_RST}"
-    fi
+    # Delete namespaces (cascades VMs, DVs, snapshots, PVCs). --wait=false
+    # returns immediately so we can monitor leftover cluster-scoped storage
+    # (PVs, VolumeAttachments) ourselves instead of blocking silently until
+    # every finalizer clears.
+    log_message "Deleting namespaces for batch ${C_VAL}'$batch'${C_RST}..."
+    oc delete ns -l batch-id="$batch" --wait=false
+    watch_batch_delete_cleanup "$batch"
 }
 
 ################################################################
-# Delete ALL vstorm batches on the cluster
+# Delete ALL vstorm batches and other VM namespaces on the cluster
 delete_all_batches() {
-    # Discover all vstorm-created namespaces by the batch-id label,
-    # then extract unique batch IDs from the namespace names.
-    local all_batches
+    local vstorm_batch_ns all_batches other_vm_ns
 
     if ((! wet_run)) ; then
 	cat <<-EOF
-	(dry-run) Would discover and delete all vstorm batches.
-	  oc get ns -l batch-id --no-headers
-
-	This finds all namespaces with a batch-id label matching
-	the vstorm naming pattern (vm-{batch}-ns-{N}) and deletes them.
+	(dry-run) Would discover and delete:
+	  - all vstorm batches (oc get ns -l batch-id, {batch}-ns-{N} pattern)
+	  - all other namespaces containing VirtualMachines (oc get vm -A),
+	    excluding openshift/kube system namespaces and vstorm batch namespaces
 	EOF
 	return 0
     fi
 
-    all_batches=$(oc get ns -l batch-id --no-headers 2>/dev/null |
-	awk '{print $1}' |
-	grep -oP '^vm-\K[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
+    vstorm_batch_ns=$(discover_vstorm_batch_namespaces)
+    all_batches=$(echo "$vstorm_batch_ns" |
+	grep -oP '^[a-zA-Z0-9._-]+(?=-ns-[0-9]+$)' |
 	sort -u) || true
+    other_vm_ns=$(discover_non_vstorm_vm_namespaces "$vstorm_batch_ns")
 
-    if [[ -z "$all_batches" ]] ; then
-	echo "No vstorm batches found on the cluster."
+    if [[ -z "$all_batches" && -z "$other_vm_ns" ]] ; then
+	echo "No vstorm batches or non-vstorm VM namespaces found on the cluster."
 	return 0
     fi
 
-    echo "Found vstorm batches:"
-    local batch
-    while read -r batch ; do
-	local ns_count
-	ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
-	local vm_count
-	vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
-	echo "  $batch  ($ns_count namespaces, $vm_count VMs)"
-    done <<< "$all_batches"
-    echo ""
+    if [[ -n "$all_batches" ]] ; then
+	echo "Found vstorm batches:"
+	local batch
+	while read -r batch ; do
+	    local ns_count vm_count
+	    ns_count=$(oc get ns -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	    vm_count=$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | wc -l)
+	    echo "  $batch  ($ns_count namespaces, $vm_count VMs)"
+	done <<< "$all_batches"
+	echo ""
+    fi
+
+    if [[ -n "$other_vm_ns" ]] ; then
+	echo "Found non-vstorm VM namespaces:"
+	local ns vm_count
+	while read -r ns ; do
+	    vm_count=$(oc get vm -n "$ns" --no-headers 2>/dev/null | wc -l)
+	    echo "  $ns  ($vm_count VMs)"
+	done <<< "$other_vm_ns"
+	echo ""
+    fi
 
     # Confirmation (unless --yes)
     if (( ! CONFIRM_DELETE )) ; then
-	read -r -p "Delete ALL batches above? This is irreversible. [y/N] " confirm
+	read -r -p "Delete ALL batches and VM namespaces above? This is irreversible. [y/N] " confirm
 	if [[ "${confirm,,}" != "y" ]] ; then
 	    echo "Aborted."
 	    return 0
 	fi
     fi
 
-    # Delete each batch; skip per-batch confirmation since we already confirmed
-    while read -r batch ; do
-	delete_batch "$batch" skip-confirm
-    done <<< "$all_batches"
+    # Delete each vstorm batch; skip per-batch confirmation since we already confirmed
+    if [[ -n "$all_batches" ]] ; then
+	while read -r batch ; do
+	    delete_batch "$batch" skip-confirm
+	done <<< "$all_batches"
+    fi
 
-    log_message "${C_OK}All vstorm batches deleted.${C_RST}"
+    # Delete each non-vstorm VM namespace
+    if [[ -n "$other_vm_ns" ]] ; then
+	while read -r ns ; do
+	    delete_vm_namespace "$ns" skip-confirm
+	done <<< "$other_vm_ns"
+    fi
+
+    log_message "${C_OK}All vstorm batches and VM namespaces deleted.${C_RST}"
 }
 
 ################################################################
@@ -1687,15 +3061,20 @@ main() {
 	log_message "DV URL:        ${C_VAL}$DV_URL${C_RST}"
 	log_message "Storage size:  ${C_VAL}$STORAGE_SIZE${C_RST}"
     fi
-    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+    if [[ -n "$DATA_DISK_SIZE" ]] ; then
+	log_message "Data disk:     ${C_VAL}$DATA_DISK_SIZE${C_RST} (blank vdb)"
+    fi
+    if [[ -z "$CONTAINERDISK_IMAGE" || -n "$DATA_DISK_SIZE" ]] ; then
 	log_message "Storage class: ${C_VAL}$STORAGE_CLASS${C_RST}"
 	log_message "Volume mode:   ${C_VAL}$VOLUME_MODE${C_RST}"
-	if ((USE_SNAPSHOT)) ; then
-	    log_message "Snapshot mode: enabled (class: ${C_VAL}$SNAPSHOT_CLASS${C_RST})"
-	elif [[ -n "$DATASOURCE" ]] ; then
-	    log_message "Snapshot mode: disabled (direct DataSource clone)"
-	else
-	    log_message "Snapshot mode: disabled (direct PVC clone)"
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    if ((USE_SNAPSHOT)) ; then
+		log_message "Snapshot mode: enabled (class: ${C_VAL}$SNAPSHOT_CLASS${C_RST})"
+	    elif [[ -n "$DATASOURCE" ]] ; then
+		log_message "Snapshot mode: disabled (direct DataSource clone)"
+	    else
+		log_message "Snapshot mode: disabled (direct PVC clone)"
+	    fi
 	fi
     fi
     log_message "VM CPU cores:  ${C_VAL}$VM_CPU_CORES${C_RST}"
@@ -1703,19 +3082,62 @@ main() {
     log_message "VM firmware:   ${C_VAL}$VM_FIRMWARE${C_RST}"
     log_message "Cloud-init:    ${C_VAL}${CLOUDINIT_FILE:-none}${C_RST}"
     log_message "Run strategy:  ${C_VAL}$RUN_STRATEGY${C_RST}"
-
-    create_namespaces
-    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
-	create_datavolumes
-	if ((USE_SNAPSHOT)) ; then
-	    create_volumesnapshots
-	else
-	    log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
-	fi
+    if ((WAIT_SSH)); then
+	log_message "Wait SSH:      ${C_VAL}yes (${SSH_READY_TIMEOUT}s)${C_RST}"
+    elif ((WAIT)); then
+	log_message "Wait VMs:      ${C_VAL}yes${C_RST}"
     fi
-    create_virtualmachines
-    if ((VM_SERVICE)); then
-	create_vm_service
+    if ((NS_SEQUENTIAL_CREATION)); then
+	log_message "NS sequential: ${C_VAL}true${C_RST} (--ns-sequential-creation: one namespace at a time)"
+    fi
+
+    if ((NS_SEQUENTIAL_CREATION)) ; then
+	log_message "${C_BOLD}ns-sequential-creation enabled:${C_RST} creating/waiting one namespace at a time"
+	local -i seq_ns is_last_ns
+	for ((seq_ns=1; seq_ns<=NUM_NAMESPACES; seq_ns++)); do
+	    is_last_ns=$((seq_ns == NUM_NAMESPACES ? 1 : 0))
+	    log_message "${C_BOLD}Namespace ${C_VAL}${seq_ns}${C_RST}${C_BOLD} of ${C_VAL}${NUM_NAMESPACES}${C_RST}"
+	    create_namespaces "$seq_ns" "$seq_ns"
+	    if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+		create_datavolumes "$seq_ns" "$seq_ns"
+		if ((USE_SNAPSHOT)) ; then
+		    create_volumesnapshots "$seq_ns" "$seq_ns"
+		elif ((seq_ns == 1)) ; then
+		    log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
+		fi
+	    fi
+	    # Force a wait for this namespace's VMs to reach Running before
+	    # moving on -- otherwise --ns-sequential-creation would just reorder the
+	    # same burst of creates with no throttling effect. The final
+	    # namespace still honors --wait for whether create returns
+	    # only once everything is Running.
+	    create_virtualmachines "$seq_ns" "$seq_ns" $((is_last_ns ? 0 : 1))
+	    if ((VM_SERVICE)); then
+		create_vm_service "$seq_ns" "$seq_ns"
+	    fi
+	    # Post an incremental progress manifest as soon as this namespace's
+	    # resources are created, so the dashboard/result server reflects
+	    # progress namespace-by-namespace instead of only once after the
+	    # whole --ns-sequential-creation loop finishes.
+	    if ((wet_run)) && _result_server_url_configured; then
+		BATCH_DV_CREATED_JSON=$(collect_batch_dv_created_json)
+		post_batch_result_metadata progress
+	    fi
+	done
+    else
+	create_namespaces
+	if [[ -z "$CONTAINERDISK_IMAGE" ]] ; then
+	    create_datavolumes
+	    if ((USE_SNAPSHOT)) ; then
+		create_volumesnapshots
+	    else
+		log_message "Skipping VolumeSnapshots (${C_VAL}--no-snapshot${C_RST} mode)"
+	    fi
+	fi
+	create_virtualmachines
+	if ((VM_SERVICE)); then
+	    create_vm_service
+	fi
     fi
 
     # TODO: re-enable once verify_cloudinit is improved
@@ -1723,8 +3145,19 @@ main() {
     #     verify_cloudinit
     # fi
 
+    local ssh_verify_failed=0
+    if ((wet_run && WAIT_SSH)); then
+	if ! verify_ssh_port; then
+	    ssh_verify_failed=1
+	fi
+    fi
+
     if ((wet_run)) ; then
-	log_message "${C_OK}Resource creation completed successfully!${C_RST}"
+	if ((ssh_verify_failed)); then
+	    log_message "${C_WARN}Resource creation finished but SSH port check failed${C_RST}"
+	else
+	    log_message "${C_OK}Resource creation completed successfully!${C_RST}"
+	fi
 	if [[ -n "$CONTAINERDISK_IMAGE" ]] ; then
 	    log_message "Created ${C_VAL}$NUM_NAMESPACES${C_RST} namespaces and ${C_VAL}$NUM_VMS${C_RST} total VirtualMachines (container disk)"
 	elif ((USE_SNAPSHOT)) ; then
@@ -1739,23 +3172,114 @@ main() {
 	local manifest_file="${LOG_DIR}/batch-${BATCH_ID}.manifest"
 	local ns_list=""
 	local vm_list=""
+	local dv_created_json="{}"
+	# Early progress manifest: makes the batch visible on the dashboard
+	# right after VMs are created, well before large-scale DV cloning
+	# finishes. wait_for_batch_datavolumes_for_timestamps posts further
+	# progress updates as DVs become Ready/Bound; the final POST below
+	# always has the complete picture regardless.
+	if _result_server_url_configured; then
+	    dv_created_json=$(collect_batch_dv_created_json)
+	    BATCH_DV_CREATED_JSON="$dv_created_json"
+	    post_batch_result_metadata progress
+	fi
+	# Per-VM / blank data DVs are created with the VMs; wait for Succeeded
+	# so ready/bound timestamps are present even without --wait.
+	wait_for_batch_datavolumes_for_timestamps
+	dv_created_json=$(collect_batch_dv_created_json)
+	BATCH_DV_CREATED_JSON="$dv_created_json"
+	local dv_summary_file
+	dv_summary_file=$(mktemp)
+	printf '%s\n' "$dv_created_json" > "$dv_summary_file"
+	local base_dv_created_at_line="" base_dv_ready_at_line="" base_dv_bound_at_line=""
+	local snapshot_created_at_line="" snapshot_ready_at_line=""
+	local dv_created_at_line="" pvc_created_at_line="" dv_ready_at_line="" pvc_bound_at_line=""
+	local ssh_ready_at_line="" ssh_ready_status_line="" ssh_failed_line=""
+	# One python pass via file — avoid MAX_ARG_STRLEN on large DV_CREATED_JSON.
+	eval "$(
+	    python3 -c '
+import json, shlex, sys
+path = sys.argv[1]
+try:
+    d = json.load(open(path, encoding="utf-8"))
+except Exception:
+    d = {}
+keys = [
+    ("base_dv_created_at", "base_dv_created_at_line"),
+    ("base_dv_ready_at", "base_dv_ready_at_line"),
+    ("base_dv_bound_at", "base_dv_bound_at_line"),
+    ("snapshot_created_at", "snapshot_created_at_line"),
+    ("snapshot_ready_at", "snapshot_ready_at_line"),
+    ("dv_created_at", "dv_created_at_line"),
+    ("dv_ready_at", "dv_ready_at_line"),
+    ("pvc_created_at", "pvc_created_at_line"),
+]
+for src, dest in keys:
+    print("%s=%s" % (dest, shlex.quote(str(d.get(src) or ""))))
+bound = d.get("pvc_bound_at") or d.get("dv_bound_at") or ""
+print("pvc_bound_at_line=%s" % shlex.quote(str(bound)))
+' "$dv_summary_file" 2>/dev/null || true
+	)"
+	rm -f "$dv_summary_file"
+	if [[ -n "${BATCH_SSH_JSON:-}" && "$BATCH_SSH_JSON" != "{}" ]]; then
+	    local ssh_summary_file
+	    ssh_summary_file=$(mktemp)
+	    printf '%s\n' "$BATCH_SSH_JSON" > "$ssh_summary_file"
+	    eval "$(
+		python3 -c '
+import json, shlex, sys
+try:
+    d = json.load(open(sys.argv[1], encoding="utf-8"))
+except Exception:
+    d = {}
+print("ssh_ready_at_line=%s" % shlex.quote(str(d.get("ssh_ready_at") or "")))
+print("ssh_ready_status_line=%s" % shlex.quote(str(d.get("ssh_ready_status") or "")))
+print("ssh_failed_line=%s" % shlex.quote(",".join(d.get("vm_ssh_failed") or [])))
+' "$ssh_summary_file" 2>/dev/null || true
+	    )"
+	    rm -f "$ssh_summary_file"
+	fi
 	for ((ns=1; ns<=NUM_NAMESPACES; ns++)); do
-	    local ns_name="vm-${BATCH_ID}-ns-${ns}"
+	    local ns_name="${BATCH_ID}-ns-${ns}"
 	    ns_list="${ns_list:+${ns_list}, }${ns_name}"
 	done
-	for key in "${!expected_vms[@]}" ; do
+	for key in "${BATCH_VMS_ORDERED[@]+"${BATCH_VMS_ORDERED[@]}"}" ; do
 	    vm_list="${vm_list:+${vm_list}, }${key}"
 	done
 	cat > "$manifest_file" <<-MANIFEST
 	batch-id: $BATCH_ID
-	created: $(date +%Y-%m-%dT%H:%M:%S)
+	created: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 	basename: $VM_BASENAME
 	total-vms: $NUM_VMS
 	total-namespaces: $NUM_NAMESPACES
 	namespaces: $ns_list
 	vms: $vm_list
+	base-dv-created-at: ${base_dv_created_at_line:-}
+	base-dv-ready-at: ${base_dv_ready_at_line:-}
+	base-dv-bound-at: ${base_dv_bound_at_line:-}
+	snapshot-created-at: ${snapshot_created_at_line:-}
+	snapshot-ready-at: ${snapshot_ready_at_line:-}
+	dv-created-at: ${dv_created_at_line:-}
+	dv-ready-at: ${dv_ready_at_line:-}
+	pvc-created-at: ${pvc_created_at_line:-}
+	pvc-bound-at: ${pvc_bound_at_line:-}
+	ssh-ready-at: ${ssh_ready_at_line:-}
+	ssh-ready-status: ${ssh_ready_status_line:-}
+	ssh-failed: ${ssh_failed_line:-}
 	MANIFEST
+	if [[ "$dv_created_json" != "{}" && -n "$dv_created_json" ]]; then
+	    printf '%s\n' "$dv_created_json" > "${LOG_DIR}/batch-${BATCH_ID}.dv-created.json"
+	fi
+	if [[ -n "${BATCH_SSH_JSON:-}" && "$BATCH_SSH_JSON" != "{}" ]]; then
+	    printf '%s\n' "$BATCH_SSH_JSON" > "${LOG_DIR}/batch-${BATCH_ID}.ssh-ready.json"
+	fi
 	log_message "Batch manifest written to: ${C_VAL}$manifest_file${C_RST}"
+
+	post_batch_result_metadata final
+
+	if ((ssh_verify_failed)); then
+	    fatal "SSH port check failed for one or more VMs (timeout ${SSH_READY_TIMEOUT}s). See log and ${LOG_DIR}/batch-${BATCH_ID}.ssh-ready.json"
+	fi
 
 	cat <<-EOF
 
@@ -1793,7 +3317,7 @@ main() {
 	    for entry in "${VM_SERVICE_INFO[@]}"; do
 		IFS=: read -r ns_name svc_type node_port svc_port target_port <<< "$entry"
 		if [[ "$svc_type" == clusterip ]]; then
-		    svc_host="svc-clusterip-${VM_BASENAME}-${BATCH_ID}.${ns_name}.svc.cluster.local"
+		    svc_host="svc-clusterip-$(join_name "$VM_BASENAME" "$BATCH_ID").${ns_name}.svc.cluster.local"
 		    if (( svc_port == 22 )); then
 			echo "  ${ns_name}: ssh -o PubkeyAuthentication=no root@${svc_host}"
 		    else

@@ -182,7 +182,9 @@ setup_file() {
   [[ "$output" == *"kind: UserDefinedNetwork"* ]]
   [[ "$output" == *"name: l2bridge"* ]]
   [[ "$output" == *"containerDisk:"* ]]
-  [[ "$output" != *"kind: DataVolume"* ]]
+  # Root is containerDisk; blank data disk is opt-in via --data-disk-size
+  [[ "$output" != *"blank: {}"* ]]
+  [[ "$output" != *"name: vdb"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -246,16 +248,18 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# UDN-9: dv-url without cloud-init has no networkData
+# UDN-9: dv-url without --cloudinit still gets default profile + UDN networkData
 # ---------------------------------------------------------------
-@test "UDN: dv-url without cloud-init omits networkData" {
+@test "UDN: dv-url without cloud-init applies default profile with networkData" {
   run bash "$VSTORM" -n --batch-id=udn009 --udn-l2 \
     --dv-url=http://example.com/disk.qcow --no-snapshot \
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"name: l2bridge"* ]]
-  [[ "$output" != *"networkData:"* ]]
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"networkData:"* ]]
+  [[ "$output" == *"dhcp4: true"* ]]
 }
 
 # ===============================================================
@@ -279,7 +283,7 @@ setup_file() {
   [[ "$output" == *"targetPort: 22"* ]]
   [[ "$output" == *"nodePort: 32222"* ]]
   [[ "$output" == *"nodePort: 32223"* ]]
-  [[ "$output" == *"kubevirt.io/domain: vm"* ]]
+  [[ "$output" == *"kubevirt.io/domain: udn010"* ]]
   [[ "$output" == *"Creating NodePort Service"* ]]
   [[ "$output" == *"Service: enabled (NodePort, port 22"* ]]
 }
@@ -293,7 +297,7 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   [[ "$output" == *"type: ClusterIP"* ]]
-  [[ "$output" == *"name: svc-clusterip-vm-udn011"* ]]
+  [[ "$output" == *"name: svc-clusterip-udn011"* ]]
   [[ "$output" == *"port: 22"* ]]
   [[ "$output" == *"Creating ClusterIP Service"* ]]
   [[ "$output" == *"Service: enabled (ClusterIP, port 22)"* ]]
@@ -308,8 +312,8 @@ setup_file() {
     --vms=2 --namespaces=2
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32222 (port 22)"* ]]
-  [[ "$output" == *"Creating NodePort Service svc-nodeport-vm-udn012 on nodePort 32223 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-udn012 on nodePort 32222 (port 22)"* ]]
+  [[ "$output" == *"Creating NodePort Service svc-nodeport-udn012 on nodePort 32223 (port 22)"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -320,9 +324,9 @@ setup_file() {
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"name: svc-clusterip-vm-udn013"* ]]
-  [[ "$output" == *"namespace: vm-udn013-ns-1"* ]]
-  [[ "$output" == *"Creating ClusterIP Service svc-clusterip-vm-udn013"* ]]
+  [[ "$output" == *"name: svc-clusterip-udn013"* ]]
+  [[ "$output" == *"namespace: udn013-ns-1"* ]]
+  [[ "$output" == *"Creating ClusterIP Service svc-clusterip-udn013"* ]]
 }
 
 # ---------------------------------------------------------------

@@ -331,8 +331,8 @@ setup_file() {
 
   # --- 3 per namespace ---
   local ns1_count ns2_count
-  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-opt005-ns-1")
-  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-opt005-ns-2")
+  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: opt005-ns-1")
+  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: opt005-ns-2")
   [ "$ns1_count" -eq 3 ]
   [ "$ns2_count" -eq 3 ]
 }
@@ -418,9 +418,9 @@ setup_file() {
   [ "$vm_count" -eq 8 ]
 
   # --- 3 namespaces created ---
-  [[ "$output" == *"name: vm-opt013-ns-1"* ]]
-  [[ "$output" == *"name: vm-opt013-ns-2"* ]]
-  [[ "$output" == *"name: vm-opt013-ns-3"* ]]
-  [[ "$output" != *"vm-opt013-ns-4"* ]]
+  [[ "$output" == *"name: opt013-ns-1"* ]]
+  [[ "$output" == *"name: opt013-ns-2"* ]]
+  [[ "$output" == *"name: opt013-ns-3"* ]]
+  [[ "$output" != *"opt013-ns-4"* ]]
 }
 

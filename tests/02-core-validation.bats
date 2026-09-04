@@ -18,26 +18,27 @@ setup_file() {
 # ---------------------------------------------------------------
 # Batch ID auto-generation
 # ---------------------------------------------------------------
-@test "auto-generates a 6-character hex batch ID" {
+@test "auto-generates a vstorm-prefixed hex batch ID" {
   run bash "$VSTORM" -q --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
   local batch_id
   batch_id=$(echo "$output" | grep "Batch ID:" | head -1 | awk '{print $NF}')
-  [[ "$batch_id" =~ ^[0-9a-f]{6}$ ]]
+  # "vstorm-" + 6 hex — always starts with letters (never YAML-numeric)
+  [[ "$batch_id" =~ ^vstorm-[0-9a-f]{6}$ ]]
 }
 
 # ---------------------------------------------------------------
 # Namespace naming
 # ---------------------------------------------------------------
-@test "namespaces follow vm-{batch}-ns-{N} pattern" {
+@test "namespaces follow {batch}-ns-{N} pattern" {
   run bash "$VSTORM" -q --batch-id=ff0011 --vms=4 --namespaces=3
   [ "$status" -eq 0 ]
 
-  [[ "$output" == *"vm-ff0011-ns-1"* ]]
-  [[ "$output" == *"vm-ff0011-ns-2"* ]]
-  [[ "$output" == *"vm-ff0011-ns-3"* ]]
-  [[ "$output" != *"vm-ff0011-ns-4"* ]]
+  [[ "$output" == *"ff0011-ns-1"* ]]
+  [[ "$output" == *"ff0011-ns-2"* ]]
+  [[ "$output" == *"ff0011-ns-3"* ]]
+  [[ "$output" != *"ff0011-ns-4"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -48,8 +49,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   local ns1_count ns2_count
-  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-aabb11-ns-1")
-  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: vm-aabb11-ns-2")
+  ns1_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: aabb11-ns-1")
+  ns2_count=$(echo "$output" | grep -c "Creating VirtualMachine.*for namespace: aabb11-ns-2")
 
   [ "$ns1_count" -eq 3 ]
   [ "$ns2_count" -eq 2 ]
@@ -506,7 +507,7 @@ SLOWMOCK
 }
 
 # ---------------------------------------------------------------
-# OPT: --env without --cloudinit does not crash (default cloud-init has no placeholder)
+# OPT: --env without --cloudinit uses default profile (has {VSTORM_GUEST_ENV})
 # ---------------------------------------------------------------
 @test "OPT: --env without custom cloud-init runs successfully" {
   run bash "$VSTORM" -n --batch-id=env03 --datasource=rhel9 --vms=1 --namespaces=1 \
@@ -526,7 +527,47 @@ SLOWMOCK
   decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
   # Placeholder is always replaced (with env lines or with comment) so YAML stays valid
   [[ "$decoded" == *"# no --env passed"* ]]
+  [[ "$decoded" == *"RESULT_SERVER_URL=http://n42-h01-b02-mx750c.rdu3.labs.perfscale.redhat.com:8080/v1/results"* ]]
+  [[ "$decoded" == *"VSTORM_BATCH_ID=env04"* ]]
   [[ "$decoded" != *"{VSTORM_GUEST_ENV}"* ]]
+}
+
+# ---------------------------------------------------------------
+# OPT: default RESULT_SERVER_URL can be overridden or cleared
+# ---------------------------------------------------------------
+@test "OPT: --env RESULT_SERVER_URL overrides default collector URL" {
+  run bash "$VSTORM" -n --batch-id=env04b --datasource=rhel9 --vms=1 --namespaces=1 \
+    --cloudinit=workload/cloudinit-default.yaml \
+    --env RESULT_SERVER_URL=http://example.test:9999/v1/results
+  [ "$status" -eq 0 ]
+  userdata_b64=$(echo "$output" | grep "userdata:" | head -1 | sed 's/.*userdata: *//')
+  decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
+  [[ "$decoded" == *"RESULT_SERVER_URL=http://example.test:9999/v1/results"* ]]
+  [[ "$decoded" != *"n42-h01-b02-mx750c"* ]]
+}
+
+@test "OPT: --env RESULT_SERVER_URL= empty disables default collector URL" {
+  run bash "$VSTORM" -n --batch-id=env04c --datasource=rhel9 --vms=1 --namespaces=1 \
+    --cloudinit=workload/cloudinit-default.yaml \
+    --env RESULT_SERVER_URL=
+  [ "$status" -eq 0 ]
+  userdata_b64=$(echo "$output" | grep "userdata:" | head -1 | sed 's/.*userdata: *//')
+  decoded=$(echo "$userdata_b64" | base64 -d 2>/dev/null)
+  [[ "$decoded" == *"RESULT_SERVER_URL="* ]]
+  [[ "$decoded" != *"n42-h01-b02-mx750c"* ]]
+}
+
+@test "OPT: unreachable RESULT_SERVER_URL override still allows dry-run create" {
+  run bash "$VSTORM" -n --batch-id=env04d --datasource=rhel9 --vms=1 --namespaces=1 \
+    --env RESULT_SERVER_URL=http://127.0.0.1:1/v1/results
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"kind: VirtualMachine"* ]]
+  [[ "$output" == *"applying default cloud-init"* ]]
+}
+
+@test "OPT: host manifest POST failure path keeps create-succeeded warning text" {
+  grep -q 'create still succeeded; JSON kept' "$VSTORM"
+  grep -q 'Failed to POST ${phase_label} for batch' "$VSTORM"
 }
 
 # ---------------------------------------------------------------

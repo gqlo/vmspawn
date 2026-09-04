@@ -96,8 +96,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-dc0005-ns-1"* ]]
-  [[ "$output" == *"name: vm-dc0005-ns-2"* ]]
+  [[ "$output" == *"name: dc0005-ns-1"* ]]
+  [[ "$output" == *"name: dc0005-ns-2"* ]]
 
   # --- No base DV for any namespace ---
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
@@ -126,7 +126,7 @@ setup_file() {
   # --- Base DV IS created (URL import path) ---
   [[ "$output" == *"Creating DataVolumes"* ]]
   [[ "$output" == *"kind: DataVolume"* ]]
-  [[ "$output" == *"name: vm-base"* ]]
+  [[ "$output" == *"name: base"* ]]
   [[ "$output" != *"Skipping base DataVolume creation"* ]]
 
   # --- Snapshot mode shows PVC clone (not DataSource clone) ---
@@ -134,7 +134,7 @@ setup_file() {
 
   # --- VMs clone from base PVC ---
   [[ "$output" == *"pvc:"* ]]
-  [[ "$output" == *"name: vm-base"* ]]
+  [[ "$output" == *"name: base"* ]]
 }
 
 # ---------------------------------------------------------------

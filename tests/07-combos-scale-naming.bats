@@ -35,8 +35,8 @@ setup_file() {
   [[ "$output" == *"sourceRef"* ]]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-cmb025-ns-1"* ]]
-  [[ "$output" == *"name: vm-cmb025-ns-2"* ]]
+  [[ "$output" == *"name: cmb025-ns-1"* ]]
+  [[ "$output" == *"name: cmb025-ns-2"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -213,8 +213,8 @@ setup_file() {
   [[ "$output" == *"name: myvm-cmb033-4"* ]]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-cmb033-ns-1"* ]]
-  [[ "$output" == *"name: vm-cmb033-ns-2"* ]]
+  [[ "$output" == *"name: cmb033-ns-1"* ]]
+  [[ "$output" == *"name: cmb033-ns-2"* ]]
 
   # --- DataSource clone ---
   [[ "$output" == *"Skipping base DataVolume creation"* ]]
@@ -257,12 +257,13 @@ setup_file() {
   [[ "$output" == *"persistentVolumeClaimName: myvm-base"* ]]
 
   # --- VM snapshot source points to the per-namespace snapshot ---
-  [[ "$output" == *"name: myvm-vm-cmb034a-ns-1"* ]]
+  [[ "$output" == *"name: myvm-cmb034a-ns-1"* ]]
 
   # --- Base DV is named myvm-base ---
   [[ "$output" == *"name: myvm-base"* ]]
 
   # --- The old broken default must NOT appear ---
+  [[ "$output" != *"persistentVolumeClaimName: base"* ]]
   [[ "$output" != *"persistentVolumeClaimName: vm-base"* ]]
 
   # --- URL import ---
@@ -274,9 +275,8 @@ setup_file() {
 }
 
 # ---------------------------------------------------------------
-# COMBO-34b: --dv-url + --snapshot (default basename=vm)
-#   Verifies the default VM_BASENAME=vm still produces a matching
-#   BASE_PVC_NAME=vm-base.
+# COMBO-34b: --dv-url + --snapshot (default basename empty)
+#   Verifies empty VM_BASENAME still produces a matching BASE_PVC_NAME=base.
 # ---------------------------------------------------------------
 @test "combo: dv-url + snapshot with default basename" {
   run bash "$VSTORM" -n --batch-id=cmb034b --datasource=rhel9 \
@@ -284,15 +284,17 @@ setup_file() {
     --vms=1 --namespaces=1
   [ "$status" -eq 0 ]
 
-  # --- VolumeSnapshot references vm-base (default) ---
-  [[ "$output" == *"persistentVolumeClaimName: vm-base"* ]]
+  # --- VolumeSnapshot references base (default) ---
+  [[ "$output" == *"persistentVolumeClaimName: base"* ]]
 
-  # --- Base DV named vm-base ---
-  [[ "$output" == *"name: vm-base"* ]]
+  # --- Base DV named base ---
+  [[ "$output" == *"name: base"* ]]
 
-  # --- VM uses snapshot clone path ---
+  # --- VM / snapshot names omit empty default basename ---
   [[ "$output" == *"snapshot:"* ]]
-  [[ "$output" == *"name: vm-vm-cmb034b-ns-1"* ]]
+  [[ "$output" == *"name: cmb034b-ns-1"* ]]
+  [[ "$output" == *"name: cmb034b-1"* ]]
+  [[ "$output" != *"name: vm-cmb034b-1"* ]]
 }
 
 # ---------------------------------------------------------------
@@ -314,8 +316,8 @@ setup_file() {
   dv_count=$(echo "$output" | grep -c "kind: DataVolume")
   # 2 base DVs + 4 inline DataVolumeTemplates = but we just check base DVs
   # appear in both namespaces
-  [[ "$output" == *"namespace: vm-cmb034c-ns-1"* ]]
-  [[ "$output" == *"namespace: vm-cmb034c-ns-2"* ]]
+  [[ "$output" == *"namespace: cmb034c-ns-1"* ]]
+  [[ "$output" == *"namespace: cmb034c-ns-2"* ]]
 
   # --- 2 VolumeSnapshots ---
   local snap_count
@@ -334,6 +336,7 @@ setup_file() {
   [[ "$output" == *"name: myvm-cmb034c-4"* ]]
 
   # --- The old broken default must NOT appear ---
+  [[ "$output" != *"persistentVolumeClaimName: base"* ]]
   [[ "$output" != *"persistentVolumeClaimName: vm-base"* ]]
 }
 

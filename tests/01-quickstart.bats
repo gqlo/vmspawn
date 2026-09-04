@@ -24,9 +24,9 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- Namespaces ---
-  [[ "$output" == *"name: vm-qs0001-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0001-ns-2"* ]]
-  [[ "$output" != *"vm-qs0001-ns-3"* ]]
+  [[ "$output" == *"name: qs0001-ns-1"* ]]
+  [[ "$output" == *"name: qs0001-ns-2"* ]]
+  [[ "$output" != *"qs0001-ns-3"* ]]
 
   # --- DataVolume clones from rhel9 DataSource ---
   [[ "$output" == *"Creating DataVolumes"* ]]
@@ -42,8 +42,8 @@ setup_file() {
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"name: rhel9-vm-qs0001-ns-1"* ]]
-  [[ "$output" == *"name: rhel9-vm-qs0001-ns-2"* ]]
+  [[ "$output" == *"name: rhel9-qs0001-ns-1"* ]]
+  [[ "$output" == *"name: rhel9-qs0001-ns-2"* ]]
 
   # --- VMs clone from snapshot ---
   [[ "$output" == *"Creating VirtualMachines"* ]]
@@ -89,8 +89,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- Single namespace ---
-  [[ "$output" == *"name: vm-qs0002-ns-1"* ]]
-  [[ "$output" != *"vm-qs0002-ns-2"* ]]
+  [[ "$output" == *"name: qs0002-ns-1"* ]]
+  [[ "$output" != *"qs0002-ns-2"* ]]
 
   # --- DV references fedora DataSource ---
   [[ "$output" == *"sourceRef"* ]]
@@ -124,8 +124,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-qs0003-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0003-ns-2"* ]]
+  [[ "$output" == *"name: qs0003-ns-1"* ]]
+  [[ "$output" == *"name: qs0003-ns-2"* ]]
 
   # --- DV imports from URL (not DataSource) ---
   [[ "$output" == *"kind: DataVolume"* ]]
@@ -139,18 +139,18 @@ setup_file() {
   # --- VolumeSnapshots ---
   [[ "$output" == *"Creating VolumeSnapshots"* ]]
   [[ "$output" == *"kind: VolumeSnapshot"* ]]
-  [[ "$output" == *"name: vm-vm-qs0003-ns-1"* ]]
-  [[ "$output" == *"name: vm-vm-qs0003-ns-2"* ]]
+  [[ "$output" == *"name: qs0003-ns-1"* ]]
+  [[ "$output" == *"name: qs0003-ns-2"* ]]
 
   # --- 10 VMs ---
   local vm_count
   vm_count=$(echo "$output" | grep -c "Creating VirtualMachine [0-9]")
   [ "$vm_count" -eq 10 ]
 
-  # --- No auto cloud-init in URL mode ---
-  [[ "$output" != *"applying default cloud-init"* ]]
-  [[ "$output" != *"kind: Secret"* ]]
-  [[ "$output" != *"cloudInitNoCloud"* ]]
+  # --- Default cloud-init auto-applied (SSH + boot timestamp) ---
+  [[ "$output" == *"applying default cloud-init"* ]]
+  [[ "$output" == *"kind: Secret"* ]]
+  [[ "$output" == *"cloudInitNoCloud"* ]]
 
   # --- VMs clone from snapshot ---
   [[ "$output" == *"smartCloneFromExistingSnapshot"* ]]
@@ -248,8 +248,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-qs0006-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0006-ns-2"* ]]
+  [[ "$output" == *"name: qs0006-ns-1"* ]]
+  [[ "$output" == *"name: qs0006-ns-2"* ]]
 
   # --- Snapshots auto-disabled ---
   [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
@@ -309,8 +309,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-qs0007-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0007-ns-2"* ]]
+  [[ "$output" == *"name: qs0007-ns-1"* ]]
+  [[ "$output" == *"name: qs0007-ns-2"* ]]
 
   # --- Snapshots enabled (both classes provided) ---
   [[ "$output" == *"Snapshot mode: enabled"* ]]
@@ -339,8 +339,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- 2 namespaces ---
-  [[ "$output" == *"name: vm-qs0008-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0008-ns-2"* ]]
+  [[ "$output" == *"name: qs0008-ns-1"* ]]
+  [[ "$output" == *"name: qs0008-ns-2"* ]]
 
   # --- Snapshots disabled (DataSource direct clone) ---
   [[ "$output" == *"Snapshot mode: disabled (direct DataSource clone)"* ]]
@@ -434,8 +434,8 @@ setup_file() {
   [[ "$content" == *'batch-id: "dry002"'* ]]
 
   # --- Both namespaces present ---
-  [[ "$content" == *"name: vm-dry002-ns-1"* ]]
-  [[ "$content" == *"name: vm-dry002-ns-2"* ]]
+  [[ "$content" == *"name: dry002-ns-1"* ]]
+  [[ "$content" == *"name: dry002-ns-2"* ]]
 
   # --- VM names ---
   [[ "$content" == *"name: rhel9-dry002-1"* ]]
@@ -500,8 +500,8 @@ setup_file() {
   [ "$status" -eq 0 ]
 
   # --- two namespaces with UDN label ---
-  [[ "$output" == *"name: vm-qs0011-ns-1"* ]]
-  [[ "$output" == *"name: vm-qs0011-ns-2"* ]]
+  [[ "$output" == *"name: qs0011-ns-1"* ]]
+  [[ "$output" == *"name: qs0011-ns-2"* ]]
   [[ "$output" == *"k8s.ovn.org/primary-user-defined-network"* ]]
 
   # --- two UserDefinedNetwork CRs with custom subnet ---

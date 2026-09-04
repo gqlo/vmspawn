@@ -1,0 +1,26 @@
+[Unit]
+Description=vstorm workload result data-collector
+Documentation=https://github.com/gqlo/vstorm
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Optional: run as a non-root user (ensure DATA_DIR is writable by that user).
+#   sudo systemctl edit vstorm-data-collector
+#   [Service]
+#   User=otus
+#   Group=otus
+EnvironmentFile=/etc/vstorm/data-collector.env
+# VSTORM_HOME comes from the EnvironmentFile. Do not use WorkingDirectory=
+# with ${VSTORM_HOME}: systemd requires an absolute path there and will not
+# expand env vars. run-serve.sh cds to DATA_DIR itself.
+ExecStart=/bin/bash -c 'exec /bin/bash "$VSTORM_HOME/monitoring/data-collector/run-serve.sh"'
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
