@@ -5,9 +5,9 @@
 # while any node is cordoned/draining/rebooting):
 #   drain_seconds  — cordon until drain done (NodeNotSchedulable → NodeNotReady)
 #   boot_seconds   — drain done until boot done (NodeNotReady → NodeSchedulable)
-#   total_duration_seconds — per-node wall clock from MCN UPDATED=False to UPDATED=True
-# Pool summary (ALL_NODES row): pool_elapsed_seconds = wall clock for entire rollout;
-#   sum_total_duration_seconds = sum of per-node totals (includes overlapping queue time).
+#   per_node_total_duration_seconds — per-node wall clock from this node's MCN entering
+#     the rollout (desired≠current or Updated=False) to UPDATED=True for TARGET_CFG
+# Pool summary (ALL_NODES row): earliest node_start_time, latest node_end_time, pool wall clock.
 # data_source per row: observed | inferred | mixed (poll); evt_* columns from cluster events.
 # All timestamp columns and log prefixes use UTC (RFC3339 Z).
 #
@@ -52,6 +52,7 @@ declare -A node_milestone_iso=()
 declare -A node_milestone_source=()
 declare -A node_event_milestone_iso=()
 declare -A node_duration_secs=()
+declare -A node_end_epoch=()
 declare -A node_drain_secs=()
 declare -A node_boot_secs=()
 declare -A node_prev_unschedulable=()
@@ -968,6 +969,20 @@ detect_rollout_config() {
   fi
 }
 
+# True when MCO has assigned this node to the rollout (respects maxUnavailable batching).
+node_mcn_updating() {
+  local node="$1" mcn_json="$2"
+
+  jq -e --arg node "$node" '
+    .items[] | select(.metadata.name == $node)
+    | select(
+        (.status.configVersion.desired // "") != (.status.configVersion.current // "")
+        or ([.status.conditions[]?
+          | select(.type == "Updated" and .status == "False")] | length) > 0
+      )
+  ' <<<"$mcn_json" >/dev/null
+}
+
 node_updated_for_rollout() {
   local node="$1" mcn_json="$2"
 
@@ -995,8 +1010,8 @@ record_node_start() {
   node_start_epoch[$node]="$now"
   init_node_watch_state "$node" "$nodes_json"
   seed_initial_milestones "$node" "$now" "$nodes_json"
-  printf '%s machineconfignode/%s update started (UPDATED=False for %s)\n' \
-    "$(now_utc_iso)" "$node" "${TARGET_CFG:-unknown config}"
+  printf '%s machineconfignode/%s rollout started (MCN desired≠current or Updated=False)\n' \
+    "$(now_utc_iso)" "$node"
 }
 
 record_node_completion() {
@@ -1023,6 +1038,7 @@ record_node_completion() {
   fi
 
   node_duration_secs[$node]="$duration"
+  node_end_epoch[$node]="$end"
   node_drain_secs[$node]="${drain_secs:-0}"
   node_boot_secs[$node]="${boot_secs:-0}"
 
@@ -1050,31 +1066,40 @@ record_node_completion() {
 
 init_csv() {
   printf '%s\n' \
-    'node,drain_seconds,boot_seconds,total_duration_seconds,total_start_time,total_end_time,cordoned_ts,drain_done_ts,boot_done_ts,rendered_config,data_source,evt_cordoned_ts,evt_drain_done_ts,evt_boot_done_ts,evt_drain_seconds,evt_boot_seconds,evt_phases_complete' \
+    'node,drain_seconds,boot_seconds,per_node_total_duration_seconds,node_start_time,node_end_time,cordoned_ts,drain_done_ts,boot_done_ts,rendered_config,data_source,evt_cordoned_ts,evt_drain_done_ts,evt_boot_done_ts,evt_drain_seconds,evt_boot_seconds,evt_phases_complete' \
     > "$CSV_FILE"
 }
 
 append_csv_summary() {
-  local pool_end="$1" node sum_drain sum_boot sum_total empty_cols
+  local pool_end="$1" node empty_cols earliest_epoch latest_epoch pool_duration
 
-  sum_drain=0
-  sum_boot=0
-  sum_total=0
+  earliest_epoch=""
+  latest_epoch=""
   for node in "${worker_nodes[@]}"; do
-    sum_drain="$((sum_drain + ${node_drain_secs[$node]:-0}))"
-    sum_boot="$((sum_boot + ${node_boot_secs[$node]:-0}))"
-    sum_total="$((sum_total + ${node_duration_secs[$node]:-0}))"
+    [[ -n "${node_start_epoch[$node]:-}" ]] || continue
+    if [[ -z "$earliest_epoch" || "${node_start_epoch[$node]}" -lt "$earliest_epoch" ]]; then
+      earliest_epoch="${node_start_epoch[$node]}"
+    fi
+    if [[ -n "${node_end_epoch[$node]:-}" ]]; then
+      if [[ -z "$latest_epoch" || "${node_end_epoch[$node]}" -gt "$latest_epoch" ]]; then
+        latest_epoch="${node_end_epoch[$node]}"
+      fi
+    fi
   done
+
+  earliest_epoch="${earliest_epoch:-$start_epoch}"
+  latest_epoch="${latest_epoch:-$pool_end}"
+  pool_duration="$((latest_epoch - earliest_epoch))"
 
   empty_cols="$(printf ',%.0s' {1..11})"
   {
     printf '%s,%s,%s,%s,%s,%s%s\n' \
       "ALL_NODES" \
-      "$sum_drain" \
-      "$sum_boot" \
-      "$sum_total" \
-      "$(epoch_to_iso "$start_epoch")" \
-      "$(epoch_to_iso "$pool_end")" \
+      "" \
+      "" \
+      "$pool_duration" \
+      "$(epoch_to_iso "$earliest_epoch")" \
+      "$(epoch_to_iso "$latest_epoch")" \
       "$empty_cols"
   } >> "$CSV_FILE"
 }
@@ -1092,39 +1117,41 @@ check_mcn_updates() {
   for node in "${worker_nodes[@]}"; do
     [[ -n "${node_finished[$node]:-}" ]] && continue
 
-    capture_node_milestones "$node" "$now" "$nodes_json"
-
-    if ! node_updated_for_rollout "$node" "$mcn_json"; then
+    if node_mcn_updating "$node" "$mcn_json"; then
       record_node_start "$node" "$now" "$nodes_json"
+    fi
+
+    if [[ -n "${node_start_epoch[$node]:-}" ]]; then
       capture_node_milestones "$node" "$now" "$nodes_json"
-    elif [[ -n "${node_start_epoch[$node]:-}" ]]; then
-      capture_node_milestones "$node" "$now" "$nodes_json"
-      backfill_boot_at_completion "$node" "$now" "$nodes_json"
-      start="${node_start_epoch[$node]}"
-      end="$now"
-      duration="$((end - start))"
-      elapsed="$((now - start_epoch))"
-      node_finished[$node]=1
-      nodes_finished_this_run="$((nodes_finished_this_run + 1))"
-      record_node_completion "$node" "$duration" "$start" "$end"
-      updated_count="$(oc get mcp "$MCP" -o jsonpath='{.status.updatedMachineCount}')"
-      printf '%s machineconfignode/%s UPDATED=True — finished %s (poll est.), %s since pool started (%s/%s MCP updated, %s/%s tracked)\n' \
-        "$(now_utc_iso)" "$node" \
-        "$(format_duration "$duration")" \
-        "$(format_duration "$elapsed")" \
-        "$updated_count" "$machine_count" \
-        "$nodes_finished_this_run" "${#worker_nodes[@]}"
-      printf '%s   node phases (poll): drain=%ss boot=%ss total=%ss data_source=%s\n' \
-        "$(date -Iseconds)" \
-        "$(duration_between_iso "$(milestone_iso "$node" cordoned)" "$(milestone_iso "$node" drain_done)")" \
-        "$(duration_between_iso "$(milestone_iso "$node" drain_done)" "$(milestone_iso "$node" boot_done)")" \
-        "$duration" \
-        "$(node_data_source "$node")"
-      printf '%s   node phases (events): drain=%ss boot=%ss evt_complete=%s\n' \
-        "$(now_utc_iso)" \
-        "$(duration_between_iso "$(event_milestone_iso "$node" cordoned)" "$(event_milestone_iso "$node" drain_done)")" \
-        "$(duration_between_iso "$(event_milestone_iso "$node" drain_done)" "$(event_milestone_iso "$node" boot_done)")" \
-        "$(event_phases_complete "$node" && printf yes || printf no)"
+
+      if node_updated_for_rollout "$node" "$mcn_json"; then
+        backfill_boot_at_completion "$node" "$now" "$nodes_json"
+        start="${node_start_epoch[$node]}"
+        end="$now"
+        duration="$((end - start))"
+        elapsed="$((now - start_epoch))"
+        node_finished[$node]=1
+        nodes_finished_this_run="$((nodes_finished_this_run + 1))"
+        record_node_completion "$node" "$duration" "$start" "$end"
+        updated_count="$(oc get mcp "$MCP" -o jsonpath='{.status.updatedMachineCount}')"
+        printf '%s machineconfignode/%s UPDATED=True — finished %s (poll est.), %s since pool started (%s/%s MCP updated, %s/%s tracked)\n' \
+          "$(now_utc_iso)" "$node" \
+          "$(format_duration "$duration")" \
+          "$(format_duration "$elapsed")" \
+          "$updated_count" "$machine_count" \
+          "$nodes_finished_this_run" "${#worker_nodes[@]}"
+        printf '%s   node phases (poll): drain=%ss boot=%ss total=%ss data_source=%s\n' \
+          "$(date -Iseconds)" \
+          "$(duration_between_iso "$(milestone_iso "$node" cordoned)" "$(milestone_iso "$node" drain_done)")" \
+          "$(duration_between_iso "$(milestone_iso "$node" drain_done)" "$(milestone_iso "$node" boot_done)")" \
+          "$duration" \
+          "$(node_data_source "$node")"
+        printf '%s   node phases (events): drain=%ss boot=%ss evt_complete=%s\n' \
+          "$(now_utc_iso)" \
+          "$(duration_between_iso "$(event_milestone_iso "$node" cordoned)" "$(event_milestone_iso "$node" drain_done)")" \
+          "$(duration_between_iso "$(event_milestone_iso "$node" drain_done)" "$(event_milestone_iso "$node" boot_done)")" \
+          "$(event_phases_complete "$node" && printf yes || printf no)"
+      fi
     fi
   done
 }
@@ -1150,9 +1177,9 @@ init_node_tracking() {
   while read -r node; do
     [[ -z "$node" ]] && continue
     worker_nodes+=("$node")
-    if ! node_updated_for_rollout "$node" "$mcn_json"; then
+    if node_mcn_updating "$node" "$mcn_json"; then
       record_node_start "$node" "$now" "$nodes_json"
-      printf '%s machineconfignode/%s already updating at timer start\n' "$(now_utc_iso)" "$node"
+      printf '%s machineconfignode/%s already in rollout at timer start\n' "$(now_utc_iso)" "$node"
     fi
   done < <(mcn_pool_nodes)
 
@@ -1169,21 +1196,28 @@ init_node_tracking() {
 
 print_per_node_summary() {
   local pool_elapsed="$1"
-  local node sum_total=0 sum_drain=0 sum_boot=0 avg
+  local node earliest_epoch="" latest_epoch=""
 
   if [[ "$nodes_finished_this_run" -eq 0 ]]; then
     return 0
   fi
 
-  printf '\n%s Per-node total_duration_seconds (%s/%s node(s)):\n' \
+  printf '\n%s Per-node per_node_total_duration_seconds (%s/%s node(s)):\n' \
     "$(now_utc_iso)" "$nodes_finished_this_run" "${#worker_nodes[@]}"
 
   for node in "${worker_nodes[@]}"; do
     [[ -n "${node_duration_secs[$node]:-}" ]] || continue
-    sum_total="$((sum_total + node_duration_secs[$node]))"
-    sum_drain="$((sum_drain + ${node_drain_secs[$node]:-0}))"
-    sum_boot="$((sum_boot + ${node_boot_secs[$node]:-0}))"
-    printf '  %s: drain=%ss boot=%ss total=%ss (%s)\n' \
+    if [[ -n "${node_start_epoch[$node]:-}" ]]; then
+      if [[ -z "$earliest_epoch" || "${node_start_epoch[$node]}" -lt "$earliest_epoch" ]]; then
+        earliest_epoch="${node_start_epoch[$node]}"
+      fi
+    fi
+    if [[ -n "${node_end_epoch[$node]:-}" ]]; then
+      if [[ -z "$latest_epoch" || "${node_end_epoch[$node]}" -gt "$latest_epoch" ]]; then
+        latest_epoch="${node_end_epoch[$node]}"
+      fi
+    fi
+    printf '  %s: drain=%ss boot=%ss per_node_total=%ss (%s)\n' \
       "$node" \
       "${node_drain_secs[$node]:-0}" \
       "${node_boot_secs[$node]:-0}" \
@@ -1191,13 +1225,31 @@ print_per_node_summary() {
       "$(format_duration "${node_duration_secs[$node]}")"
   done
 
-  avg="$((sum_total / nodes_finished_this_run))"
-  printf '%s All nodes: pool_elapsed=%ss (%s), sum_total_duration=%ss, avg_per_node=%ss\n' \
+  earliest_epoch="${earliest_epoch:-$start_epoch}"
+  latest_epoch="${latest_epoch:-$((start_epoch + pool_elapsed))}"
+  printf '%s All nodes: pool_elapsed=%ss (%s), node_start_time=%s, node_end_time=%s\n' \
     "$(now_utc_iso)" \
-    "$pool_elapsed" "$(format_duration "$pool_elapsed")" \
-    "$sum_total" "$avg"
-  printf '%s   (pool_elapsed = wall clock for full rollout; sum_total = per-node times added)\n' \
-    "$(now_utc_iso)"
+    "$pool_elapsed" \
+    "$(format_duration "$pool_elapsed")" \
+    "$(epoch_to_iso "$earliest_epoch")" \
+    "$(epoch_to_iso "$latest_epoch")"
+}
+
+finalize_rollout() {
+  local pool_end pool_elapsed
+
+  pool_end="$(date +%s)"
+  pool_elapsed="$((pool_end - start_epoch))"
+  printf '\n%s mcp/%s: all %s worker node(s) tracked — pool elapsed %s\n' \
+    "$(now_utc_iso)" "$MCP" "${#worker_nodes[@]}" "$(format_duration "$pool_elapsed")"
+  append_csv_summary "$pool_end"
+  print_per_node_summary "$pool_elapsed"
+  printf '%s Full log saved to %s\n' "$(now_utc_iso)" "$LOG_FILE"
+  printf '%s Per-node timing CSV saved to %s\n' "$(now_utc_iso)" "$CSV_FILE"
+  printf '%s Node events TSV saved to %s\n' "$(now_utc_iso)" "$EVENTS_FILE"
+  if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
+    printf '%s Ceph operator log saved to %s\n' "$(now_utc_iso)" "$CEPH_OPERATOR_LOG_FILE"
+  fi
 }
 
 require_jq
@@ -1247,14 +1299,4 @@ while [[ "$nodes_finished_this_run" -lt ${#worker_nodes[@]} ]]; do
   oc get mcp -A
 done
 
-elapsed="$(( $(date +%s) - start_epoch ))"
-printf '\n%s mcp/%s: all %s worker node(s) tracked — pool elapsed %s\n' \
-  "$(now_utc_iso)" "$MCP" "${#worker_nodes[@]}" "$(format_duration "$elapsed")"
-append_csv_summary "$(date +%s)"
-print_per_node_summary "$elapsed"
-printf '%s Full log saved to %s\n' "$(now_utc_iso)" "$LOG_FILE"
-printf '%s Per-node timing CSV saved to %s\n' "$(now_utc_iso)" "$CSV_FILE"
-printf '%s Node events TSV saved to %s\n' "$(now_utc_iso)" "$EVENTS_FILE"
-if [[ "$CEPH_OPERATOR_LOGS" == "1" ]]; then
-  printf '%s Ceph operator log saved to %s\n' "$(now_utc_iso)" "$CEPH_OPERATOR_LOG_FILE"
-fi
+finalize_rollout
