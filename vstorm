@@ -2576,7 +2576,7 @@ wait_for_namespace_vms_stopped() {
 	    if [[ "$status" == "Stopped" && -n "${pending[$key]:-}" ]] ; then
 		unset "pending[$key]"
 	    fi
-	done <<< "$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk '{print $1, $4}')"
+	done <<< "$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk '{print $1, $3}')"
 
 	if (( ${#pending[@]} == 0 )) ; then
 	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST} are Stopped${C_RST}"

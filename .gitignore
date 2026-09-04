@@ -7,3 +7,7 @@ monitoring/csv-data/
 # Default data-dir when serve.py is started from the repo root
 data-collector-data/
 monitoring/scripts/node-drain-reboot/mcp-reboot-watch.kubeconfig
+# Python
+__pycache__/
+*.pyc
+*.pyo
