@@ -10,6 +10,9 @@
 #   node_start_time / node_end_time — cordoned_ts / boot_done_ts
 #   CSV row written as soon as all three poll milestones exist (no MCN gate).
 #
+# MCP track (exit gate):
+#   Wait until mcp/$MCP has Updating=False, Updated=True, and updatedMachineCount≥machineCount.
+#
 # MCN track (logged only; does not gate CSV or exit):
 #   Rollout start when desired≠current or Updated=False; completion on UPDATED=True.
 #
@@ -931,7 +934,9 @@ print_tracking_status() {
   else
     printf '  rollout config: (detecting...)\n'
   fi
+  printf '  %s\n' "$(mcp_status_summary)"
   printf '  mcn finished: %s/%s\n' "$mcn_finished_count" "${#worker_nodes[@]}"
+  printf '  node phases in CSV: %s/%s\n' "$nodes_phases_done" "${#worker_nodes[@]}"
   printf '  in progress (%s): %s\n' "${#updating[@]}" "$(nodes_list "${updating[@]}")"
   printf '  waiting     (%s): %s\n' "${#waiting[@]}" "$(nodes_list "${waiting[@]}")"
   printf '  csv written (%s): %s\n' "${#finished[@]}" "$(nodes_list "${finished[@]}")"
@@ -950,8 +955,44 @@ print_tracking_status() {
   done
 }
 
+fetch_mcp_json() {
+  oc get mcp "$MCP" -o json
+}
+
 mcp_updating() {
-  [[ "$(oc get mcp "$MCP" -o jsonpath='{.status.conditions[?(@.type=="Updating")].status}')" == "True" ]]
+  [[ "$(jq -r '.status.conditions[]? | select(.type=="Updating") | .status' <<<"$(fetch_mcp_json)")" == "True" ]]
+}
+
+# Pool rollout finished: not updating, pool Updated=True, all machines updated.
+mcp_rollout_complete() {
+  local mcp_json updating updated machine_count updated_count
+
+  mcp_json="$(fetch_mcp_json)"
+  updating="$(jq -r '.status.conditions[]? | select(.type=="Updating") | .status' <<<"$mcp_json")"
+  updated="$(jq -r '.status.conditions[]? | select(.type=="Updated") | .status' <<<"$mcp_json")"
+  machine_count="$(jq -r '.status.machineCount // 0' <<<"$mcp_json")"
+  updated_count="$(jq -r '.status.updatedMachineCount // 0' <<<"$mcp_json")"
+
+  [[ "$updating" != "True" \
+    && "$updated" == "True" \
+    && "$machine_count" -gt 0 \
+    && "$updated_count" -ge "$machine_count" ]]
+}
+
+mcp_status_summary() {
+  local mcp_json updating updated machine_count updated_count ready_count degraded
+
+  mcp_json="$(fetch_mcp_json)"
+  updating="$(jq -r '.status.conditions[]? | select(.type=="Updating") | .status' <<<"$mcp_json")"
+  updated="$(jq -r '.status.conditions[]? | select(.type=="Updated") | .status' <<<"$mcp_json")"
+  degraded="$(jq -r '.status.conditions[]? | select(.type=="Degraded") | .status' <<<"$mcp_json")"
+  machine_count="$(jq -r '.status.machineCount // 0' <<<"$mcp_json")"
+  updated_count="$(jq -r '.status.updatedMachineCount // 0' <<<"$mcp_json")"
+  ready_count="$(jq -r '.status.readyMachineCount // 0' <<<"$mcp_json")"
+
+  printf 'mcp/%s updating=%s updated=%s degraded=%s machines=%s updated=%s ready=%s' \
+    "$MCP" "${updating:-Unknown}" "${updated:-Unknown}" "${degraded:-Unknown}" \
+    "$machine_count" "$updated_count" "$ready_count"
 }
 
 mcn_available() {
@@ -1308,10 +1349,17 @@ finalize_rollout() {
 
   pool_end="$(date +%s)"
   pool_elapsed="$((pool_end - start_epoch))"
-  printf '\n%s mcp/%s: all %s worker node(s) drain/reboot phases in CSV — pool elapsed %s\n' \
-    "$(now_utc_iso)" "$MCP" "${#worker_nodes[@]}" "$(format_duration "$pool_elapsed")"
-  printf '%s mcp/%s: MCN UPDATED=True on %s/%s node(s) (logged independently)\n' \
-    "$(now_utc_iso)" "$MCP" "$mcn_finished_count" "${#worker_nodes[@]}"
+  printf '\n%s mcp/%s rollout complete — pool elapsed %s\n' \
+    "$(now_utc_iso)" "$MCP" "$(format_duration "$pool_elapsed")"
+  printf '%s   %s\n' "$(now_utc_iso)" "$(mcp_status_summary)"
+  printf '%s node phases in CSV: %s/%s worker node(s)\n' \
+    "$(now_utc_iso)" "$nodes_phases_done" "${#worker_nodes[@]}"
+  if [[ "$nodes_phases_done" -lt ${#worker_nodes[@]} ]]; then
+    printf '%s WARNING: MCP rollout finished before all node phase CSV rows were written (%s missing)\n' \
+      "$(now_utc_iso)" "$(( ${#worker_nodes[@]} - nodes_phases_done ))"
+  fi
+  printf '%s MCN UPDATED=True on %s/%s node(s) (logged independently)\n' \
+    "$(now_utc_iso)" "$mcn_finished_count" "${#worker_nodes[@]}"
   append_csv_summary "$pool_end"
   print_per_node_summary "$pool_elapsed"
   printf '%s Full log saved to %s\n' "$(now_utc_iso)" "$LOG_FILE"
@@ -1354,12 +1402,12 @@ if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
   oc get mcp -A
   oc get machineconfignode -o wide 2>/dev/null || true
 
-  printf '%s Waiting for %s mcp/%s node(s) to complete drain/reboot phases\n' \
-    "$(now_utc_iso)" "${#worker_nodes[@]}" "$MCP"
+  printf '%s Waiting for mcp/%s rollout to complete (Updating=False, Updated=True, all machines updated)\n' \
+    "$(now_utc_iso)" "$MCP"
   print_tracking_status
 
   poll_count=0
-  while [[ "$nodes_phases_done" -lt ${#worker_nodes[@]} ]]; do
+  while ! mcp_rollout_complete; do
     sleep "$(current_poll_interval)"
     poll_count="$((poll_count + 1))"
     if (( poll_count % 60 == 0 )); then

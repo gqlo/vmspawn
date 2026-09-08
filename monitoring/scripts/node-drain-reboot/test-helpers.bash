@@ -60,6 +60,9 @@ mcp_watch_test_load_lib() {
   fetch_mcn_json() {
     cat "${MCP_WATCH_TEST_MCN_JSON:?set MCP_WATCH_TEST_MCN_JSON}"
   }
+  fetch_mcp_json() {
+    cat "${MCP_WATCH_TEST_MCP_JSON:?set MCP_WATCH_TEST_MCP_JSON}"
+  }
   save_rollout_events() { :; }
   save_ceph_operator_logs() { :; }
 
@@ -99,6 +102,28 @@ mcp_watch_write_mcn_json() {
 }
 EOF
   export MCP_WATCH_TEST_MCN_JSON="$path"
+}
+
+# updating/updated: True or False; machine_count/updated_count: integers
+mcp_watch_write_mcp_json() {
+  local updating="${1:-True}" updated="${2:-False}" machine_count="${3:-1}" updated_count="${4:-0}"
+  local path="${MCP_WATCH_TEST_DIR}/mcp.json"
+
+  cat >"$path" <<EOF
+{
+  "status": {
+    "machineCount": $machine_count,
+    "updatedMachineCount": $updated_count,
+    "readyMachineCount": $updated_count,
+    "conditions": [
+      {"type": "Updating", "status": "$updating"},
+      {"type": "Updated", "status": "$updated"},
+      {"type": "Degraded", "status": "False"}
+    ]
+  }
+}
+EOF
+  export MCP_WATCH_TEST_MCP_JSON="$path"
 }
 
 mcp_watch_csv_data_rows() {

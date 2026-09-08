@@ -6,6 +6,7 @@ load 'test-helpers'
 setup() {
   mcp_watch_test_setup_dir
   mcp_watch_test_load_lib
+  mcp_watch_write_mcp_json "False" "False" 1 0
   : >"$LOG_FILE"
 }
 
@@ -149,4 +150,19 @@ teardown() {
   [[ -v mcn_finished["$node"] ]]
   [[ "$mcn_finished_count" -eq 1 ]]
   [[ "$(mcp_watch_csv_row_count)" -eq 0 ]]
+}
+
+@test "mcp-watch: mcp_rollout_complete when Updating=False Updated=True and all machines updated" {
+  mcp_watch_write_mcp_json "False" "True" 3 3
+  mcp_rollout_complete
+}
+
+@test "mcp-watch: mcp_rollout_complete is false while pool is still updating" {
+  mcp_watch_write_mcp_json "True" "False" 3 1
+  ! mcp_rollout_complete
+}
+
+@test "mcp-watch: mcp_rollout_complete is false when updatedMachineCount below machineCount" {
+  mcp_watch_write_mcp_json "False" "True" 3 2
+  ! mcp_rollout_complete
 }
