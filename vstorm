@@ -2423,6 +2423,7 @@ wait_for_batch_vms_stopped() {
     log_message "${C_BOLD}Waiting for ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) to reach Stopped...${C_RST}"
 
     local vm_ns vm_name status key
+    local -i stopped
     while : ; do
 	while read -r vm_ns vm_name status ; do
 	    [[ -n "$vm_ns" && -n "$vm_name" ]] || continue
@@ -2432,12 +2433,17 @@ wait_for_batch_vms_stopped() {
 	    fi
 	done <<< "$(oc get vm -A -l batch-id="$batch" --no-headers 2>/dev/null | awk '{print $1, $2, $4}')"
 
+	stopped=$((total - ${#pending[@]}))
+	printf '\r  %s/%s VMs stopped   ' "$stopped" "$total"
+
 	if (( ${#pending[@]} == 0 )) ; then
+	    echo ""
 	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) are Stopped${C_RST}"
 	    return 0
 	fi
 
 	if (( SECONDS >= deadline )) ; then
+	    echo ""
 	    log_message "${C_WARN}Timed out after ${timeout}s waiting for VMs to stop (${#pending[@]}/${total} still not Stopped); proceeding with namespace delete anyway${C_RST}"
 	    return 1
 	fi
@@ -2569,6 +2575,7 @@ wait_for_namespace_vms_stopped() {
     log_message "${C_BOLD}Waiting for ${C_VAL}${total}${C_RST}${C_BOLD} VM(s) in ${C_VAL}${ns}${C_RST}${C_BOLD} to reach Stopped...${C_RST}"
 
     local vm_name status key
+    local -i stopped
     while : ; do
 	while read -r vm_name status ; do
 	    [[ -n "$vm_name" ]] || continue
@@ -2578,12 +2585,17 @@ wait_for_namespace_vms_stopped() {
 	    fi
 	done <<< "$(oc get vm -n "$ns" --no-headers 2>/dev/null | awk '{print $1, $3}')"
 
+	stopped=$((total - ${#pending[@]}))
+	printf '\r  %s/%s VMs stopped   ' "$stopped" "$total"
+
 	if (( ${#pending[@]} == 0 )) ; then
+	    echo ""
 	    log_message "${C_OK}All ${C_VAL}${total}${C_RST} VM(s) in ${C_VAL}${ns}${C_RST} are Stopped${C_RST}"
 	    return 0
 	fi
 
 	if (( SECONDS >= deadline )) ; then
+	    echo ""
 	    log_message "${C_WARN}Timed out after ${timeout}s waiting for VMs in ${C_VAL}${ns}${C_RST} to stop (${#pending[@]}/${total} still not Stopped); proceeding with namespace delete anyway${C_RST}"
 	    return 1
 	fi
