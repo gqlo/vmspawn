@@ -2456,7 +2456,7 @@ wait_for_batch_vms_stopped() {
 # Poll cluster-scoped storage still tied to a batch's namespaces after
 # `oc delete ns --wait=false` returns, refreshing counts every
 # DELETE_POLL_INTERVAL (default 2s) until namespaces, PVCs, PVs, and
-# VolumeAttachments all reach zero, or DELETE_POLL_TIMEOUT (default 7200s)
+# VolumeAttachments all reach zero, or DELETE_POLL_TIMEOUT (default 14400s)
 # is hit. PVs and VolumeAttachments are cluster-scoped and carry no
 # batch-id label, so they are correlated to the batch via the namespace
 # naming pattern ({batch}-ns-{N}) instead (PVs via spec.claimRef.namespace,
@@ -2465,7 +2465,7 @@ wait_for_batch_vms_stopped() {
 watch_batch_delete_cleanup() {
     local batch=$1
     local -i interval=${DELETE_POLL_INTERVAL:-2}
-    local -i timeout=${DELETE_POLL_TIMEOUT:-7200}
+    local -i timeout=${DELETE_POLL_TIMEOUT:-14400}
     local -i deadline=$((SECONDS + timeout))
     local ns_pat="^${batch}-ns-[0-9]+\$"
 
@@ -2666,7 +2666,7 @@ stop_namespace_vms() {
 watch_namespace_delete_cleanup() {
     local ns=$1
     local -i interval=${DELETE_POLL_INTERVAL:-2}
-    local -i timeout=${DELETE_POLL_TIMEOUT:-7200}
+    local -i timeout=${DELETE_POLL_TIMEOUT:-14400}
     local -i deadline=$((SECONDS + timeout))
     local ns_pat="^${ns}\$"
 
